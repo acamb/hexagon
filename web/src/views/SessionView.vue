@@ -4,6 +4,7 @@ import { useRoute, useRouter } from 'vue-router'
 import AppHeader from '../components/AppHeader.vue'
 import StatusDot from '../components/StatusDot.vue'
 import TerminalPane from '../components/TerminalPane.vue'
+import TmuxCheatsheet from '../components/TmuxCheatsheet.vue'
 import { ApiError, api, type Session } from '../api'
 import { isProvisioning, sessionLabel } from '../status'
 
@@ -18,6 +19,7 @@ const busy = ref(false)
 // session it is running was created with, or without, Claude Code as its
 // command, so the change is only visible after a restart.
 const pending = ref(false)
+const cheatsheetOpen = ref(false)
 
 async function refresh() {
   try {
@@ -130,6 +132,7 @@ onUnmounted(() => window.clearTimeout(timer))
           >
             Start
           </button>
+          <button type="button" @click="cheatsheetOpen = true">tmux keys</button>
           <button type="button" @click="router.push({ name: 'sessions' })">All sessions</button>
         </div>
       </div>
@@ -154,6 +157,8 @@ onUnmounted(() => window.clearTimeout(timer))
     </template>
 
     <div v-else class="notice">Loading…</div>
+
+    <TmuxCheatsheet v-if="cheatsheetOpen" @close="cheatsheetOpen = false" />
   </div>
 </template>
 

@@ -111,7 +111,9 @@ that happens, sign in again on the host, or set `ANTHROPIC_API_KEY`.
 
 **The terminal** — the session page attaches to the container's tmux session. Closing the
 tab only detaches: Claude Code keeps working, and reopening the page finds the session
-where you left it. Opening a second tab takes the terminal over from the first.
+where you left it. Opening a second tab takes the terminal over from the first. The
+**tmux keys** button in the session header opens the shortcuts worth knowing, starting
+with how to scroll back through the output.
 
 **Stopping and deleting** — stopping shuts the container down and keeps the clone; starting
 brings it back with a fresh tmux, so the previous scrollback is gone. Deleting always

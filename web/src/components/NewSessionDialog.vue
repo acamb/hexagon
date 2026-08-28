@@ -162,47 +162,10 @@ onMounted(() => load())
 </template>
 
 <style scoped>
-.backdrop {
-  position: fixed;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 1.5rem;
-  background: rgba(0, 0, 0, 0.5);
-  z-index: 10;
-}
-
+/* The backdrop and the panel itself come from style.css, shared with the other
+   dialog; only this one's width is its own. */
 .dialog {
-  display: flex;
-  flex-direction: column;
-  gap: 1rem;
   width: min(38rem, 100%);
-  max-height: 85vh;
-  overflow: auto;
-  padding: 1.25rem 1.5rem 1.5rem;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg);
-}
-
-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-}
-
-h2 {
-  margin: 0;
-  font-size: 1.25rem;
-}
-
-.icon {
-  border: none;
-  background: none;
-  color: var(--text-muted);
-  font-size: 1.5rem;
-  line-height: 1;
-  cursor: pointer;
 }
 
 .field {
