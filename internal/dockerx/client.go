@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/docker/docker/client"
 )
@@ -33,6 +34,21 @@ type API interface {
 	AttachExec(ctx context.Context, req ExecRequest) (*Exec, error)
 	// ResizeExec updates the geometry of a running exec's TTY.
 	ResizeExec(ctx context.Context, execID string, size TerminalSize) error
+	// RunExec runs a command to completion and returns its output and exit code.
+	RunExec(ctx context.Context, containerID string, cmd []string) (string, int, error)
+
+	// CreateContainer creates a session container without starting it.
+	CreateContainer(ctx context.Context, spec ContainerSpec) (string, error)
+	// StartContainer starts a created or stopped container.
+	StartContainer(ctx context.Context, id string) error
+	// StopContainer stops a container, killing it after timeout.
+	StopContainer(ctx context.Context, id string, timeout time.Duration) error
+	// RemoveContainer deletes a container.
+	RemoveContainer(ctx context.Context, id string, force bool) error
+	// InspectContainer reports a container's real state, or ErrContainerNotFound.
+	InspectContainer(ctx context.Context, id string) (ContainerState, error)
+	// ListManagedContainers returns every container Hexagon owns.
+	ListManagedContainers(ctx context.Context) ([]ManagedContainer, error)
 }
 
 // Client talks to a Docker daemon.

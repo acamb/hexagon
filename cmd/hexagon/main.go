@@ -19,6 +19,7 @@ import (
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/github"
 	"github.com/andrea/hexagon/internal/httpapi"
+	"github.com/andrea/hexagon/internal/session"
 	"github.com/andrea/hexagon/internal/store"
 )
 
@@ -51,11 +52,16 @@ func run() error {
 		log.Info("pruned expired sessions", "count", n)
 	}
 
-	// Nothing is going to finish a build that was running when we stopped.
+	// Nothing is going to finish work that was in flight when we stopped.
 	if n, err := st.FailInterruptedImageBuilds(context.Background()); err != nil {
 		log.Warn("clear interrupted builds", "err", err)
 	} else if n > 0 {
 		log.Info("marked interrupted image builds as failed", "count", n)
+	}
+	if n, err := st.FailInterruptedSessions(context.Background()); err != nil {
+		log.Warn("clear interrupted sessions", "err", err)
+	} else if n > 0 {
+		log.Info("marked interrupted sessions as failed", "count", n)
 	}
 
 	docker, err := dockerx.New(cfg.DockerHost)
@@ -76,6 +82,14 @@ func run() error {
 	if err != nil {
 		return err
 	}
+
+	// Line the database up with what the daemon actually has, before serving
+	// anyone a stale view of it.
+	reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := deps.Sessions.Reconcile(reconcileCtx); err != nil {
+		log.Warn("reconcile sessions", "err", err)
+	}
+	reconcileCancel()
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
@@ -125,23 +139,35 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		return httpapi.Deps{}, err
 	}
 	gh := github.New()
-	sessions := auth.NewService(st, cipher, cfg.PublicURL)
+	logins := auth.NewService(st, cipher, cfg.PublicURL)
 	repos := github.NewRepoCache(gh, github.DefaultRepoTTL)
+
+	// Containers run as the user running the server, so files written into the
+	// bind mounted clone stay owned by them rather than by root.
+	sessions := session.NewManager(st, docker, session.GitCloner{}, logins, session.Config{
+		WorkspaceRoot:     cfg.WorkspaceRoot,
+		ClaudeCredentials: cfg.ClaudeCredentials,
+		AnthropicAPIKey:   cfg.AnthropicAPIKey,
+		GitUserName:       cfg.GitUserName,
+		GitUserEmail:      cfg.GitUserEmail,
+		ContainerUser:     fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),
+	}, log)
 
 	deps := httpapi.Deps{
 		Config:         cfg,
 		Store:          st,
-		Auth:           sessions,
+		Auth:           logins,
 		GitHub:         gh,
 		Repos:          repos,
 		Docker:         docker,
+		Sessions:       sessions,
 		BaseDockerfile: hexagon.BaseDockerfile,
 		Frontend:       frontend,
 		Log:            log,
 	}
 
 	if cfg.DevUser != "" {
-		dev, err := auth.NewDevProvider(cfg.DevUser, cfg.DevGitHubToken, cfg.Addr, gh, sessions)
+		dev, err := auth.NewDevProvider(cfg.DevUser, cfg.DevGitHubToken, cfg.Addr, gh, logins)
 		if err != nil {
 			return httpapi.Deps{}, err
 		}

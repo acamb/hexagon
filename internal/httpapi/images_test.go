@@ -28,6 +28,17 @@ type fakeDocker struct {
 	pulled    []string
 	removed   []string
 
+	createErr  error
+	startErr   error
+	runExecErr error
+
+	containers        map[string]*fakeContainer
+	nextContainer     int
+	removedContainers []string
+	ranExecs          [][]string
+	runExecOutput     string
+	runExecCode       int
+
 	execRequests []dockerx.ExecRequest
 	resizes      []dockerx.TerminalSize
 	// container is the far end of the attached exec: writing to it is output
@@ -35,7 +46,7 @@ type fakeDocker struct {
 	container net.Conn
 }
 
-func newFakeDocker() *fakeDocker { return &fakeDocker{} }
+func newFakeDocker() *fakeDocker { return &fakeDocker{containers: map[string]*fakeContainer{}} }
 
 func (f *fakeDocker) Ping(context.Context) error {
 	f.mu.Lock()

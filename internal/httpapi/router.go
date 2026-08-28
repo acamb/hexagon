@@ -16,6 +16,7 @@ import (
 	"github.com/andrea/hexagon/internal/config"
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/github"
+	"github.com/andrea/hexagon/internal/session"
 	"github.com/andrea/hexagon/internal/store"
 )
 
@@ -34,10 +35,11 @@ type Deps struct {
 	// OAuth drives the GitHub login. Nil when the development bypass is active.
 	OAuth *auth.OAuth
 	// Dev is the HEXAGON_DEV_USER bypass. Nil during normal operation.
-	Dev    *auth.DevProvider
-	GitHub auth.UserFetcher
-	Repos  RepoLister
-	Docker dockerx.API
+	Dev      *auth.DevProvider
+	GitHub   auth.UserFetcher
+	Repos    RepoLister
+	Docker   dockerx.API
+	Sessions *session.Manager
 	// BaseDockerfile is offered to the UI as the starting point for a new image.
 	BaseDockerfile string
 	Frontend       fs.FS
@@ -54,6 +56,7 @@ type Server struct {
 	github         auth.UserFetcher
 	repos          RepoLister
 	docker         dockerx.API
+	sessions       *session.Manager
 	baseDockerfile string
 	log            *slog.Logger
 	frontend       fs.FS
@@ -71,6 +74,7 @@ func New(deps Deps) http.Handler {
 		github:         deps.GitHub,
 		repos:          deps.Repos,
 		docker:         deps.Docker,
+		sessions:       deps.Sessions,
 		baseDockerfile: deps.BaseDockerfile,
 		log:            deps.Log,
 		frontend:       deps.Frontend,
@@ -96,7 +100,12 @@ func New(deps Deps) http.Handler {
 		"DELETE /api/images/{id}":  s.handleDeleteImage,
 		"GET /api/github/repos":    s.handleListRepos,
 
+		"GET /api/sessions":               s.handleListSessions,
+		"POST /api/sessions":              s.handleCreateSession,
 		"GET /api/sessions/{id}":          s.handleGetSession,
+		"POST /api/sessions/{id}/start":   s.handleStartSession,
+		"POST /api/sessions/{id}/stop":    s.handleStopSession,
+		"DELETE /api/sessions/{id}":       s.handleDeleteSession,
 		"GET /api/sessions/{id}/terminal": s.handleTerminal,
 	}
 	for pattern, handler := range protected {

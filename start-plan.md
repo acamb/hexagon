@@ -316,7 +316,7 @@ with `HEXAGON_GH_TOKEN` in the process environment. After cloning, set `user.nam
 `credential.helper` is persisted — inside the container `GIT_ASKPASS` plus the
 `GITHUB_TOKEN` env var handle authentication for pushes.
 
-### M4 — Session creation
+### M4 — Session creation — **done**
 
 `internal/session/manager.go` — `Create(ctx, user, req) (*Session, error)`: synchronous
 through the DB insert, then asynchronous with `status` updates.

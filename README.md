@@ -18,7 +18,7 @@ milestone.
 | M1 — GitHub sign-in, sessions, allowlist | done |
 | M2 — base image management | done |
 | M3 — repository listing and cloning | done |
-| M4 — session containers | not started (M5 was built first, on request) |
+| M4 — session containers | done |
 | M5 — browser terminal | done |
 | M6 — frontend and polish | not started |
 
@@ -147,6 +147,7 @@ internal/auth/      GitHub OAuth login, session cookies, token encryption
 internal/github/    GitHub REST client
 internal/dockerx/   Docker Engine API: images, and exec attach for the terminal
 internal/gitops/    host-side git: cloning a repository into a session workspace
+internal/session/   orchestrator: provisioning, lifecycle, reconciliation
 internal/httpapi/   routes, middleware, handlers, the terminal WebSocket, SPA serving
 web/                Vue 3 + Vite frontend, embedded into the binary at build time
 deploy/images/      base image definitions for session containers (from M2)

@@ -8,8 +8,10 @@ import (
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 	"time"
@@ -17,6 +19,8 @@ import (
 	"github.com/andrea/hexagon/internal/auth"
 	"github.com/andrea/hexagon/internal/config"
 	"github.com/andrea/hexagon/internal/github"
+	"github.com/andrea/hexagon/internal/gitops"
+	"github.com/andrea/hexagon/internal/session"
 	"github.com/andrea/hexagon/internal/store"
 )
 
@@ -42,6 +46,34 @@ type testEnv struct {
 	github *fakeGitHub
 	repos  *fakeRepos
 	docker *fakeDocker
+	cloner *fakeCloner
+	// workspaces is the root the session manager provisions into.
+	workspaces string
+}
+
+// fakeCloner stands in for git. It records what it was asked to clone and
+// creates the destination, which is all the manager cares about.
+type fakeCloner struct {
+	mu   sync.Mutex
+	err  error
+	seen []gitops.Options
+}
+
+func (f *fakeCloner) Clone(_ context.Context, opts gitops.Options) error {
+	f.mu.Lock()
+	f.seen = append(f.seen, opts)
+	err := f.err
+	f.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	return os.MkdirAll(filepath.Join(opts.Dest, ".git"), 0o700)
+}
+
+func (f *fakeCloner) clones() []gitops.Options {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]gitops.Options(nil), f.seen...)
 }
 
 // newTestEnv builds a server with the GitHub login wired to stubs, plus a
@@ -69,10 +101,19 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	t.Cleanup(tokenStub.Close)
 
 	cfg := &config.Config{Addr: "127.0.0.1:0", PublicURL: "http://127.0.0.1:8080"}
-	sessions := auth.NewService(st, cipher, cfg.PublicURL)
+	logins := auth.NewService(st, cipher, cfg.PublicURL)
 	gh := &fakeGitHub{user: &github.User{Login: "alice", ID: 42, AvatarURL: "https://example.test/a.png"}}
 	docker := newFakeDocker()
 	repos := &fakeRepos{}
+	cloner := &fakeCloner{}
+	workspaces := filepath.Join(t.TempDir(), "workspaces")
+
+	sessions := session.NewManager(st, docker, cloner, logins, session.Config{
+		WorkspaceRoot: workspaces,
+		GitUserName:   "Hexagon User",
+		GitUserEmail:  "user@example.test",
+		ContainerUser: "1000:1000",
+	}, slog.New(slog.DiscardHandler))
 
 	oauth, err := auth.NewOAuth(auth.OAuthConfig{
 		ClientID:     "client",
@@ -88,11 +129,12 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	handler := New(Deps{
 		Config:         cfg,
 		Store:          st,
-		Auth:           sessions,
+		Auth:           logins,
 		OAuth:          oauth,
 		GitHub:         gh,
 		Repos:          repos,
 		Docker:         docker,
+		Sessions:       sessions,
 		BaseDockerfile: "FROM scratch\n",
 		Frontend:       fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}},
 		Log:            slog.New(slog.DiscardHandler),
@@ -109,10 +151,13 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		t:      t,
 		server: server,
 		store:  st,
-		auth:   sessions,
+		auth:   logins,
 		github: gh,
 		repos:  repos,
 		docker: docker,
+		cloner: cloner,
+
+		workspaces: workspaces,
 		client: &http.Client{
 			Jar:           jar,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },

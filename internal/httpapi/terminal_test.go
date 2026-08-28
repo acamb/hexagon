@@ -42,6 +42,9 @@ func (e *testEnv) insertSession(id, status, containerID string) string {
 	if err != nil {
 		e.t.Fatalf("insert session: %v", err)
 	}
+	if containerID != "" {
+		e.docker.addContainer(containerID, status == store.SessionStatusRunning)
+	}
 	return id
 }
 
