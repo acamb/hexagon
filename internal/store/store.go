@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	_ "modernc.org/sqlite" // pure Go driver, registered as "sqlite"
+	"modernc.org/sqlite" // pure Go driver, registered as "sqlite"
 )
 
 //go:embed migrations/*.sql
@@ -159,3 +159,22 @@ func loadMigrations() ([]migration, error) {
 
 // ErrNotFound is returned by lookups that match no row.
 var ErrNotFound = errors.New("not found")
+
+// ErrConflict is returned when a row would violate a uniqueness constraint,
+// such as two images with the same name for one user.
+var ErrConflict = errors.New("already exists")
+
+// SQLite extended result codes for the constraints we translate into ErrConflict.
+const (
+	sqliteConstraintPrimaryKey = 1555
+	sqliteConstraintUnique     = 2067
+)
+
+func isUniqueViolation(err error) bool {
+	var sqlErr *sqlite.Error
+	if !errors.As(err, &sqlErr) {
+		return false
+	}
+	code := sqlErr.Code()
+	return code == sqliteConstraintUnique || code == sqliteConstraintPrimaryKey
+}

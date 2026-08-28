@@ -4,6 +4,7 @@
 export interface Health {
   status: string
   uptime: string
+  docker?: string
   error?: string
 }
 
@@ -48,9 +49,46 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
+export type ImageSource = 'dockerfile' | 'registry'
+export type ImageStatus = 'pending' | 'building' | 'ready' | 'failed'
+
+export interface Image {
+  id: string
+  name: string
+  sourceType: ImageSource
+  dockerfile?: string
+  registryRef?: string
+  imageRef?: string
+  status: ImageStatus
+  error?: string
+  createdAt: string
+}
+
+export interface ImageLog {
+  status: ImageStatus
+  log: string
+  error: string
+}
+
+export interface NewImage {
+  name: string
+  sourceType: ImageSource
+  dockerfile?: string
+  registryRef?: string
+}
+
 export const api = {
   health: () => request<Health>('/health'),
   me: () => request<CurrentUser>('/auth/me'),
   logout: () => request<{ status: string }>('/auth/logout', { method: 'POST' }),
   loginUrl: '/api/auth/login',
+
+  images: {
+    list: () => request<Image[]>('/images'),
+    create: (image: NewImage) =>
+      request<Image>('/images', { method: 'POST', body: JSON.stringify(image) }),
+    remove: (id: string) => request<null>(`/images/${id}`, { method: 'DELETE' }),
+    log: (id: string) => request<ImageLog>(`/images/${id}/log`),
+    template: () => request<{ dockerfile: string }>('/images/template'),
+  },
 }

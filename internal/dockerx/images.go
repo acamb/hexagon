@@ -1,0 +1,105 @@
+package dockerx
+
+import (
+	"archive/tar"
+	"bytes"
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"time"
+
+	"github.com/docker/docker/api/types/build"
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/pkg/jsonmessage"
+)
+
+// BuildImage builds a single-file build context containing dockerfile and tags
+// the result. Build output is streamed to logs as it arrives.
+func (c *Client) BuildImage(ctx context.Context, dockerfile, tag string, logs io.Writer) error {
+	buildContext, err := tarDockerfile(dockerfile)
+	if err != nil {
+		return err
+	}
+
+	resp, err := c.cli.ImageBuild(ctx, buildContext, build.ImageBuildOptions{
+		Tags:       []string{tag},
+		Dockerfile: "Dockerfile",
+		// Drop intermediate containers, including on failure: a failed build
+		// should not leave anything behind for the user to clean up.
+		Remove:      true,
+		ForceRemove: true,
+		// Refresh the base image, so rebuilding an image is a way to pick up
+		// upstream security updates.
+		PullParent: true,
+	})
+	if err != nil {
+		return fmt.Errorf("start build: %w", err)
+	}
+	defer resp.Body.Close()
+
+	return decodeProgress(resp.Body, logs)
+}
+
+// PullImage fetches ref from its registry. Only public images are supported:
+// Hexagon has no registry credentials to offer.
+func (c *Client) PullImage(ctx context.Context, ref string, logs io.Writer) error {
+	body, err := c.cli.ImagePull(ctx, ref, image.PullOptions{})
+	if err != nil {
+		return fmt.Errorf("start pull: %w", err)
+	}
+	defer body.Close()
+
+	return decodeProgress(body, logs)
+}
+
+// RemoveImage deletes a local image by reference or id.
+func (c *Client) RemoveImage(ctx context.Context, ref string) error {
+	_, err := c.cli.ImageRemove(ctx, ref, image.RemoveOptions{PruneChildren: true})
+	if err != nil {
+		return fmt.Errorf("remove image %s: %w", ref, err)
+	}
+	return nil
+}
+
+// tarDockerfile wraps a Dockerfile in the tar archive the build endpoint
+// expects. Hexagon builds have no build context beyond the Dockerfile itself,
+// so COPY and ADD of local paths will not work — by design: the image describes
+// the tools, the repository arrives as a bind mount.
+func tarDockerfile(dockerfile string) (io.Reader, error) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+
+	body := []byte(dockerfile)
+	err := tw.WriteHeader(&tar.Header{
+		Name:    "Dockerfile",
+		Mode:    0o600,
+		Size:    int64(len(body)),
+		ModTime: time.Now(),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("write build context header: %w", err)
+	}
+	if _, err := tw.Write(body); err != nil {
+		return nil, fmt.Errorf("write build context: %w", err)
+	}
+	if err := tw.Close(); err != nil {
+		return nil, fmt.Errorf("close build context: %w", err)
+	}
+	return &buf, nil
+}
+
+// decodeProgress turns the daemon's JSON progress stream into plain lines on
+// logs. A build that fails reports it inside the stream, not through the HTTP
+// status, so the error surfaces here rather than from the call that started it.
+func decodeProgress(r io.Reader, logs io.Writer) error {
+	err := jsonmessage.DisplayJSONMessagesStream(r, logs, 0, false, nil)
+	if err == nil {
+		return nil
+	}
+	var jsonErr *jsonmessage.JSONError
+	if errors.As(err, &jsonErr) {
+		return fmt.Errorf("%s", jsonErr.Message)
+	}
+	return err
+}

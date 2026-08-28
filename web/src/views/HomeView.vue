@@ -1,10 +1,8 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import AppHeader from '../components/AppHeader.vue'
 import { api, type Health } from '../api'
-import { currentUser, logout } from '../session'
 
-const router = useRouter()
 const health = ref<Health | null>(null)
 const error = ref<string | null>(null)
 
@@ -18,11 +16,6 @@ async function refresh() {
   }
 }
 
-async function signOut() {
-  await logout()
-  router.push({ name: 'login' })
-}
-
 let timer: number
 onMounted(() => {
   refresh()
@@ -32,63 +25,21 @@ onUnmounted(() => window.clearInterval(timer))
 </script>
 
 <template>
-  <header class="bar">
-    <strong>Hexagon</strong>
-    <div class="account" v-if="currentUser">
-      <img v-if="currentUser.avatarUrl" :src="currentUser.avatarUrl" alt="" width="24" height="24" />
-      <span>{{ currentUser.login }}</span>
-      <button type="button" @click="signOut">Sign out</button>
-    </div>
-  </header>
+  <AppHeader />
 
   <main class="shell">
     <h1>Sessions</h1>
     <p class="placeholder">Session management arrives with the next milestone.</p>
 
     <p v-if="error" class="status status--error">Backend unreachable: {{ error }}</p>
-    <p v-else-if="health" class="status status--ok">
-      Backend {{ health.status }} &middot; up {{ health.uptime }}
+    <p v-else-if="health" class="status" :class="health.docker === 'ok' ? 'status--ok' : 'status--error'">
+      Backend {{ health.status }} &middot; up {{ health.uptime }} &middot; docker {{ health.docker }}
     </p>
     <p v-else class="status">Contacting backend&hellip;</p>
   </main>
 </template>
 
 <style scoped>
-.bar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.75rem 1.5rem;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-}
-
-.account {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  color: var(--text-muted);
-}
-
-.account img {
-  border-radius: 50%;
-}
-
-.account button {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  padding: 0.25rem 0.6rem;
-  cursor: pointer;
-}
-
-.account button:hover {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
 .shell {
   max-width: 48rem;
   margin: 3rem auto;

@@ -252,7 +252,7 @@ whenever any response is `401`.
 This milestone comes before anything that touches GitHub or Docker, so no endpoint is
 ever reachable unauthenticated, not even transiently during development.
 
-### M2 — Image management
+### M2 — Image management — **done**
 
 `internal/dockerx`:
 - `Build(ctx, dockerfile, tag string, logs io.Writer) error`: builds an in-memory tar with

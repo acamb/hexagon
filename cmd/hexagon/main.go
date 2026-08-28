@@ -16,6 +16,7 @@ import (
 	"github.com/andrea/hexagon"
 	"github.com/andrea/hexagon/internal/auth"
 	"github.com/andrea/hexagon/internal/config"
+	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/github"
 	"github.com/andrea/hexagon/internal/httpapi"
 	"github.com/andrea/hexagon/internal/store"
@@ -50,7 +51,28 @@ func run() error {
 		log.Info("pruned expired sessions", "count", n)
 	}
 
-	deps, err := buildDeps(cfg, st, log)
+	// Nothing is going to finish a build that was running when we stopped.
+	if n, err := st.FailInterruptedImageBuilds(context.Background()); err != nil {
+		log.Warn("clear interrupted builds", "err", err)
+	} else if n > 0 {
+		log.Info("marked interrupted image builds as failed", "count", n)
+	}
+
+	docker, err := dockerx.New(cfg.DockerHost)
+	if err != nil {
+		return err
+	}
+	defer docker.Close()
+
+	// A daemon that is down right now may come up later, so this is a warning
+	// rather than a startup failure.
+	pingCtx, pingCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	if err := docker.Ping(pingCtx); err != nil {
+		log.Warn("docker is unreachable: images and sessions will not work", "err", err)
+	}
+	pingCancel()
+
+	deps, err := buildDeps(cfg, st, docker, log)
 	if err != nil {
 		return err
 	}
@@ -92,7 +114,7 @@ func run() error {
 // buildDeps wires authentication. Exactly one of the two modes is configured:
 // the GitHub OAuth login, or the development bypass. Neither can be skipped, so
 // the server never starts with an unauthenticated API.
-func buildDeps(cfg *config.Config, st *store.Store, log *slog.Logger) (httpapi.Deps, error) {
+func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slog.Logger) (httpapi.Deps, error) {
 	frontend, err := hexagon.FrontendFS()
 	if err != nil {
 		return httpapi.Deps{}, fmt.Errorf("load frontend: %w", err)
@@ -106,12 +128,14 @@ func buildDeps(cfg *config.Config, st *store.Store, log *slog.Logger) (httpapi.D
 	sessions := auth.NewService(st, cipher, cfg.PublicURL)
 
 	deps := httpapi.Deps{
-		Config:   cfg,
-		Store:    st,
-		Auth:     sessions,
-		GitHub:   gh,
-		Frontend: frontend,
-		Log:      log,
+		Config:         cfg,
+		Store:          st,
+		Auth:           sessions,
+		GitHub:         gh,
+		Docker:         docker,
+		BaseDockerfile: hexagon.BaseDockerfile,
+		Frontend:       frontend,
+		Log:            log,
 	}
 
 	if cfg.DevUser != "" {

@@ -16,3 +16,10 @@ var distFS embed.FS
 func FrontendFS() (fs.FS, error) {
 	return fs.Sub(distFS, "web/dist")
 }
+
+// BaseDockerfile is the reference session image. The UI offers it as the
+// starting point when defining a new image, so the file on disk stays the one
+// source of truth for what a session container needs.
+//
+//go:embed deploy/images/base/Dockerfile
+var BaseDockerfile string

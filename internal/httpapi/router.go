@@ -10,6 +10,7 @@ import (
 
 	"github.com/andrea/hexagon/internal/auth"
 	"github.com/andrea/hexagon/internal/config"
+	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/store"
 )
 
@@ -21,37 +22,44 @@ type Deps struct {
 	// OAuth drives the GitHub login. Nil when the development bypass is active.
 	OAuth *auth.OAuth
 	// Dev is the HEXAGON_DEV_USER bypass. Nil during normal operation.
-	Dev      *auth.DevProvider
-	GitHub   auth.UserFetcher
-	Frontend fs.FS
-	Log      *slog.Logger
+	Dev    *auth.DevProvider
+	GitHub auth.UserFetcher
+	Docker dockerx.API
+	// BaseDockerfile is offered to the UI as the starting point for a new image.
+	BaseDockerfile string
+	Frontend       fs.FS
+	Log            *slog.Logger
 }
 
 // Server carries the dependencies shared by the handlers.
 type Server struct {
-	cfg      *config.Config
-	store    *store.Store
-	auth     *auth.Service
-	oauth    *auth.OAuth
-	dev      *auth.DevProvider
-	github   auth.UserFetcher
-	log      *slog.Logger
-	frontend fs.FS
-	started  time.Time
+	cfg            *config.Config
+	store          *store.Store
+	auth           *auth.Service
+	oauth          *auth.OAuth
+	dev            *auth.DevProvider
+	github         auth.UserFetcher
+	docker         dockerx.API
+	baseDockerfile string
+	log            *slog.Logger
+	frontend       fs.FS
+	started        time.Time
 }
 
 // New builds the router.
 func New(deps Deps) http.Handler {
 	s := &Server{
-		cfg:      deps.Config,
-		store:    deps.Store,
-		auth:     deps.Auth,
-		oauth:    deps.OAuth,
-		dev:      deps.Dev,
-		github:   deps.GitHub,
-		log:      deps.Log,
-		frontend: deps.Frontend,
-		started:  time.Now(),
+		cfg:            deps.Config,
+		store:          deps.Store,
+		auth:           deps.Auth,
+		oauth:          deps.OAuth,
+		dev:            deps.Dev,
+		github:         deps.GitHub,
+		docker:         deps.Docker,
+		baseDockerfile: deps.BaseDockerfile,
+		log:            deps.Log,
+		frontend:       deps.Frontend,
+		started:        time.Now(),
 	}
 
 	mux := http.NewServeMux()
@@ -62,8 +70,19 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("GET /api/auth/callback", s.handleAuthCallback)
 
 	// Authenticated.
-	mux.Handle("GET /api/auth/me", s.requireAuth(http.HandlerFunc(s.handleAuthMe)))
-	mux.Handle("POST /api/auth/logout", s.requireAuth(http.HandlerFunc(s.handleAuthLogout)))
+	protected := map[string]http.HandlerFunc{
+		"GET /api/auth/me":         s.handleAuthMe,
+		"POST /api/auth/logout":    s.handleAuthLogout,
+		"GET /api/images":          s.handleListImages,
+		"POST /api/images":         s.handleCreateImage,
+		"GET /api/images/template": s.handleImageTemplate,
+		"GET /api/images/{id}":     s.handleGetImage,
+		"GET /api/images/{id}/log": s.handleImageLog,
+		"DELETE /api/images/{id}":  s.handleDeleteImage,
+	}
+	for pattern, handler := range protected {
+		mux.Handle(pattern, s.requireAuth(handler))
+	}
 
 	// Unknown API routes must answer as API routes; without this they would
 	// fall through to the SPA and return index.html with a 200.
@@ -81,6 +100,12 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	body := map[string]any{
 		"status": "ok",
 		"uptime": time.Since(s.started).Round(time.Second).String(),
+		"docker": "ok",
+	}
+	if err := s.docker.Ping(r.Context()); err != nil {
+		// Not fatal: the server is still useful, and the UI can explain why
+		// images and sessions are unavailable.
+		body["docker"] = "unreachable"
 	}
 	if err := s.store.Ping(); err != nil {
 		body["status"] = "degraded"

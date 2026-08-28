@@ -40,6 +40,7 @@ type testEnv struct {
 	store  *store.Store
 	auth   *auth.Service
 	github *fakeGitHub
+	docker *fakeDocker
 }
 
 // newTestEnv builds a server with the GitHub login wired to stubs, plus a
@@ -69,6 +70,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	cfg := &config.Config{Addr: "127.0.0.1:0", PublicURL: "http://127.0.0.1:8080"}
 	sessions := auth.NewService(st, cipher, cfg.PublicURL)
 	gh := &fakeGitHub{user: &github.User{Login: "alice", ID: 42, AvatarURL: "https://example.test/a.png"}}
+	docker := newFakeDocker()
 
 	oauth, err := auth.NewOAuth(auth.OAuthConfig{
 		ClientID:     "client",
@@ -82,13 +84,15 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	}
 
 	handler := New(Deps{
-		Config:   cfg,
-		Store:    st,
-		Auth:     sessions,
-		OAuth:    oauth,
-		GitHub:   gh,
-		Frontend: fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}},
-		Log:      slog.New(slog.DiscardHandler),
+		Config:         cfg,
+		Store:          st,
+		Auth:           sessions,
+		OAuth:          oauth,
+		GitHub:         gh,
+		Docker:         docker,
+		BaseDockerfile: "FROM scratch\n",
+		Frontend:       fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}},
+		Log:            slog.New(slog.DiscardHandler),
 	})
 
 	server := httptest.NewServer(handler)
@@ -104,10 +108,24 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		store:  st,
 		auth:   sessions,
 		github: gh,
+		docker: docker,
 		client: &http.Client{
 			Jar:           jar,
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
+	}
+}
+
+// signIn completes a login so the client holds a session cookie.
+func (e *testEnv) signIn() {
+	e.t.Helper()
+	state := e.startLogin()
+	resp := e.do(http.MethodGet, "/api/auth/callback?code=abc&state="+url.QueryEscape(state), nil)
+	if resp.StatusCode != http.StatusFound {
+		e.t.Fatalf("sign in: callback status = %d", resp.StatusCode)
+	}
+	if e.sessionCookie() == nil {
+		e.t.Fatal("sign in did not produce a session")
 	}
 }
 
