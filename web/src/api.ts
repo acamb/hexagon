@@ -77,11 +77,26 @@ export interface NewImage {
   registryRef?: string
 }
 
+export interface Session {
+  id: string
+  title: string
+  repoFullName: string
+  branch: string
+  imageRef: string
+  status: 'creating' | 'cloning' | 'starting' | 'running' | 'stopped' | 'failed' | 'gone'
+  error?: string
+  createdAt: string
+}
+
 export const api = {
   health: () => request<Health>('/health'),
   me: () => request<CurrentUser>('/auth/me'),
   logout: () => request<{ status: string }>('/auth/logout', { method: 'POST' }),
   loginUrl: '/api/auth/login',
+
+  sessions: {
+    get: (id: string) => request<Session>(`/sessions/${id}`),
+  },
 
   images: {
     list: () => request<Image[]>('/images'),

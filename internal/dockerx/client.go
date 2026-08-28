@@ -12,6 +12,10 @@ import (
 	"github.com/docker/docker/client"
 )
 
+// WorkspaceMount is where a session's repository clone appears inside its
+// container. The image does not define it: the clone is bind mounted here.
+const WorkspaceMount = "/workspace"
+
 // API is the slice of the Docker Engine API Hexagon needs. It grows with each
 // milestone; today it covers base images.
 type API interface {
@@ -23,6 +27,12 @@ type API interface {
 	PullImage(ctx context.Context, ref string, logs io.Writer) error
 	// RemoveImage deletes a local image.
 	RemoveImage(ctx context.Context, ref string) error
+
+	// AttachExec runs an interactive command in a container and returns the
+	// attached streams.
+	AttachExec(ctx context.Context, req ExecRequest) (*Exec, error)
+	// ResizeExec updates the geometry of a running exec's TTY.
+	ResizeExec(ctx context.Context, execID string, size TerminalSize) error
 }
 
 // Client talks to a Docker daemon.

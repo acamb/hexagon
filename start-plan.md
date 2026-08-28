@@ -356,7 +356,7 @@ Endpoints: `POST /api/sessions`, `GET /api/sessions`, `GET /api/sessions/{id}`,
 `DELETE /api/sessions/{id}?purge=true|false` (with `purge`, the workspace directory is
 removed as well). All scoped to the authenticated user.
 
-### M5 — Terminal
+### M5 — Terminal — **done**
 
 Backend `internal/httpapi/terminal.go` — `GET /api/sessions/{id}/terminal` (WS upgrade,
 behind `RequireAuth`, with the `Origin` check):
@@ -378,9 +378,13 @@ Frontend `components/TerminalPane.vue`: `@xterm/xterm` with `FitAddon`, a `Resiz
 that sends the `resize` message (100ms debounce), and automatic reconnection with backoff
 on close.
 
-Accepted MVP limitation: tmux sizes to the smallest attached client, so two browsers with
-different window sizes see the smaller geometry. That is standard tmux behaviour; no
-workaround in the MVP.
+Implementation note, decided while building: the attach command is
+`tmux new-session -A -D`. Docker does not kill an exec'd process when its connection
+closes, so without `-D` every closed tab left a tmux client attached for ever — and since
+tmux sizes a window to its smallest client, one stale 80x24 client shrinks the terminal
+for the live one. `-D` detaches whatever was attached before, which keeps the container
+clean and removes the smallest-client problem. The cost, accepted: a second tab takes the
+terminal over from the first rather than watching alongside it.
 
 ### M6 — Frontend and polish
 

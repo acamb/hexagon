@@ -3,9 +3,12 @@
 package httpapi
 
 import (
+	"bufio"
 	"context"
+	"fmt"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"time"
 
@@ -92,6 +95,9 @@ func New(deps Deps) http.Handler {
 		"GET /api/images/{id}/log": s.handleImageLog,
 		"DELETE /api/images/{id}":  s.handleDeleteImage,
 		"GET /api/github/repos":    s.handleListRepos,
+
+		"GET /api/sessions/{id}":          s.handleGetSession,
+		"GET /api/sessions/{id}/terminal": s.handleTerminal,
 	}
 	for pattern, handler := range protected {
 		mux.Handle(pattern, s.requireAuth(handler))
@@ -149,6 +155,22 @@ type statusRecorder struct {
 	http.ResponseWriter
 	status      int
 	wroteHeader bool
+}
+
+// Unwrap exposes the real ResponseWriter to http.ResponseController, so
+// flushing and deadlines still reach it through this wrapper.
+func (r *statusRecorder) Unwrap() http.ResponseWriter { return r.ResponseWriter }
+
+// Hijack keeps WebSocket upgrades working. Without it this wrapper hides the
+// underlying http.Hijacker and the terminal handshake fails with 501.
+func (r *statusRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	hijacker, ok := r.ResponseWriter.(http.Hijacker)
+	if !ok {
+		return nil, nil, fmt.Errorf("httpapi: the response writer does not support hijacking")
+	}
+	// From here the connection is ours; nothing more will write a status.
+	r.wroteHeader = true
+	return hijacker.Hijack()
 }
 
 func (r *statusRecorder) WriteHeader(status int) {

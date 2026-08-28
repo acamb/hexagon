@@ -5,24 +5,34 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/store"
 )
 
-// fakeDocker records what the handlers ask of the daemon.
+// fakeDocker records what the handlers ask of the daemon. For exec it hands
+// back one end of a pipe, so a test can play the part of the container.
 type fakeDocker struct {
-	mu       sync.Mutex
-	pingErr  error
-	buildErr error
-	pullErr  error
-	built    []string
-	pulled   []string
-	removed  []string
+	mu        sync.Mutex
+	pingErr   error
+	buildErr  error
+	pullErr   error
+	attachErr error
+	built     []string
+	pulled    []string
+	removed   []string
+
+	execRequests []dockerx.ExecRequest
+	resizes      []dockerx.TerminalSize
+	// container is the far end of the attached exec: writing to it is output
+	// from the container, reading from it is what the user typed.
+	container net.Conn
 }
 
 func newFakeDocker() *fakeDocker { return &fakeDocker{} }
@@ -58,6 +68,55 @@ func (f *fakeDocker) RemoveImage(_ context.Context, ref string) error {
 	defer f.mu.Unlock()
 	f.removed = append(f.removed, ref)
 	return nil
+}
+
+func (f *fakeDocker) AttachExec(_ context.Context, req dockerx.ExecRequest) (*dockerx.Exec, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.attachErr != nil {
+		return nil, f.attachErr
+	}
+	f.execRequests = append(f.execRequests, req)
+
+	local, remote := net.Pipe()
+	f.container = remote
+	return &dockerx.Exec{
+		ID:     fmt.Sprintf("exec-%d", len(f.execRequests)),
+		Conn:   local,
+		Output: local,
+		Closer: local,
+	}, nil
+}
+
+func (f *fakeDocker) ResizeExec(_ context.Context, _ string, size dockerx.TerminalSize) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resizes = append(f.resizes, size)
+	return nil
+}
+
+// containerSide waits for the handler to attach and returns the pipe end that
+// stands in for the container.
+func (f *fakeDocker) containerSide(t *testing.T) net.Conn {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		f.mu.Lock()
+		conn := f.container
+		f.mu.Unlock()
+		if conn != nil {
+			return conn
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("the handler never attached to the container")
+	return nil
+}
+
+func (f *fakeDocker) execs() ([]dockerx.ExecRequest, []dockerx.TerminalSize) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]dockerx.ExecRequest(nil), f.execRequests...), append([]dockerx.TerminalSize(nil), f.resizes...)
 }
 
 func (f *fakeDocker) calls() (built, pulled, removed []string) {
