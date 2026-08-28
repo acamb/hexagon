@@ -4,3 +4,4 @@ bin/
 *.db-wal
 .env
 /.idea/hexagon.iml
+/config.json

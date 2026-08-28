@@ -1,0 +1,34 @@
+{
+  "addr": "127.0.0.1:8080",
+  "publicUrl": "http://localhost:5173",
+  "dataDir": "~/.local/share/hexagon",
+  "workspaceRoot": "",
+  "secretKey": "",
+  "debug": false,
+
+  "github": {
+    "clientId": "Iv23li...",
+    "clientSecret": "",
+    "allowedUsers": ["your-github-login"],
+    "apiUrl": ""
+  },
+
+  "claude": {
+    "credentials": "~/.claude/.credentials.json",
+    "anthropicApiKey": ""
+  },
+
+  "git": {
+    "userName": "",
+    "userEmail": ""
+  },
+
+  "docker": {
+    "host": ""
+  },
+
+  "dev": {
+    "user": "",
+    "githubToken": ""
+  }
+}

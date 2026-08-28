@@ -1,13 +1,20 @@
-// Package config loads Hexagon's runtime configuration from the environment.
+// Package config loads Hexagon's runtime configuration from a JSON file and the
+// environment.
 //
 // Every setting has a usable default for a single-user setup on a developer
-// machine. Anything security-sensitive fails closed: the listen address is
-// loopback unless overridden, and generated secrets are written with 0600.
+// machine, and can be given either in the configuration file or as an
+// environment variable: defaults first, then the file, then the environment,
+// which wins so that a one-off override stays a one-off override. Anything
+// security-sensitive fails closed: the listen address is loopback unless
+// overridden, generated secrets are written with 0600, and the configuration
+// file is rejected when it is readable by anyone else.
 package config
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -17,77 +24,138 @@ import (
 
 // Config holds the resolved configuration for one server process.
 type Config struct {
+	// ConfigFile is the file the settings were read from, empty when none was
+	// found. It is here so the process can report where it was configured from.
+	ConfigFile string
+
 	// HTTP
-	Addr      string // HEXAGON_ADDR
-	PublicURL string // HEXAGON_PUBLIC_URL, used for OAuth callbacks and Origin checks
+	Addr      string // HEXAGON_ADDR, addr
+	PublicURL string // HEXAGON_PUBLIC_URL, publicUrl: used for OAuth callbacks and Origin checks
 
 	// Storage
-	DataDir       string // HEXAGON_DATA_DIR
-	WorkspaceRoot string // HEXAGON_WORKSPACE_ROOT, parent of every session workspace
+	DataDir       string // HEXAGON_DATA_DIR, dataDir
+	WorkspaceRoot string // HEXAGON_WORKSPACE_ROOT, workspaceRoot: parent of every session workspace
 	DatabasePath  string // derived: <DataDir>/hexagon.db
 
 	// GitHub OAuth
-	GitHubClientID     string   // HEXAGON_GITHUB_CLIENT_ID
-	GitHubClientSecret string   // HEXAGON_GITHUB_CLIENT_SECRET
-	AllowedUsers       []string // HEXAGON_ALLOWED_USERS, comma separated GitHub logins
+	GitHubClientID     string   // HEXAGON_GITHUB_CLIENT_ID, github.clientId
+	GitHubClientSecret string   // HEXAGON_GITHUB_CLIENT_SECRET, github.clientSecret
+	AllowedUsers       []string // HEXAGON_ALLOWED_USERS, github.allowedUsers
 	// GitHubAPIURL overrides api.github.com. It is there for GitHub Enterprise,
 	// and for pointing a development instance at a stub.
-	GitHubAPIURL string // HEXAGON_GITHUB_API_URL
+	GitHubAPIURL string // HEXAGON_GITHUB_API_URL, github.apiUrl
 
 	// Development bypass. When DevUser is set the server skips OAuth and treats
 	// every request as that user, authenticating to GitHub with DevGitHubToken.
-	DevUser        string // HEXAGON_DEV_USER
-	DevGitHubToken string // HEXAGON_GITHUB_TOKEN
+	DevUser        string // HEXAGON_DEV_USER, dev.user
+	DevGitHubToken string // HEXAGON_GITHUB_TOKEN, dev.githubToken
 
 	// SecretKey seals GitHub tokens at rest. 32 bytes.
-	SecretKey []byte // HEXAGON_SECRET_KEY, else <DataDir>/secret.key
+	SecretKey []byte // HEXAGON_SECRET_KEY, secretKey, else <DataDir>/secret.key
 
 	// Claude Code credentials handed to session containers.
-	ClaudeCredentials string // HEXAGON_CLAUDE_CREDENTIALS, empty disables the mount
-	AnthropicAPIKey   string // ANTHROPIC_API_KEY
+	ClaudeCredentials string // HEXAGON_CLAUDE_CREDENTIALS, claude.credentials: empty disables the mount
+	AnthropicAPIKey   string // ANTHROPIC_API_KEY, claude.anthropicApiKey
 
 	// Git identity used for clones and for commits made inside containers.
-	GitUserName  string // HEXAGON_GIT_USER_NAME
-	GitUserEmail string // HEXAGON_GIT_USER_EMAIL
+	GitUserName  string // HEXAGON_GIT_USER_NAME, git.userName
+	GitUserEmail string // HEXAGON_GIT_USER_EMAIL, git.userEmail
 
 	// Docker
-	DockerHost string // DOCKER_HOST, empty means the SDK default
+	DockerHost string // DOCKER_HOST, docker.host: empty means the SDK default
+
+	// Debug turns on debug level logging.
+	Debug bool // HEXAGON_DEBUG, debug
 }
 
 const secretKeyLen = 32
 
-// Load reads the environment, creates the data directories and resolves the
-// secret key, generating one on first run.
-func Load() (*Config, error) {
+// file mirrors the configuration file. Keys are camelCase, as in the HTTP API,
+// and grouped the way Config is. A zero value means "not set", so the layer
+// below shows through; claude.credentials is a pointer because for that one
+// setting an explicit empty string is itself a value.
+type file struct {
+	Addr          string `json:"addr"`
+	PublicURL     string `json:"publicUrl"`
+	DataDir       string `json:"dataDir"`
+	WorkspaceRoot string `json:"workspaceRoot"`
+	SecretKey     string `json:"secretKey"`
+	Debug         bool   `json:"debug"`
+
+	GitHub struct {
+		ClientID     string   `json:"clientId"`
+		ClientSecret string   `json:"clientSecret"`
+		AllowedUsers []string `json:"allowedUsers"`
+		APIURL       string   `json:"apiUrl"`
+	} `json:"github"`
+
+	Claude struct {
+		Credentials     *string `json:"credentials"`
+		AnthropicAPIKey string  `json:"anthropicApiKey"`
+	} `json:"claude"`
+
+	Git struct {
+		UserName  string `json:"userName"`
+		UserEmail string `json:"userEmail"`
+	} `json:"git"`
+
+	Docker struct {
+		Host string `json:"host"`
+	} `json:"docker"`
+
+	Dev struct {
+		User        string `json:"user"`
+		GitHubToken string `json:"githubToken"`
+	} `json:"dev"`
+}
+
+// Load resolves the configuration, creates the data directories and resolves
+// the secret key, generating one on first run.
+//
+// path is the file named on the command line; when it is empty the file is
+// looked for at HEXAGON_CONFIG and then at the default location, and running
+// without one is fine.
+func Load(path string) (*Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve home directory: %w", err)
 	}
 
-	dataDir := env("HEXAGON_DATA_DIR", filepath.Join(home, ".local", "share", "hexagon"))
+	f, from, err := loadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	dataDir := expandHome(home, pick("HEXAGON_DATA_DIR", f.DataDir, filepath.Join(home, ".local", "share", "hexagon")))
 	cfg := &Config{
-		Addr:      env("HEXAGON_ADDR", "127.0.0.1:8080"),
-		PublicURL: strings.TrimRight(env("HEXAGON_PUBLIC_URL", "http://127.0.0.1:8080"), "/"),
+		ConfigFile: from,
+
+		Addr:      pick("HEXAGON_ADDR", f.Addr, "127.0.0.1:8080"),
+		PublicURL: strings.TrimRight(pick("HEXAGON_PUBLIC_URL", f.PublicURL, "http://127.0.0.1:8080"), "/"),
 
 		DataDir:       dataDir,
-		WorkspaceRoot: env("HEXAGON_WORKSPACE_ROOT", filepath.Join(dataDir, "workspaces")),
+		WorkspaceRoot: expandHome(home, pick("HEXAGON_WORKSPACE_ROOT", f.WorkspaceRoot, filepath.Join(dataDir, "workspaces"))),
 		DatabasePath:  filepath.Join(dataDir, "hexagon.db"),
 
-		GitHubClientID:     os.Getenv("HEXAGON_GITHUB_CLIENT_ID"),
-		GitHubClientSecret: os.Getenv("HEXAGON_GITHUB_CLIENT_SECRET"),
-		AllowedUsers:       splitList(os.Getenv("HEXAGON_ALLOWED_USERS")),
-		GitHubAPIURL:       os.Getenv("HEXAGON_GITHUB_API_URL"),
+		GitHubClientID:     pick("HEXAGON_GITHUB_CLIENT_ID", f.GitHub.ClientID, ""),
+		GitHubClientSecret: pick("HEXAGON_GITHUB_CLIENT_SECRET", f.GitHub.ClientSecret, ""),
+		AllowedUsers:       allowedUsers(f.GitHub.AllowedUsers),
+		GitHubAPIURL:       pick("HEXAGON_GITHUB_API_URL", f.GitHub.APIURL, ""),
 
-		DevUser:        os.Getenv("HEXAGON_DEV_USER"),
-		DevGitHubToken: os.Getenv("HEXAGON_GITHUB_TOKEN"),
+		DevUser:        pick("HEXAGON_DEV_USER", f.Dev.User, ""),
+		DevGitHubToken: pick("HEXAGON_GITHUB_TOKEN", f.Dev.GitHubToken, ""),
 
-		ClaudeCredentials: env("HEXAGON_CLAUDE_CREDENTIALS", filepath.Join(home, ".claude", ".credentials.json")),
-		AnthropicAPIKey:   os.Getenv("ANTHROPIC_API_KEY"),
+		ClaudeCredentials: expandHome(home, claudeCredentials(f, home)),
+		AnthropicAPIKey:   pick("ANTHROPIC_API_KEY", f.Claude.AnthropicAPIKey, ""),
 
-		GitUserName:  os.Getenv("HEXAGON_GIT_USER_NAME"),
-		GitUserEmail: os.Getenv("HEXAGON_GIT_USER_EMAIL"),
+		GitUserName:  pick("HEXAGON_GIT_USER_NAME", f.Git.UserName, ""),
+		GitUserEmail: pick("HEXAGON_GIT_USER_EMAIL", f.Git.UserEmail, ""),
 
-		DockerHost: os.Getenv("DOCKER_HOST"),
+		DockerHost: pick("DOCKER_HOST", f.Docker.Host, ""),
+
+		// The variable has never carried a value, only a presence, so it can
+		// turn debug logging on but not off again.
+		Debug: os.Getenv("HEXAGON_DEBUG") != "" || f.Debug,
 	}
 
 	for _, dir := range []string{cfg.DataDir, cfg.WorkspaceRoot} {
@@ -96,20 +164,77 @@ func Load() (*Config, error) {
 		}
 	}
 
-	cfg.SecretKey, err = loadSecretKey(filepath.Join(cfg.DataDir, "secret.key"))
+	cfg.SecretKey, err = loadSecretKey(filepath.Join(cfg.DataDir, "secret.key"),
+		pick("HEXAGON_SECRET_KEY", f.SecretKey, ""))
 	if err != nil {
 		return nil, err
 	}
 	return cfg, nil
 }
 
-// loadSecretKey returns the key from HEXAGON_SECRET_KEY, falling back to path
-// and generating a fresh key there when the file does not exist yet.
-func loadSecretKey(path string) ([]byte, error) {
-	if raw := os.Getenv("HEXAGON_SECRET_KEY"); raw != "" {
-		key, err := decodeKey(raw)
+// loadFile reads the configuration file and reports which one it was.
+//
+// A file the user named explicitly must exist: ignoring a path someone asked for
+// would start a server configured by accident. The default location is
+// optional, so a machine that has never had a configuration file keeps behaving
+// exactly as it did.
+func loadFile(path string) (*file, string, error) {
+	explicit := path != ""
+	if path == "" {
+		if path = os.Getenv("HEXAGON_CONFIG"); path != "" {
+			explicit = true
+		}
+	}
+	if path == "" {
+		// Not under DataDir: the file is what sets DataDir, so looking for it
+		// there would be circular.
+		dir, err := os.UserConfigDir()
 		if err != nil {
-			return nil, fmt.Errorf("HEXAGON_SECRET_KEY: %w", err)
+			return &file{}, "", nil
+		}
+		path = filepath.Join(dir, "hexagon", "config.json")
+	}
+
+	info, err := os.Stat(path)
+	switch {
+	case errors.Is(err, os.ErrNotExist) && !explicit:
+		return &file{}, "", nil
+	case errors.Is(err, os.ErrNotExist):
+		return nil, "", fmt.Errorf("configuration file %s does not exist", path)
+	case err != nil:
+		return nil, "", fmt.Errorf("configuration file %s: %w", path, err)
+	}
+
+	// It can hold the OAuth client secret, an API key and the key that seals
+	// stored GitHub tokens, so it is held to the standard of the files Hexagon
+	// writes itself.
+	if perm := info.Mode().Perm(); perm&0o077 != 0 {
+		return nil, "", fmt.Errorf("configuration file %s is readable by other users (mode %04o): chmod 600 it", path, perm)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, "", fmt.Errorf("read %s: %w", path, err)
+	}
+
+	var f file
+	dec := json.NewDecoder(bytes.NewReader(data))
+	// A misspelled key would otherwise be dropped in silence, and a dropped
+	// allowedUsers is an authentication bypass.
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&f); err != nil {
+		return nil, "", fmt.Errorf("parse %s: %w", path, err)
+	}
+	return &f, path, nil
+}
+
+// loadSecretKey returns the configured key, falling back to path and generating
+// a fresh key there when the file does not exist yet.
+func loadSecretKey(path, configured string) ([]byte, error) {
+	if configured != "" {
+		key, err := decodeKey(configured)
+		if err != nil {
+			return nil, fmt.Errorf("secret key: %w", err)
 		}
 		return key, nil
 	}
@@ -147,11 +272,58 @@ func decodeKey(raw string) ([]byte, error) {
 	return key, nil
 }
 
-func env(key, def string) string {
+// pick resolves one setting: the environment variable if it carries a value,
+// then the configuration file, then the default.
+func pick(key, fromFile, def string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
 	}
+	if fromFile != "" {
+		return fromFile
+	}
 	return def
+}
+
+// allowedUsers reads the allowlist from whichever layer supplies one. The
+// environment carries it as a comma-separated string, the file as a JSON array.
+func allowedUsers(fromFile []string) []string {
+	if raw := os.Getenv("HEXAGON_ALLOWED_USERS"); raw != "" {
+		return splitList(raw)
+	}
+	var out []string
+	for _, login := range fromFile {
+		if login = strings.TrimSpace(login); login != "" {
+			out = append(out, login)
+		}
+	}
+	return out
+}
+
+// claudeCredentials resolves the file bind mounted into session containers.
+// Unlike every other setting an empty value means something here — no mount at
+// all — so both layers have to be able to say it: LookupEnv rather than Getenv,
+// and a pointer in the configuration file.
+func claudeCredentials(f *file, home string) string {
+	if v, ok := os.LookupEnv("HEXAGON_CLAUDE_CREDENTIALS"); ok {
+		return v
+	}
+	if f.Claude.Credentials != nil {
+		return *f.Claude.Credentials
+	}
+	return filepath.Join(home, ".claude", ".credentials.json")
+}
+
+// expandHome resolves a leading ~. A hand-written configuration file is exactly
+// where one gets typed, and without this os.MkdirAll would cheerfully create a
+// directory named "~".
+func expandHome(home, path string) string {
+	switch {
+	case path == "~":
+		return home
+	case strings.HasPrefix(path, "~/"):
+		return filepath.Join(home, path[2:])
+	}
+	return path
 }
 
 func splitList(raw string) []string {

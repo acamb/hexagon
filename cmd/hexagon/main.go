@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -26,18 +27,26 @@ import (
 const shutdownTimeout = 10 * time.Second
 
 func main() {
-	if err := run(); err != nil {
+	configPath := flag.String("config", "", "path to a JSON configuration file")
+	flag.Parse()
+
+	if err := run(*configPath); err != nil {
 		fmt.Fprintln(os.Stderr, "hexagon:", err)
 		os.Exit(1)
 	}
 }
 
-func run() error {
-	log := newLogger()
-
-	cfg, err := config.Load()
+func run(configPath string) error {
+	// The configuration comes first because it decides how verbose the logger
+	// is. Nothing before this point can fail in a way worth logging: a Load
+	// error goes to stderr on its own.
+	cfg, err := config.Load(configPath)
 	if err != nil {
 		return err
+	}
+	log := newLogger(cfg.Debug)
+	if cfg.ConfigFile != "" {
+		log.Info("configuration loaded", "file", cfg.ConfigFile)
 	}
 
 	st, err := store.Open(cfg.DatabasePath)
@@ -175,7 +184,7 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		if err != nil {
 			return httpapi.Deps{}, err
 		}
-		log.Warn("HEXAGON_DEV_USER is set: authentication is bypassed", "user", cfg.DevUser)
+		log.Warn("the development bypass is configured: authentication is skipped", "user", cfg.DevUser)
 		deps.Dev = dev
 		return deps, nil
 	}
@@ -194,10 +203,10 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 	return deps, nil
 }
 
-// newLogger returns a text logger at debug level when HEXAGON_DEBUG is set.
-func newLogger() *slog.Logger {
+// newLogger returns a text logger, at debug level when debug logging is on.
+func newLogger(debug bool) *slog.Logger {
 	level := slog.LevelInfo
-	if os.Getenv("HEXAGON_DEBUG") != "" {
+	if debug {
 		level = slog.LevelDebug
 	}
 	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))

@@ -43,6 +43,18 @@ GitHub compares it verbatim against the `redirect_uri` the server sends.
 
 ### 2. Configure and run
 
+Either put the values in a configuration file:
+
+```sh
+mkdir -p ~/.config/hexagon
+install -m 600 config.example.json ~/.config/hexagon/config.json
+$EDITOR ~/.config/hexagon/config.json     # clientId, clientSecret, allowedUsers
+
+make dev
+```
+
+or export them:
+
 ```sh
 export HEXAGON_GITHUB_CLIENT_ID=Iv23li...
 export HEXAGON_GITHUB_CLIENT_SECRET=...
@@ -101,28 +113,55 @@ removes the container, and removes the clone on disk only if you tick the box.
 
 ## Configuration
 
-Everything is read from the environment. Defaults suit a single user on a
-developer machine.
+Every setting can come from a JSON configuration file or from the environment,
+and has a default that suits a single user on a developer machine.
 
-| Variable | Default | |
-|---|---|---|
-| `HEXAGON_ADDR` | `127.0.0.1:8080` | Listen address |
-| `HEXAGON_PUBLIC_URL` | `http://127.0.0.1:8080` | Origin the browser uses; OAuth callbacks and the origin check derive from it |
-| `HEXAGON_DATA_DIR` | `~/.local/share/hexagon` | Database and secret key |
-| `HEXAGON_WORKSPACE_ROOT` | `<data dir>/workspaces` | One directory per session, holding the repository clone |
-| `HEXAGON_GITHUB_CLIENT_ID` | — | Required |
-| `HEXAGON_GITHUB_CLIENT_SECRET` | — | Required |
-| `HEXAGON_ALLOWED_USERS` | — | Required. Comma-separated GitHub logins allowed to sign in |
-| `HEXAGON_GITHUB_API_URL` | `https://api.github.com` | Override for GitHub Enterprise, or a stub in development |
-| `HEXAGON_SECRET_KEY` | `<data dir>/secret.key` | 32 bytes, base64. Generated on first run |
-| `HEXAGON_DEV_USER` | — | Development bypass, see below |
-| `HEXAGON_GITHUB_TOKEN` | — | Personal access token used by the bypass |
-| `HEXAGON_DEBUG` | — | Set to anything for debug logging |
-| `HEXAGON_CLAUDE_CREDENTIALS` | `~/.claude/.credentials.json` | Mounted read-only into session containers (from M4). Empty disables the mount |
-| `ANTHROPIC_API_KEY` | — | Injected into session containers instead of the credentials mount (from M4) |
-| `HEXAGON_GIT_USER_NAME` | — | Git identity for clones and container commits (from M3) |
-| `HEXAGON_GIT_USER_EMAIL` | — | |
-| `DOCKER_HOST` | SDK default | Docker Engine endpoint (from M2) |
+| Variable | File key | Default | |
+|---|---|---|---|
+| `HEXAGON_CONFIG` | — | `~/.config/hexagon/config.json` | Where the configuration file is; `-config <path>` overrides it |
+| `HEXAGON_ADDR` | `addr` | `127.0.0.1:8080` | Listen address |
+| `HEXAGON_PUBLIC_URL` | `publicUrl` | `http://127.0.0.1:8080` | Origin the browser uses; OAuth callbacks and the origin check derive from it |
+| `HEXAGON_DATA_DIR` | `dataDir` | `~/.local/share/hexagon` | Database and secret key |
+| `HEXAGON_WORKSPACE_ROOT` | `workspaceRoot` | `<data dir>/workspaces` | One directory per session, holding the repository clone |
+| `HEXAGON_GITHUB_CLIENT_ID` | `github.clientId` | — | Required |
+| `HEXAGON_GITHUB_CLIENT_SECRET` | `github.clientSecret` | — | Required |
+| `HEXAGON_ALLOWED_USERS` | `github.allowedUsers` | — | Required. GitHub logins allowed to sign in: comma-separated in the environment, a JSON array in the file |
+| `HEXAGON_GITHUB_API_URL` | `github.apiUrl` | `https://api.github.com` | Override for GitHub Enterprise, or a stub in development |
+| `HEXAGON_SECRET_KEY` | `secretKey` | `<data dir>/secret.key` | 32 bytes, base64. Generated on first run |
+| `HEXAGON_DEV_USER` | `dev.user` | — | Development bypass, see below |
+| `HEXAGON_GITHUB_TOKEN` | `dev.githubToken` | — | Personal access token used by the bypass |
+| `HEXAGON_DEBUG` | `debug` | — | Set to anything for debug logging |
+| `HEXAGON_CLAUDE_CREDENTIALS` | `claude.credentials` | `~/.claude/.credentials.json` | Mounted read-only into session containers (from M4). Empty disables the mount |
+| `ANTHROPIC_API_KEY` | `claude.anthropicApiKey` | — | Injected into session containers instead of the credentials mount (from M4) |
+| `HEXAGON_GIT_USER_NAME` | `git.userName` | — | Git identity for clones and container commits (from M3) |
+| `HEXAGON_GIT_USER_EMAIL` | `git.userEmail` | — | |
+| `DOCKER_HOST` | `docker.host` | SDK default | Docker Engine endpoint (from M2) |
+
+### The configuration file
+
+[config.example.json](config.example.json) is a complete one; copy it to
+`~/.config/hexagon/config.json`, or keep it anywhere and point `-config` at it.
+The server looks for `-config`, then `HEXAGON_CONFIG`, then the default path. A
+file named by either of the first two must exist — ignoring a path you asked for
+would start the server configured by accident — while the default location is
+optional, so no file at all means the environment and the defaults, as before.
+
+Four things are worth knowing:
+
+- **The environment wins over the file**, which wins over the defaults. That
+  keeps `make dev` working over whatever file you have, and a one-off override a
+  one-off override. An unset variable is not a value and overrides nothing.
+- **The file must not be readable by anyone else.** It can hold the OAuth client
+  secret, an API key and the key that seals stored GitHub tokens, so the server
+  refuses to start on anything looser than `chmod 600`.
+- **An unknown key is an error.** A misspelled `allowedUsers` that was quietly
+  ignored would be an empty allowlist, which is to say an authentication bypass.
+- **A leading `~` is expanded** in `dataDir`, `workspaceRoot` and
+  `claude.credentials`.
+
+Values that are `""` or absent fall through to the layer below, with one
+exception: `claude.credentials` set to `""` means *no credentials mount*, which
+is how you tell a session to use `anthropicApiKey` instead.
 
 The server refuses to start without a client id, a client secret and a non-empty
 allowlist. That is deliberate: it drives the Docker socket and holds GitHub
@@ -130,7 +169,8 @@ credentials, so an unauthenticated instance is a root shell on this machine.
 
 ### Development bypass
 
-To work on the UI without registering an OAuth App:
+To work on the UI without registering an OAuth App (`dev.user` and
+`dev.githubToken` in the file do the same thing):
 
 ```sh
 export HEXAGON_DEV_USER=your-github-login
