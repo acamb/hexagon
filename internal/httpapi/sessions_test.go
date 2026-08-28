@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -363,4 +364,40 @@ func contains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// Claude Code keeps its "already set up" state in $HOME/.claude.json, not in
+// the credentials file. Without it every session opens on first-run onboarding,
+// which reads to the user as being asked to sign in again.
+func TestSessionSeedsTheClaudeConfig(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions",
+		fmt.Sprintf(`{"repoFullName":"acme/widgets","imageId":%q}`, image.ID)), &created)
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	body, err := os.ReadFile(filepath.Join(env.workspaces, created.ID, "home", ".claude.json"))
+	if err != nil {
+		t.Fatalf("the session has no Claude Code config: %v", err)
+	}
+
+	var config struct {
+		HasCompletedOnboarding bool `json:"hasCompletedOnboarding"`
+		Projects               map[string]struct {
+			HasTrustDialogAccepted bool `json:"hasTrustDialogAccepted"`
+		} `json:"projects"`
+	}
+	if err := json.Unmarshal(body, &config); err != nil {
+		t.Fatalf("the config is not valid JSON: %v", err)
+	}
+	if !config.HasCompletedOnboarding {
+		t.Error("onboarding is not marked complete, so the session opens on the first-run flow")
+	}
+	if !config.Projects[dockerx.WorkspaceMount].HasTrustDialogAccepted {
+		t.Errorf("/workspace is not trusted, so the session opens on the folder prompt: %s", body)
+	}
 }

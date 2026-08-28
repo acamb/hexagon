@@ -20,7 +20,7 @@ milestone.
 | M3 — repository listing and cloning | done |
 | M4 — session containers | done |
 | M5 — browser terminal | done |
-| M6 — frontend and polish | not started |
+| M6 — frontend and polish | done |
 
 ## Requirements
 
@@ -70,6 +70,35 @@ make build && ./bin/hexagon
 The binary serves the built frontend itself on `http://127.0.0.1:8080`. Set
 `HEXAGON_PUBLIC_URL` to the same address and register a matching OAuth callback.
 
+## Using it
+
+**Images** — a session runs in a container built from a base image you register on the
+Images page, either from a Dockerfile or by pulling a registry reference. An image must
+provide `git`, `tmux` and `claude` on the `PATH`, and a long-running `CMD`; the one in
+[deploy/images/base/Dockerfile](deploy/images/base/Dockerfile) is offered as the starting
+point and is the reference for what a session needs.
+
+**Sessions** — pick a repository from your GitHub account and an image. Hexagon clones the
+repository into `<workspace root>/<session id>/repo` on the host, starts a container with
+that clone bind mounted on `/workspace`, and runs `tmux` inside it. The container runs as
+you, so files it writes stay yours rather than root's.
+
+**Claude Code in a session** — the host's `~/.claude/.credentials.json` is bind mounted
+read-only, and each session gets its own `$HOME/.claude.json` seeded with
+`hasCompletedOnboarding` and trust for `/workspace`, so `claude` opens straight into the
+repository. Without that file Claude Code sees a machine it has never run on and starts
+its first-run onboarding, which reads as being asked to sign in again. Because the
+credentials are mounted read-only a session cannot refresh an expired OAuth token: when
+that happens, sign in again on the host, or set `ANTHROPIC_API_KEY`.
+
+**The terminal** — the session page attaches to the container's tmux session. Closing the
+tab only detaches: Claude Code keeps working, and reopening the page finds the session
+where you left it. Opening a second tab takes the terminal over from the first.
+
+**Stopping and deleting** — stopping shuts the container down and keeps the clone; starting
+brings it back with a fresh tmux, so the previous scrollback is gone. Deleting always
+removes the container, and removes the clone on disk only if you tick the box.
+
 ## Configuration
 
 Everything is read from the environment. Defaults suit a single user on a
@@ -84,6 +113,7 @@ developer machine.
 | `HEXAGON_GITHUB_CLIENT_ID` | — | Required |
 | `HEXAGON_GITHUB_CLIENT_SECRET` | — | Required |
 | `HEXAGON_ALLOWED_USERS` | — | Required. Comma-separated GitHub logins allowed to sign in |
+| `HEXAGON_GITHUB_API_URL` | `https://api.github.com` | Override for GitHub Enterprise, or a stub in development |
 | `HEXAGON_SECRET_KEY` | `<data dir>/secret.key` | 32 bytes, base64. Generated on first run |
 | `HEXAGON_DEV_USER` | — | Development bypass, see below |
 | `HEXAGON_GITHUB_TOKEN` | — | Personal access token used by the bypass |
@@ -131,6 +161,16 @@ rm ~/.local/share/hexagon/hexagon.db*
 Sign out from the header and you land back on `/login`; reloading `/` keeps you
 there. Sessions last 30 days, so closing and reopening the browser keeps you
 signed in.
+
+For a session, the things worth checking are that a file Claude writes in the
+container belongs to you on the host, and that closing the tab does not
+interrupt it:
+
+```sh
+# after starting a session, from the host
+ls -l <workspace root>/<session id>/repo
+docker ps --filter label=hexagon.managed=true
+```
 
 ```sh
 make test    # go test ./...

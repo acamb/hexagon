@@ -30,6 +30,9 @@ type Config struct {
 	GitHubClientID     string   // HEXAGON_GITHUB_CLIENT_ID
 	GitHubClientSecret string   // HEXAGON_GITHUB_CLIENT_SECRET
 	AllowedUsers       []string // HEXAGON_ALLOWED_USERS, comma separated GitHub logins
+	// GitHubAPIURL overrides api.github.com. It is there for GitHub Enterprise,
+	// and for pointing a development instance at a stub.
+	GitHubAPIURL string // HEXAGON_GITHUB_API_URL
 
 	// Development bypass. When DevUser is set the server skips OAuth and treats
 	// every request as that user, authenticating to GitHub with DevGitHubToken.
@@ -73,6 +76,7 @@ func Load() (*Config, error) {
 		GitHubClientID:     os.Getenv("HEXAGON_GITHUB_CLIENT_ID"),
 		GitHubClientSecret: os.Getenv("HEXAGON_GITHUB_CLIENT_SECRET"),
 		AllowedUsers:       splitList(os.Getenv("HEXAGON_ALLOWED_USERS")),
+		GitHubAPIURL:       os.Getenv("HEXAGON_GITHUB_API_URL"),
 
 		DevUser:        os.Getenv("HEXAGON_DEV_USER"),
 		DevGitHubToken: os.Getenv("HEXAGON_GITHUB_TOKEN"),

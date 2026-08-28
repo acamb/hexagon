@@ -139,6 +139,10 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		return httpapi.Deps{}, err
 	}
 	gh := github.New()
+	if cfg.GitHubAPIURL != "" {
+		log.Warn("using a non-default GitHub API", "url", cfg.GitHubAPIURL)
+		gh = github.NewWithBaseURL(cfg.GitHubAPIURL)
+	}
 	logins := auth.NewService(st, cipher, cfg.PublicURL)
 	repos := github.NewRepoCache(gh, github.DefaultRepoTTL)
 

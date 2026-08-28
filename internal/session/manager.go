@@ -5,6 +5,7 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -167,6 +168,10 @@ func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, to
 		return fmt.Errorf("create workspace: %w", err)
 	}
 
+	if err := seedClaudeConfig(homeDir); err != nil {
+		return err
+	}
+
 	m.setStatus(session.ID, store.SessionStatusCloning, "")
 	err := m.cloner.Clone(ctx, gitops.Options{
 		CloneURL:  session.RepoCloneURL,
@@ -195,6 +200,45 @@ func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, to
 		return err
 	}
 	return m.bootstrap(ctx, containerID)
+}
+
+// seedClaudeConfig writes the state Claude Code keeps outside its credentials
+// file. The credentials mount alone is not enough: without $HOME/.claude.json,
+// Claude Code sees a machine it has never run on and starts its first-run
+// onboarding, which looks like being asked to sign in again.
+//
+// Only two things are seeded, and Claude Code fills in the rest on first start:
+//
+//   - hasCompletedOnboarding, because the account behind the mounted
+//     credentials has been through onboarding already;
+//   - trust for /workspace, because the repository was chosen by this user from
+//     their own GitHub account — the question the prompt asks was answered when
+//     the session was created.
+//
+// The host's own ~/.claude.json is deliberately not mounted: it is a large file
+// of personal state that Claude Code writes to constantly, and every session
+// would be fighting over it.
+func seedClaudeConfig(homeDir string) error {
+	path := filepath.Join(homeDir, ".claude.json")
+	if _, err := os.Stat(path); err == nil {
+		// A session being provisioned into an existing workspace keeps whatever
+		// state it already had.
+		return nil
+	}
+
+	body, err := json.MarshalIndent(map[string]any{
+		"hasCompletedOnboarding": true,
+		"projects": map[string]any{
+			dockerx.WorkspaceMount: map[string]any{"hasTrustDialogAccepted": true},
+		},
+	}, "", "  ")
+	if err != nil {
+		return fmt.Errorf("build claude config: %w", err)
+	}
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		return fmt.Errorf("write claude config: %w", err)
+	}
+	return nil
 }
 
 // containerSpec is the whole contract between Hexagon and a session container.

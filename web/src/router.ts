@@ -1,14 +1,14 @@
 import { createRouter, createWebHistory } from 'vue-router'
-import HomeView from './views/HomeView.vue'
 import ImagesView from './views/ImagesView.vue'
 import LoginView from './views/LoginView.vue'
 import SessionView from './views/SessionView.vue'
+import SessionsView from './views/SessionsView.vue'
 import { load } from './session'
 
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', name: 'sessions', component: HomeView },
+    { path: '/', name: 'sessions', component: SessionsView },
     { path: '/images', name: 'images', component: ImagesView },
     { path: '/sessions/:id', name: 'session', component: SessionView },
     { path: '/login', name: 'login', component: LoginView, meta: { public: true } },

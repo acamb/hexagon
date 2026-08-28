@@ -77,15 +77,42 @@ export interface NewImage {
   registryRef?: string
 }
 
+export type SessionStatus =
+  | 'creating'
+  | 'cloning'
+  | 'starting'
+  | 'running'
+  | 'stopped'
+  | 'failed'
+  | 'gone'
+
 export interface Session {
   id: string
   title: string
   repoFullName: string
   branch: string
+  imageId: string
   imageRef: string
-  status: 'creating' | 'cloning' | 'starting' | 'running' | 'stopped' | 'failed' | 'gone'
+  repoDir: string
+  status: SessionStatus
   error?: string
   createdAt: string
+}
+
+export interface NewSession {
+  repoFullName: string
+  branch?: string
+  imageId: string
+  title?: string
+}
+
+export interface Repo {
+  fullName: string
+  cloneUrl: string
+  defaultBranch: string
+  private: boolean
+  description: string
+  updatedAt: string
 }
 
 export const api = {
@@ -95,7 +122,18 @@ export const api = {
   loginUrl: '/api/auth/login',
 
   sessions: {
+    list: () => request<Session[]>('/sessions'),
     get: (id: string) => request<Session>(`/sessions/${id}`),
+    create: (session: NewSession) =>
+      request<Session>('/sessions', { method: 'POST', body: JSON.stringify(session) }),
+    start: (id: string) => request<Session>(`/sessions/${id}/start`, { method: 'POST' }),
+    stop: (id: string) => request<Session>(`/sessions/${id}/stop`, { method: 'POST' }),
+    remove: (id: string, purge: boolean) =>
+      request<null>(`/sessions/${id}?purge=${purge}`, { method: 'DELETE' }),
+  },
+
+  github: {
+    repos: (refresh = false) => request<Repo[]>(`/github/repos${refresh ? '?refresh=1' : ''}`),
   },
 
   images: {

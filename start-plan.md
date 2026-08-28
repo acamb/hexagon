@@ -386,7 +386,7 @@ for the live one. `-D` detaches whatever was attached before, which keeps the co
 clean and removes the smallest-client problem. The cost, accepted: a second tab takes the
 terminal over from the first rather than watching alongside it.
 
-### M6 — Frontend and polish
+### M6 — Frontend and polish — **done**
 
 - `SessionsView.vue`: card grid (repo, branch, image, status dot, created-at) with
   Open / Stop / Start / Delete actions. Polls `GET /api/sessions` every 3s.
