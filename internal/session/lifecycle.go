@@ -28,7 +28,7 @@ func (m *Manager) Start(ctx context.Context, session *store.Session) error {
 		}
 		return err
 	}
-	if err := m.bootstrap(ctx, session.ContainerID); err != nil {
+	if err := m.bootstrap(ctx, session); err != nil {
 		m.setStatus(session.ID, store.SessionStatusFailed, err.Error())
 		return err
 	}

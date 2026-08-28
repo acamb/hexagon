@@ -27,6 +27,7 @@ type sessionResponse struct {
 	RepoDir      string    `json:"repoDir"`
 	Status       string    `json:"status"`
 	Error        string    `json:"error,omitempty"`
+	AutoClaude   bool      `json:"autoClaude"`
 	CreatedAt    time.Time `json:"createdAt"`
 }
 
@@ -41,6 +42,7 @@ func newSessionResponse(s *store.Session) sessionResponse {
 		RepoDir:      s.RepoDir,
 		Status:       s.Status,
 		Error:        s.Error,
+		AutoClaude:   s.AutoClaude,
 		CreatedAt:    s.CreatedAt,
 	}
 }
@@ -77,6 +79,9 @@ type createSessionRequest struct {
 	Branch       string `json:"branch"`
 	ImageID      string `json:"imageId"`
 	Title        string `json:"title"`
+	// AutoClaude is a pointer so that a client which has never heard of it gets
+	// the default — Claude Code started for them — rather than a bare shell.
+	AutoClaude *bool `json:"autoClaude"`
 }
 
 // handleCreateSession starts provisioning a session and returns straight away;
@@ -116,6 +121,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		RepoCloneURL: repo.CloneURL,
 		Branch:       branch,
 		ImageID:      req.ImageID,
+		AutoClaude:   req.AutoClaude == nil || *req.AutoClaude,
 	})
 	switch {
 	case errors.Is(err, session.ErrImageNotFound):
@@ -163,6 +169,38 @@ func (s *Server) resolveRepo(w http.ResponseWriter, r *http.Request, fullName st
 	}
 	writeError(w, http.StatusBadRequest, fmt.Sprintf("%q is not a repository in your GitHub account", fullName))
 	return github.Repo{}, false
+}
+
+type updateSessionRequest struct {
+	AutoClaude *bool `json:"autoClaude"`
+}
+
+// handleUpdateSession changes a session's settings. Only autoClaude so far, and
+// it takes effect the next time the container starts: the tmux session that is
+// already running was created with, or without, Claude Code as its command.
+func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
+	found, ok := s.sessionOr404(w, r)
+	if !ok {
+		return
+	}
+
+	var req updateSessionRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSessionRequestBody)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	if req.AutoClaude == nil {
+		writeError(w, http.StatusBadRequest, "nothing to update")
+		return
+	}
+
+	if err := s.store.SetSessionAutoClaude(r.Context(), found.UserID, found.ID, *req.AutoClaude); err != nil {
+		s.log.Error("update session", "session", found.ID, "err", err)
+		writeError(w, http.StatusInternalServerError, "cannot update the session")
+		return
+	}
+	found.AutoClaude = *req.AutoClaude
+	writeJSON(w, http.StatusOK, newSessionResponse(s.sessions.Refresh(r.Context(), found)))
 }
 
 // handleStartSession brings a stopped session back up.

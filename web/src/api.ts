@@ -96,6 +96,7 @@ export interface Session {
   repoDir: string
   status: SessionStatus
   error?: string
+  autoClaude: boolean
   createdAt: string
 }
 
@@ -104,6 +105,13 @@ export interface NewSession {
   branch?: string
   imageId: string
   title?: string
+  autoClaude?: boolean
+}
+
+// What a session's settings can be changed to after it exists. Omitted fields
+// are left alone.
+export interface SessionSettings {
+  autoClaude?: boolean
 }
 
 export interface Repo {
@@ -126,6 +134,8 @@ export const api = {
     get: (id: string) => request<Session>(`/sessions/${id}`),
     create: (session: NewSession) =>
       request<Session>('/sessions', { method: 'POST', body: JSON.stringify(session) }),
+    update: (id: string, settings: SessionSettings) =>
+      request<Session>(`/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(settings) }),
     start: (id: string) => request<Session>(`/sessions/${id}/start`, { method: 'POST' }),
     stop: (id: string) => request<Session>(`/sessions/${id}/stop`, { method: 'POST' }),
     remove: (id: string, purge: boolean) =>

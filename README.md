@@ -95,6 +95,12 @@ repository into `<workspace root>/<session id>/repo` on the host, starts a conta
 that clone bind mounted on `/workspace`, and runs `tmux` inside it. The container runs as
 you, so files it writes stay yours rather than root's.
 
+**Starting Claude Code by itself** — a session either opens with `claude` already running in
+its tmux or leaves you at a shell prompt. It is a checkbox when you create the session, on
+by default, and a switch in the session page afterwards; because it is the command the tmux
+session is created with, changing it on a running session takes effect the next time that
+session starts. When Claude Code exits you get a shell rather than a terminal that closes.
+
 **Claude Code in a session** — the host's `~/.claude/.credentials.json` is bind mounted
 read-only, and each session gets its own `$HOME/.claude.json` seeded with
 `hasCompletedOnboarding` and trust for `/workspace`, so `claude` opens straight into the

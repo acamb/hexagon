@@ -15,6 +15,9 @@ const selected = ref<Repo | null>(null)
 const branch = ref('')
 const imageId = ref('')
 const title = ref('')
+// On by default: running Claude Code is what a session is for. Turning it off
+// leaves the tmux session at a shell prompt.
+const autoClaude = ref(true)
 
 // Only images that finished building can start a session.
 const usableImages = computed(() => images.value.filter((i) => i.status === 'ready'))
@@ -57,6 +60,7 @@ async function submit() {
       branch: branch.value.trim() || undefined,
       imageId: imageId.value,
       title: title.value.trim() || undefined,
+      autoClaude: autoClaude.value,
     })
     emit('created', session)
   } catch (e) {
@@ -135,6 +139,14 @@ onMounted(() => load())
           <label class="field">
             <span>Title <em>optional</em></span>
             <input v-model="title" :placeholder="selected?.fullName || 'Repository name'" />
+          </label>
+
+          <label class="toggle">
+            <input type="checkbox" v-model="autoClaude" />
+            <span>
+              Start Claude Code automatically
+              <em>Otherwise the session opens at a shell prompt inside tmux.</em>
+            </span>
           </label>
 
           <footer>
@@ -216,6 +228,28 @@ h2 {
 .row {
   display: flex;
   gap: 1rem;
+}
+
+.toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.toggle em {
+  display: block;
+  color: var(--text-muted);
+  font-weight: 400;
+  font-style: normal;
+}
+
+/* The input rule below is written for text fields; a checkbox wants none of it. */
+.toggle input {
+  padding: 0;
+  border: none;
+  background: none;
 }
 
 input,

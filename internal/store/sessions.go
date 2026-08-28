@@ -41,12 +41,16 @@ type Session struct {
 	ContainerID  string
 	Status       string
 	Error        string
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// AutoClaude starts Claude Code inside the session's tmux instead of
+	// leaving a bare shell. It is read when the tmux session is created, so a
+	// change takes effect the next time the container starts.
+	AutoClaude bool
+	CreatedAt  time.Time
+	UpdatedAt  time.Time
 }
 
 const sessionColumns = `id, user_id, title, repo_full_name, repo_clone_url, branch, image_id, image_ref,
-	workspace_dir, repo_dir, container_id, status, error, created_at, updated_at`
+	workspace_dir, repo_dir, container_id, status, error, auto_claude, created_at, updated_at`
 
 // SessionByID returns one of the user's sessions, or ErrNotFound.
 func (s *Store) SessionByID(ctx context.Context, userID, id string) (*Session, error) {
@@ -68,7 +72,7 @@ func scanSession(row scanner) (*Session, error) {
 	err := row.Scan(&session.ID, &session.UserID, &session.Title, &session.RepoFullName,
 		&session.RepoCloneURL, &session.Branch, &session.ImageID, &session.ImageRef,
 		&session.WorkspaceDir, &session.RepoDir, &session.ContainerID, &session.Status,
-		&session.Error, &createdAt, &updatedAt)
+		&session.Error, &session.AutoClaude, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -91,10 +95,11 @@ func (s *Store) CreateSession(ctx context.Context, session *Session) (*Session, 
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (`+sessionColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.UserID, session.Title, session.RepoFullName, session.RepoCloneURL,
 		session.Branch, session.ImageID, session.ImageRef, session.WorkspaceDir, session.RepoDir,
-		session.ContainerID, session.Status, session.Error, formatTime(now), formatTime(now))
+		session.ContainerID, session.Status, session.Error, session.AutoClaude,
+		formatTime(now), formatTime(now))
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
@@ -160,6 +165,26 @@ func (s *Store) SetSessionContainer(ctx context.Context, id, containerID string)
 		containerID, formatTime(time.Now()), id)
 	if err != nil {
 		return fmt.Errorf("set session container: %w", err)
+	}
+	return nil
+}
+
+// SetSessionAutoClaude records whether the session starts Claude Code. It is
+// scoped to the owner, like every other session query, and reports ErrNotFound
+// when there is no such session for them.
+func (s *Store) SetSessionAutoClaude(ctx context.Context, userID, id string, auto bool) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET auto_claude = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
+		auto, formatTime(time.Now()), id, userID)
+	if err != nil {
+		return fmt.Errorf("set session auto claude: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
 	}
 	return nil
 }

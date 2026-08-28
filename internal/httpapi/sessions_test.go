@@ -401,3 +401,129 @@ func TestSessionSeedsTheClaudeConfig(t *testing.T) {
 		t.Errorf("/workspace is not trusted, so the session opens on the folder prompt: %s", body)
 	}
 }
+
+// bootstrapScript returns the shell script of the nth bootstrap, which is where
+// the decision to start Claude Code ends up.
+func (e *testEnv) bootstrapScript(n int) string {
+	e.t.Helper()
+	commands := e.docker.bootstrapCommands()
+	if len(commands) <= n {
+		e.t.Fatalf("ran %d bootstraps, want more than %d", len(commands), n)
+	}
+	return strings.Join(commands[n], " ")
+}
+
+func TestSessionStartsClaudeCodeByDefault(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"repoFullName":"acme/widgets","imageId":%q}`, image.ID)), &created)
+	if !created.AutoClaude {
+		t.Error("autoClaude = false, want a session that starts Claude Code when nothing said otherwise")
+	}
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	script := env.bootstrapScript(0)
+	if !strings.Contains(script, "claude") {
+		t.Errorf("the tmux session was created without Claude Code: %s", script)
+	}
+	// Without the shell after it, a claude that exits takes the tmux session,
+	// and the terminal, with it.
+	if !strings.Contains(script, "exec \"${SHELL:-sh}\"") {
+		t.Errorf("the tmux command has no shell to fall back to: %s", script)
+	}
+}
+
+func TestSessionCanBeCreatedWithoutClaudeCode(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"repoFullName":"acme/widgets","imageId":%q,"autoClaude":false}`, image.ID)), &created)
+	if created.AutoClaude {
+		t.Error("autoClaude = true, want the value the request asked for")
+	}
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	if script := env.bootstrapScript(0); strings.Contains(script, "claude") {
+		t.Errorf("the tmux session starts Claude Code anyway: %s", script)
+	}
+}
+
+// The switch is only worth anything if it reaches the bootstrap, so this walks
+// the whole way: flip it, read it back, restart, and look at what tmux was
+// asked to run.
+func TestUpdatingAutoClaudeAppliesOnTheNextStart(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"repoFullName":"acme/widgets","imageId":%q,"autoClaude":false}`, image.ID)), &created)
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	resp := env.sendJSON(http.MethodPatch, "/api/sessions/"+created.ID, `{"autoClaude":true}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("patch status = %d, want 200", resp.StatusCode)
+	}
+	var updated sessionResponse
+	env.decode(resp, &updated)
+	if !updated.AutoClaude {
+		t.Error("the response still says autoClaude is off")
+	}
+
+	var reloaded sessionResponse
+	env.decode(env.do(http.MethodGet, "/api/sessions/"+created.ID, nil), &reloaded)
+	if !reloaded.AutoClaude {
+		t.Error("autoClaude was not persisted")
+	}
+
+	json := map[string]string{"Content-Type": "application/json"}
+	env.do(http.MethodPost, "/api/sessions/"+created.ID+"/stop", json)
+	env.do(http.MethodPost, "/api/sessions/"+created.ID+"/start", json)
+
+	if script := env.bootstrapScript(1); !strings.Contains(script, "claude") {
+		t.Errorf("the restarted session does not start Claude Code: %s", script)
+	}
+}
+
+func TestUpdateSessionIsScopedToTheOwner(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+
+	ctx := context.Background()
+	other, err := env.store.UpsertUser(ctx, &store.User{GitHubLogin: "bob", GitHubID: 7, GitHubTokenEnc: []byte("x")})
+	if err != nil {
+		t.Fatalf("create other user: %v", err)
+	}
+	theirs, err := env.store.CreateSession(ctx, &store.Session{
+		UserID: other.ID, Title: "theirs", RepoFullName: "bob/secret", ImageID: image.ID,
+		ImageRef: image.ImageRef, Status: store.SessionStatusStopped, AutoClaude: true,
+	})
+	if err != nil {
+		t.Fatalf("create other session: %v", err)
+	}
+
+	resp := env.sendJSON(http.MethodPatch, "/api/sessions/"+theirs.ID, `{"autoClaude":false}`)
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("patch on another user's session = %d, want 404", resp.StatusCode)
+	}
+
+	after, err := env.store.SessionByID(ctx, other.ID, theirs.ID)
+	if err != nil {
+		t.Fatalf("reload the other session: %v", err)
+	}
+	if !after.AutoClaude {
+		t.Error("the refused request changed the session anyway")
+	}
+}

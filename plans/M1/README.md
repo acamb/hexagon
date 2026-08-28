@@ -8,7 +8,7 @@ as described in [AGENTS.md](../../AGENTS.md).
 |---|---|---|---|
 | 1 | Agents.md | [01-agents-md.md](01-agents-md.md) | done |
 | 2 | Configuration file | [02-configuration-file.md](02-configuration-file.md) | done |
-| 3 | Switch to launch claude automatically | `03-auto-claude-switch.md` | not started |
+| 3 | Switch to launch claude automatically | [03-auto-claude-switch.md](03-auto-claude-switch.md) | done |
 | 4 | tmux cheatsheet | `04-tmux-cheatsheet.md` | not started |
 | 5 | Dockerfile editor during session creation | `05-dockerfile-editor.md` | not started |
 | 6 | Additional repository providers | `06-additional-providers.md` | not started |

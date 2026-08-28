@@ -14,6 +14,10 @@ const sessionId = route.params.id as string
 const session = ref<Session | null>(null)
 const error = ref<string | null>(null)
 const busy = ref(false)
+// Set when the switch is flipped on a session that is already up: the tmux
+// session it is running was created with, or without, Claude Code as its
+// command, so the change is only visible after a restart.
+const pending = ref(false)
 
 async function refresh() {
   try {
@@ -25,8 +29,21 @@ async function refresh() {
   schedule()
 }
 
+async function setAutoClaude(auto: boolean) {
+  busy.value = true
+  try {
+    session.value = await api.sessions.update(sessionId, { autoClaude: auto })
+    pending.value = session.value.status === 'running'
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    busy.value = false
+  }
+}
+
 async function start() {
   busy.value = true
+  pending.value = false
   try {
     session.value = await api.sessions.start(sessionId)
   } catch (e) {
@@ -38,6 +55,7 @@ async function start() {
 
 async function stop() {
   busy.value = true
+  pending.value = false
   try {
     session.value = await api.sessions.stop(sessionId)
   } catch (e) {
@@ -84,6 +102,17 @@ onUnmounted(() => window.clearTimeout(timer))
         </div>
 
         <div class="right">
+          <span v-if="pending" class="pending">Applies the next time this session starts</span>
+          <label class="toggle" title="Start Claude Code in this session's tmux, or leave a shell">
+            <input
+              type="checkbox"
+              :checked="session.autoClaude"
+              :disabled="busy"
+              @change="setAutoClaude(($event.target as HTMLInputElement).checked)"
+            />
+            Start Claude
+          </label>
+
           <StatusDot :status="session.status" />
           <button
             v-if="session.status === 'running'"
@@ -167,6 +196,19 @@ onUnmounted(() => window.clearTimeout(timer))
   display: flex;
   align-items: center;
   gap: 0.75rem;
+}
+
+.toggle {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.9rem;
+  cursor: pointer;
+}
+
+.pending {
+  color: var(--text-muted);
+  font-size: 0.85rem;
 }
 
 button {

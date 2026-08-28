@@ -139,14 +139,19 @@ func (f *fakeDocker) calls() (built, pulled, removed []string) {
 // postJSON sends a request with a body, which testEnv.do does not do.
 func (e *testEnv) postJSON(path, body string) *http.Response {
 	e.t.Helper()
-	req, err := http.NewRequest(http.MethodPost, e.server.URL+path, strings.NewReader(body))
+	return e.sendJSON(http.MethodPost, path, body)
+}
+
+func (e *testEnv) sendJSON(method, path, body string) *http.Response {
+	e.t.Helper()
+	req, err := http.NewRequest(method, e.server.URL+path, strings.NewReader(body))
 	if err != nil {
 		e.t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := e.client.Do(req)
 	if err != nil {
-		e.t.Fatalf("POST %s: %v", path, err)
+		e.t.Fatalf("%s %s: %v", method, path, err)
 	}
 	e.t.Cleanup(func() { resp.Body.Close() })
 	return resp

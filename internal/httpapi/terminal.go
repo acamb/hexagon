@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/andrea/hexagon/internal/dockerx"
+	"github.com/andrea/hexagon/internal/session"
 	"github.com/andrea/hexagon/internal/store"
 	"github.com/coder/websocket"
 )
@@ -26,12 +27,10 @@ const (
 	terminalBufferSize = 32 << 10
 )
 
-// tmuxSessionName is the session every terminal attaches to.
-//
-// The command is `tmux new-session -A -D`: -A creates the session if it is not
-// there and attaches otherwise, so reconnecting after a reload is the same
-// operation as connecting the first time. -D detaches any client that is
-// already attached.
+// The command a terminal attaches with is `tmux new-session -A -D`: -A creates
+// the session if it is not there and attaches otherwise, so reconnecting after a
+// reload is the same operation as connecting the first time. -D detaches any
+// client that is already attached.
 //
 // -D is what keeps the container tidy. Docker does not kill an exec'd process
 // when its connection closes, so every closed tab would otherwise leave a tmux
@@ -39,7 +38,10 @@ const (
 // client, one stale 80x24 client would shrink the terminal for the live one.
 // The cost is that a second tab takes the terminal over from the first rather
 // than watching alongside it.
-const tmuxSessionName = "main"
+//
+// The session itself is created by the bootstrap, which owns the name; handlers
+// take it from there rather than repeating the string.
+const tmuxSessionName = session.TmuxSession
 
 // handleTerminal bridges a browser WebSocket to a tmux session inside the
 // container. Closing the socket detaches; tmux, and whatever Claude Code is

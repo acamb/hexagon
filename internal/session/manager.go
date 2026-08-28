@@ -32,6 +32,12 @@ const (
 	containerNamePrefix = "hexagon-"
 )
 
+// TmuxSession is the tmux session a terminal attaches to. The bootstrap creates
+// it and the terminal handler joins it, so the name lives here rather than in
+// both: if the two ever drifted, the browser would silently attach to an empty
+// session instead of the one that was set up.
+const TmuxSession = "main"
+
 // Errors the HTTP layer turns into specific status codes.
 var (
 	ErrImageNotFound = errors.New("image not found")
@@ -93,6 +99,9 @@ type CreateRequest struct {
 	RepoCloneURL string
 	Branch       string
 	ImageID      string
+	// AutoClaude starts Claude Code in the session's tmux rather than leaving a
+	// shell.
+	AutoClaude bool
 }
 
 // Create records the session and provisions it in the background. It returns as
@@ -133,6 +142,7 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 		ImageRef:     image.ImageRef,
 		WorkspaceDir: workspace,
 		RepoDir:      filepath.Join(workspace, "repo"),
+		AutoClaude:   req.AutoClaude,
 		Status:       store.SessionStatusCreating,
 	})
 	if err != nil {
@@ -199,7 +209,7 @@ func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, to
 	if err := m.docker.StartContainer(ctx, containerID); err != nil {
 		return err
 	}
-	return m.bootstrap(ctx, containerID)
+	return m.bootstrap(ctx, session)
 }
 
 // seedClaudeConfig writes the state Claude Code keeps outside its credentials
@@ -290,15 +300,37 @@ func (m *Manager) containerSpec(session *store.Session, homeDir, token string) d
 	}
 }
 
+// claudeCommand is what a session that starts Claude Code runs in its tmux.
+//
+// The shell after it is not decoration. When the command a tmux session was
+// created with exits, its window closes, and the last window closing takes the
+// session with it: a claude missing from the image, or one whose credentials
+// have expired, would end the terminal for no visible reason. This turns that
+// into "Claude Code exited, here is a prompt". The fallback is sh rather than
+// bash because the reference base image is a reference, not a guarantee.
+const claudeCommand = `claude; exec "${SHELL:-sh}"`
+
 // bootstrapScript prepares a freshly started container: git has to be told the
 // bind mounted clone is safe to use (its owner may not match inside the
 // container), and tmux has to be running before a terminal can attach.
-const bootstrapScript = `set -e
-git config --global --add safe.directory ` + dockerx.WorkspaceMount + `
-tmux has-session -t main 2>/dev/null || tmux new-session -d -s main -c ` + dockerx.WorkspaceMount
+//
+// Whether Claude Code starts by itself is decided here, once, because it is the
+// command the tmux session is created with — which is why flipping the switch
+// on a running session only shows up the next time it starts.
+func bootstrapScript(autoClaude bool) string {
+	newSession := "tmux new-session -d -s " + TmuxSession + " -c " + dockerx.WorkspaceMount
+	if autoClaude {
+		newSession += " '" + claudeCommand + "'"
+	}
+	return "set -e\n" +
+		"git config --global --add safe.directory " + dockerx.WorkspaceMount + "\n" +
+		"tmux has-session -t " + TmuxSession + " 2>/dev/null || " + newSession
+}
 
-func (m *Manager) bootstrap(ctx context.Context, containerID string) error {
-	output, code, err := m.docker.RunExec(ctx, containerID, []string{"sh", "-c", bootstrapScript})
+func (m *Manager) bootstrap(ctx context.Context, session *store.Session) error {
+	containerID := session.ContainerID
+	script := bootstrapScript(session.AutoClaude)
+	output, code, err := m.docker.RunExec(ctx, containerID, []string{"sh", "-c", script})
 	if err != nil {
 		return fmt.Errorf("bootstrap: %w", err)
 	}
