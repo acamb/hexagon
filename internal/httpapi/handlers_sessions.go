@@ -18,34 +18,42 @@ import (
 const maxSessionRequestBody = 8 << 10
 
 type sessionResponse struct {
-	ID           string    `json:"id"`
-	Title        string    `json:"title"`
-	Provider     string    `json:"provider"`
-	RepoFullName string    `json:"repoFullName"`
-	Branch       string    `json:"branch"`
-	ImageID      string    `json:"imageId"`
-	ImageRef     string    `json:"imageRef"`
-	RepoDir      string    `json:"repoDir"`
-	Status       string    `json:"status"`
-	Error        string    `json:"error,omitempty"`
-	AutoClaude   bool      `json:"autoClaude"`
-	CreatedAt    time.Time `json:"createdAt"`
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	// Provider is the account the session is attached to, empty when it is
+	// attached to none. RepoFullName and Branch are empty together, for a
+	// session that started on an empty workspace rather than on a clone.
+	Provider     string `json:"provider"`
+	RepoFullName string `json:"repoFullName"`
+	Branch       string `json:"branch"`
+	ImageID      string `json:"imageId"`
+	ImageRef     string `json:"imageRef"`
+	// RepoDir is the directory mounted at /workspace, clone or not.
+	RepoDir    string `json:"repoDir"`
+	Status     string `json:"status"`
+	Error      string `json:"error,omitempty"`
+	AutoClaude bool   `json:"autoClaude"`
+	// PropagateToken is reported but never updated: the container carries the
+	// environment it was created with.
+	PropagateToken bool      `json:"propagateToken"`
+	CreatedAt      time.Time `json:"createdAt"`
 }
 
 func newSessionResponse(s *store.Session) sessionResponse {
 	return sessionResponse{
-		ID:           s.ID,
-		Title:        s.Title,
-		Provider:     s.Provider,
-		RepoFullName: s.RepoFullName,
-		Branch:       s.Branch,
-		ImageID:      s.ImageID,
-		ImageRef:     s.ImageRef,
-		RepoDir:      s.RepoDir,
-		Status:       s.Status,
-		Error:        s.Error,
-		AutoClaude:   s.AutoClaude,
-		CreatedAt:    s.CreatedAt,
+		ID:             s.ID,
+		Title:          s.Title,
+		Provider:       s.Provider,
+		RepoFullName:   s.RepoFullName,
+		Branch:         s.Branch,
+		ImageID:        s.ImageID,
+		ImageRef:       s.ImageRef,
+		RepoDir:        s.RepoDir,
+		Status:         s.Status,
+		Error:          s.Error,
+		AutoClaude:     s.AutoClaude,
+		PropagateToken: s.PropagateToken,
+		CreatedAt:      s.CreatedAt,
 	}
 }
 
@@ -79,7 +87,13 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 type createSessionRequest struct {
 	// Provider is which connected account the repository comes from. An empty
 	// one matches on name alone, across every account.
-	Provider     string `json:"provider"`
+	//
+	// Without a repository it means something else, because there is no
+	// repository to have come from anywhere: it names the account whose
+	// credentials the session gets, and empty means none.
+	Provider string `json:"provider"`
+	// RepoFullName is optional. A request without it creates a session on an
+	// empty workspace rather than on a clone.
 	RepoFullName string `json:"repoFullName"`
 	Branch       string `json:"branch"`
 	ImageID      string `json:"imageId"`
@@ -87,6 +101,11 @@ type createSessionRequest struct {
 	// AutoClaude is a pointer so that a client which has never heard of it gets
 	// the default — Claude Code started for them — rather than a bare shell.
 	AutoClaude *bool `json:"autoClaude"`
+	// PropagateToken hands the account's credentials to the container. A
+	// pointer for the same reason, and defaulting to on: Hexagon is for running
+	// an agent that commits and pushes, and the switch is for the session where
+	// that is not wanted. It is only settable here — see handleUpdateSession.
+	PropagateToken *bool `json:"propagateToken"`
 }
 
 // handleCreateSession starts provisioning a session and returns straight away;
@@ -97,8 +116,8 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
-	if strings.TrimSpace(req.RepoFullName) == "" || strings.TrimSpace(req.ImageID) == "" {
-		writeError(w, http.StatusBadRequest, "a repository and an image are required")
+	if strings.TrimSpace(req.ImageID) == "" {
+		writeError(w, http.StatusBadRequest, "an image is required")
 		return
 	}
 
@@ -108,27 +127,41 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The clone URL is never taken from the request: it is looked up in the
-	// caller's own accounts, so a session can only ever clone something they
-	// actually have.
-	repo, ok := s.resolveRepo(w, r, provider.Kind(req.Provider), req.RepoFullName)
-	if !ok {
-		return
+	create := session.CreateRequest{
+		Title:          req.Title,
+		ImageID:        req.ImageID,
+		AutoClaude:     req.AutoClaude == nil || *req.AutoClaude,
+		PropagateToken: req.PropagateToken == nil || *req.PropagateToken,
 	}
-	branch := strings.TrimSpace(req.Branch)
-	if branch == "" {
-		branch = repo.DefaultBranch
+	if fullName := strings.TrimSpace(req.RepoFullName); fullName != "" {
+		// The clone URL is never taken from the request: it is looked up in the
+		// caller's own accounts, so a session can only ever clone something
+		// they actually have.
+		repo, ok := s.resolveRepo(w, r, provider.Kind(req.Provider), fullName)
+		if !ok {
+			return
+		}
+		branch := strings.TrimSpace(req.Branch)
+		if branch == "" {
+			branch = repo.DefaultBranch
+		}
+		create.Provider, create.RepoFullName = repo.Provider, repo.FullName
+		create.RepoCloneURL, create.Branch = repo.CloneURL, branch
+	} else {
+		kind := provider.Kind(strings.TrimSpace(req.Provider))
+		switch {
+		case kind == "" || !create.PropagateToken:
+			// Nothing to propagate. The account is left off the session rather
+			// than recorded as an attachment it does not have.
+			create.Provider, create.PropagateToken = "", false
+		case !s.requireConnectedAccount(w, r, kind):
+			return
+		default:
+			create.Provider = kind
+		}
 	}
 
-	created, err := s.sessions.Create(r.Context(), s.user(r), session.CreateRequest{
-		Title:        req.Title,
-		Provider:     repo.Provider,
-		RepoFullName: repo.FullName,
-		RepoCloneURL: repo.CloneURL,
-		Branch:       branch,
-		ImageID:      req.ImageID,
-		AutoClaude:   req.AutoClaude == nil || *req.AutoClaude,
-	})
+	created, err := s.sessions.Create(r.Context(), s.user(r), create)
 	switch {
 	case errors.Is(err, session.ErrImageNotFound):
 		writeError(w, http.StatusBadRequest, "no such image")
@@ -137,13 +170,37 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, err.Error())
 		return
 	case err != nil:
-		s.log.Error("create session", "repo", repo.FullName, "err", err)
+		s.log.Error("create session", "repo", create.RepoFullName, "err", err)
 		writeError(w, http.StatusInternalServerError, "cannot create session")
 		return
 	}
 
-	s.log.Info("session created", "session", created.ID, "repo", created.RepoFullName, "branch", branch)
+	s.log.Info("session created", "session", created.ID,
+		"repo", created.RepoFullName, "branch", created.Branch, "provider", created.Provider)
 	writeJSON(w, http.StatusAccepted, newSessionResponse(created))
+}
+
+// requireConnectedAccount reports whether the caller has that account, and
+// answers the request itself when they do not. A session created without a
+// repository names its provider directly, so this is the only thing standing
+// between a request and a session that would fail to provision with a message
+// about unsealing a credential that was never there.
+func (s *Server) requireConnectedAccount(w http.ResponseWriter, r *http.Request, kind provider.Kind) bool {
+	if _, err := s.providers.Get(kind); err != nil {
+		writeError(w, http.StatusBadRequest, "no such provider")
+		return false
+	}
+	_, err := s.store.ProviderAccount(r.Context(), s.user(r).ID, string(kind))
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("your %s account is not connected", kind))
+		return false
+	case err != nil:
+		s.log.Error("read provider account", "provider", kind, "err", err)
+		writeError(w, http.StatusInternalServerError, "cannot read your accounts")
+		return false
+	}
+	return true
 }
 
 // resolveRepo finds a repository in the caller's own listing, which is what
@@ -177,6 +234,11 @@ type updateSessionRequest struct {
 // handleUpdateSession changes a session's settings. Only autoClaude so far, and
 // it takes effect the next time the container starts: the tmux session that is
 // already running was created with, or without, Claude Code as its command.
+//
+// propagateToken is deliberately not here. It is part of the container's
+// environment, which Docker cannot change once the container exists, so the
+// only honest way to flip it would be to build another container — a lifecycle
+// operation, not a settings change.
 func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	found, ok := s.sessionOr404(w, r)
 	if !ok {

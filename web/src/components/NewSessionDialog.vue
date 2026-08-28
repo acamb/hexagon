@@ -5,6 +5,7 @@ import {
   ApiError,
   api,
   providerNames,
+  type Account,
   type Image,
   type ProviderKind,
   type Repo,
@@ -15,6 +16,7 @@ const emit = defineEmits<{ close: []; created: [session: Session] }>()
 
 const repos = ref<Repo[]>([])
 const images = ref<Image[]>([])
+const accounts = ref<Account[]>([])
 const loading = ref(true)
 const submitting = ref(false)
 const error = ref<string | null>(null)
@@ -34,6 +36,24 @@ const title = ref('')
 // On by default: running Claude Code is what a session is for. Turning it off
 // leaves the tmux session at a shell prompt.
 const autoClaude = ref(true)
+// On by default too: an agent that cannot push is half of one. Off gives the
+// session the clone and nothing to authenticate with, and unlike the switch
+// above it cannot be changed later.
+const propagateToken = ref(true)
+// A session with no repository at all: an empty /workspace, and whatever the
+// user does in it.
+const withoutRepo = ref(false)
+// Which account such a session carries, empty for none. It is the same choice
+// as the checkbox above, made where there is no repository to imply an account.
+// Empty by default: with nothing cloned there is no operation that needs a
+// credential until its user thinks of one.
+const tokenProvider = ref<ProviderKind | ''>('')
+
+// The accounts a repository-less session can take a token from.
+const connected = computed(() => accounts.value.filter((a) => a.connected))
+
+// What the server names such a session when the title is left empty.
+const imageName = computed(() => usableImages.value.find((i) => i.id === imageId.value)?.name ?? '')
 
 // Only images that finished building can start a session.
 const usableImages = computed(() => images.value.filter((i) => i.status === 'ready'))
@@ -61,10 +81,15 @@ async function load(refresh = false) {
   loading.value = true
   error.value = null
   try {
-    const [listing, imageList] = await Promise.all([api.repos(refresh), api.images.list()])
+    const [listing, imageList, accountList] = await Promise.all([
+      api.repos(refresh),
+      api.images.list(),
+      api.accounts.list(),
+    ])
     repos.value = listing.repos
     failed.value = listing.failed ?? {}
     images.value = imageList
+    accounts.value = accountList
     if (!imageId.value) imageId.value = usableImages.value[0]?.id ?? ''
   } catch (e) {
     error.value = message(e)
@@ -73,19 +98,36 @@ async function load(refresh = false) {
   }
 }
 
+// Everything a session needs: an image, and a repository unless it was asked to
+// go without one.
+const ready = computed(() => !!imageId.value && (withoutRepo.value || !!selected.value))
+
 async function submit() {
-  if (!selected.value || !imageId.value) return
+  if (!ready.value) return
   submitting.value = true
   error.value = null
   try {
-    const session = await api.sessions.create({
-      provider: selected.value.provider,
-      repoFullName: selected.value.fullName,
-      branch: branch.value.trim() || undefined,
-      imageId: imageId.value,
-      title: title.value.trim() || undefined,
-      autoClaude: autoClaude.value,
-    })
+    const session = await api.sessions.create(
+      withoutRepo.value
+        ? {
+            // With no repository the provider is the token choice, so the two
+            // travel together: naming an account is asking for its token.
+            provider: tokenProvider.value,
+            imageId: imageId.value,
+            title: title.value.trim() || undefined,
+            autoClaude: autoClaude.value,
+            propagateToken: tokenProvider.value !== '',
+          }
+        : {
+            provider: selected.value!.provider,
+            repoFullName: selected.value!.fullName,
+            branch: branch.value.trim() || undefined,
+            imageId: imageId.value,
+            title: title.value.trim() || undefined,
+            autoClaude: autoClaude.value,
+            propagateToken: propagateToken.value,
+          },
+    )
     emit('created', session)
   } catch (e) {
     error.value = message(e)
@@ -121,51 +163,81 @@ onMounted(() => load())
         </p>
 
         <form @submit.prevent="submit">
-          <label class="field">
-            <span>
-              Repository
-              <button type="button" class="link" @click="load(true)">refresh</button>
-            </span>
-            <input v-model="filter" placeholder="Filter by name" />
-          </label>
-
-          <div v-if="sources.length > 1" class="sources">
-            <button type="button" :class="{ chosen: only === '' }" @click="only = ''">All</button>
-            <button
-              v-for="source in sources"
-              :key="source"
-              type="button"
-              :class="{ chosen: only === source }"
-              @click="only = source"
-            >
-              {{ providerNames[source] }}
+          <div class="sources">
+            <button type="button" :class="{ chosen: !withoutRepo }" @click="withoutRepo = false">
+              From a repository
+            </button>
+            <button type="button" :class="{ chosen: withoutRepo }" @click="withoutRepo = true">
+              No repository
             </button>
           </div>
 
-          <p v-for="(reason, source) in failed" :key="source" class="hint">
-            {{ providerNames[source as ProviderKind] }} could not be reached: {{ reason }}
+          <template v-if="!withoutRepo">
+            <label class="field">
+              <span>
+                Repository
+                <button type="button" class="link" @click="load(true)">refresh</button>
+              </span>
+              <input v-model="filter" placeholder="Filter by name" />
+            </label>
+
+            <div v-if="sources.length > 1" class="sources">
+              <button type="button" :class="{ chosen: only === '' }" @click="only = ''">All</button>
+              <button
+                v-for="source in sources"
+                :key="source"
+                type="button"
+                :class="{ chosen: only === source }"
+                @click="only = source"
+              >
+                {{ providerNames[source] }}
+              </button>
+            </div>
+
+            <p v-for="(reason, source) in failed" :key="source" class="hint">
+              {{ providerNames[source as ProviderKind] }} could not be reached: {{ reason }}
+            </p>
+
+            <ul class="repos">
+              <li v-for="repo in matches" :key="repo.provider + '/' + repo.fullName">
+                <button
+                  type="button"
+                  :class="{ chosen: selected?.provider === repo.provider && selected?.fullName === repo.fullName }"
+                  @click="choose(repo)"
+                >
+                  <span class="name">{{ repo.fullName }}</span>
+                  <span v-if="sources.length > 1" class="tag">{{ providerNames[repo.provider] }}</span>
+                  <span v-if="repo.private" class="tag">private</span>
+                  <span class="desc">{{ repo.description }}</span>
+                </button>
+              </li>
+              <li v-if="!matches.length" class="hint">No repository matches.</li>
+            </ul>
+          </template>
+
+          <p v-else class="hint">
+            The session starts on an empty workspace. Choose an account to give it that account's
+            token, so anything inside can clone and push with it.
           </p>
 
-          <ul class="repos">
-            <li v-for="repo in matches" :key="repo.provider + '/' + repo.fullName">
-              <button
-                type="button"
-                :class="{ chosen: selected?.provider === repo.provider && selected?.fullName === repo.fullName }"
-                @click="choose(repo)"
-              >
-                <span class="name">{{ repo.fullName }}</span>
-                <span v-if="sources.length > 1" class="tag">{{ providerNames[repo.provider] }}</span>
-                <span v-if="repo.private" class="tag">private</span>
-                <span class="desc">{{ repo.description }}</span>
-              </button>
-            </li>
-            <li v-if="!matches.length" class="hint">No repository matches.</li>
-          </ul>
-
           <div class="row">
-            <label class="field">
+            <label v-if="!withoutRepo" class="field">
               <span>Branch</span>
               <input v-model="branch" :placeholder="selected?.defaultBranch || 'default branch'" />
+            </label>
+
+            <label v-else class="field">
+              <span>Token</span>
+              <select v-model="tokenProvider">
+                <option value="">No token</option>
+                <option
+                  v-for="account in connected"
+                  :key="account.provider"
+                  :value="account.provider"
+                >
+                  {{ providerNames[account.provider] }} — {{ account.account }}
+                </option>
+              </select>
             </label>
 
             <label class="field">
@@ -180,7 +252,10 @@ onMounted(() => load())
 
           <label class="field">
             <span>Title <em>optional</em></span>
-            <input v-model="title" :placeholder="selected?.fullName || 'Repository name'" />
+            <input
+              v-model="title"
+              :placeholder="withoutRepo ? imageName || 'Image name' : selected?.fullName || 'Repository name'"
+            />
           </label>
 
           <label class="toggle">
@@ -191,9 +266,21 @@ onMounted(() => load())
             </span>
           </label>
 
+          <label v-if="!withoutRepo" class="toggle">
+            <input type="checkbox" v-model="propagateToken" />
+            <span>
+              Pass the {{ selected ? providerNames[selected.provider] : 'account' }} token to the
+              session
+              <em>
+                The repository is cloned either way. Without the token nothing inside the session
+                can fetch or push, and this cannot be changed afterwards.
+              </em>
+            </span>
+          </label>
+
           <footer>
             <button type="button" @click="emit('close')">Cancel</button>
-            <button type="submit" class="primary" :disabled="!selected || !imageId || submitting">
+            <button type="submit" class="primary" :disabled="!ready || submitting">
               <Spinner v-if="submitting" />{{ submitting ? 'Creating…' : 'Create session' }}
             </button>
           </footer>

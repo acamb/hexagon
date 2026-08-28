@@ -98,8 +98,13 @@ func NewManager(st *store.Store, docker dockerx.API, cloner Cloner, credentials 
 // clone URL is one GitHub gave us rather than one the browser made up.
 type CreateRequest struct {
 	Title string
-	// Provider is the connected account the repository came from.
-	Provider     provider.Kind
+	// Provider is the connected account this session is attached to: the one
+	// its repository came from, or — for a session created without a
+	// repository — the one whose credentials it asked for. Empty means the
+	// session is attached to no account and carries no credentials.
+	Provider provider.Kind
+	// The repository, or all three empty for a session that starts on an empty
+	// workspace instead of a clone.
 	RepoFullName string
 	RepoCloneURL string
 	Branch       string
@@ -107,6 +112,10 @@ type CreateRequest struct {
 	// AutoClaude starts Claude Code in the session's tmux rather than leaving a
 	// shell.
 	AutoClaude bool
+	// PropagateToken hands the provider credentials to the container as well as
+	// using them for the clone. Off means the session can read the repository
+	// it was created with and authenticate to nothing.
+	PropagateToken bool
 }
 
 // Create records the session and provisions it in the background. It returns as
@@ -122,9 +131,14 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 		return nil, fmt.Errorf("%w: %s is %s", ErrImageNotReady, image.Name, image.Status)
 	}
 
-	credentials, err := m.credentials.GitCredentials(ctx, user.ID, req.Provider)
-	if err != nil {
-		return nil, fmt.Errorf("read the stored %s credentials: %w", req.Provider, err)
+	// A session attached to no account has nothing to unseal: no clone to
+	// authenticate and no credentials to hand over.
+	var credentials provider.GitAuth
+	if req.Provider != "" {
+		credentials, err = m.credentials.GitCredentials(ctx, user.ID, req.Provider)
+		if err != nil {
+			return nil, fmt.Errorf("read the stored %s credentials: %w", req.Provider, err)
+		}
 	}
 
 	// The workspace path is derived from the id, so it has to exist first.
@@ -133,23 +147,30 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 
 	title := strings.TrimSpace(req.Title)
 	if title == "" {
+		// The image is all a session without a repository has to be named
+		// after; a fallback that is always there beats a precise one that
+		// sometimes is not.
 		title = req.RepoFullName
+		if title == "" {
+			title = image.Name
+		}
 	}
 
 	session, err := m.store.CreateSession(ctx, &store.Session{
-		ID:           id,
-		UserID:       user.ID,
-		Title:        title,
-		Provider:     string(req.Provider),
-		RepoFullName: req.RepoFullName,
-		RepoCloneURL: req.RepoCloneURL,
-		Branch:       req.Branch,
-		ImageID:      image.ID,
-		ImageRef:     image.ImageRef,
-		WorkspaceDir: workspace,
-		RepoDir:      filepath.Join(workspace, "repo"),
-		AutoClaude:   req.AutoClaude,
-		Status:       store.SessionStatusCreating,
+		ID:             id,
+		UserID:         user.ID,
+		Title:          title,
+		Provider:       string(req.Provider),
+		RepoFullName:   req.RepoFullName,
+		RepoCloneURL:   req.RepoCloneURL,
+		Branch:         req.Branch,
+		ImageID:        image.ID,
+		ImageRef:       image.ImageRef,
+		WorkspaceDir:   workspace,
+		RepoDir:        filepath.Join(workspace, "repo"),
+		AutoClaude:     req.AutoClaude,
+		PropagateToken: req.PropagateToken,
+		Status:         store.SessionStatusCreating,
 	})
 	if err != nil {
 		return nil, err
@@ -188,18 +209,25 @@ func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, cr
 		return err
 	}
 
-	m.setStatus(session.ID, store.SessionStatusCloning, "")
-	err := m.cloner.Clone(ctx, gitops.Options{
-		CloneURL:  session.RepoCloneURL,
-		Branch:    session.Branch,
-		Dest:      session.RepoDir,
-		Username:  credentials.Username,
-		Token:     credentials.Secret,
-		UserName:  m.cfg.GitUserName,
-		UserEmail: m.cfg.GitUserEmail,
-	})
-	if err != nil {
-		return err
+	if session.RepoCloneURL != "" {
+		m.setStatus(session.ID, store.SessionStatusCloning, "")
+		err := m.cloner.Clone(ctx, gitops.Options{
+			CloneURL:  session.RepoCloneURL,
+			Branch:    session.Branch,
+			Dest:      session.RepoDir,
+			Username:  credentials.Username,
+			Token:     credentials.Secret,
+			UserName:  m.cfg.GitUserName,
+			UserEmail: m.cfg.GitUserEmail,
+		})
+		if err != nil {
+			return err
+		}
+	} else if err := os.MkdirAll(session.RepoDir, 0o700); err != nil {
+		// A session without a repository still gets the directory: it is what
+		// is bind mounted at /workspace, and Docker would otherwise create it
+		// itself, owned by root.
+		return fmt.Errorf("create workspace: %w", err)
 	}
 
 	m.setStatus(session.ID, store.SessionStatusCreating, "")
@@ -264,7 +292,11 @@ func (m *Manager) containerSpec(session *store.Session, homeDir string, credenti
 		"HOME=" + dockerx.AgentHome,
 		"TERM=xterm-256color",
 	}
-	if credentials.Secret != "" {
+	// The clone on the host has already used these; whether the container gets
+	// them too is the session's own choice, made when it was created. There is
+	// no way to revisit it here: a container keeps the environment it was
+	// created with.
+	if credentials.Secret != "" && session.PropagateToken {
 		// Provider-neutral, because the credential helper the bootstrap
 		// installs is the same whichever account the repository came from.
 		env = append(env,
@@ -351,9 +383,13 @@ const (
 const containerCredentialHelper = `!f(){ echo "username=$` + gitUserEnv + `"; echo "password=$` + gitSecretEnv + `"; }; f`
 
 // bootstrapScript prepares a freshly started container: git has to be told the
-// bind mounted clone is safe to use (its owner may not match inside the
+// bind mounted workspace is safe to use (its owner may not match inside the
 // container) and how to authenticate to the provider, and tmux has to be
 // running before a terminal can attach.
+//
+// safe.directory is set even for a session that started without a repository,
+// because cloning one by hand is the obvious thing to do in it, and the mount
+// would refuse to be used for the same reason a clone made outside would.
 //
 // Whether Claude Code starts by itself is decided here, once, because it is the
 // command the tmux session is created with — which is why flipping the switch
@@ -374,10 +410,15 @@ func bootstrapScript(autoClaude, credentials bool) string {
 
 func (m *Manager) bootstrap(ctx context.Context, session *store.Session) error {
 	containerID := session.ContainerID
-	// The container was created with the credentials in its environment, so
-	// whether to install the helper is a question about the session, not about
-	// anything the bootstrap can see.
-	script := bootstrapScript(session.AutoClaude, session.RepoCloneURL != "")
+	// The container was created with the credentials in its environment, or
+	// deliberately without them, so whether to install the helper is a question
+	// about the session rather than about anything the bootstrap can see. A
+	// helper with no variables to read would answer with an empty username and
+	// password, turning "no credentials" into a confusing rejection.
+	//
+	// The provider, not the clone URL, is what says the environment has them: a
+	// session created without a repository can still have asked for a token.
+	script := bootstrapScript(session.AutoClaude, session.PropagateToken && session.Provider != "")
 	output, code, err := m.docker.RunExec(ctx, containerID, []string{"sh", "-c", script})
 	if err != nil {
 		return fmt.Errorf("bootstrap: %w", err)

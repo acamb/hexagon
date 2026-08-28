@@ -131,6 +131,11 @@ func TestMigrationMovesTheGitHubTokenOutOfUsers(t *testing.T) {
 	if session.Provider != "github" {
 		t.Errorf("session provider = %q, want github", session.Provider)
 	}
+	// And keeps the credentials its container was already created with: that
+	// environment cannot be changed now, so any other value would be a lie.
+	if !session.PropagateToken {
+		t.Error("propagateToken = false, want the token an existing container already carries")
+	}
 
 	// And the column it was copied from is gone: two places holding one secret
 	// is what this migration exists to prevent.

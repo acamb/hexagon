@@ -182,14 +182,7 @@ func TestSessionFromABitbucketRepository(t *testing.T) {
 		t.Errorf("clone credentials = %q / %q, want Bitbucket's", clone.Username, clone.Token)
 	}
 
-	env2 := map[string]string{}
-	for _, spec := range env.docker.containerSpecs() {
-		for _, entry := range spec.Env {
-			if name, value, ok := strings.Cut(entry, "="); ok {
-				env2[name] = value
-			}
-		}
-	}
+	env2 := env.containerEnv()
 	if env2["HEXAGON_GIT_USERNAME"] != "x-bitbucket-token" || env2["HEXAGON_GIT_PASSWORD"] != "atlassian-token" {
 		t.Errorf("container git credentials = %v", env2)
 	}

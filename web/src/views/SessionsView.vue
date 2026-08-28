@@ -14,8 +14,8 @@ const sessions = ref<Session[]>([])
 const error = ref<string | null>(null)
 const loaded = ref(false)
 const dialogOpen = ref(false)
-// The id of the session whose delete is armed, and whether to take the clone
-// with it. Deleting the workspace is not undoable, so it is never the default.
+// The id of the session whose delete is armed, and whether to take the workspace
+// with it. Deleting it is not undoable, so it is never the default.
 const confirming = ref<string | null>(null)
 const purge = ref(false)
 const busy = ref<string | null>(null)
@@ -102,9 +102,11 @@ onUnmounted(() => window.clearInterval(timer))
           <div class="identity">
             <strong>{{ session.title }}</strong>
             <span class="repo">
-              {{ session.repoFullName }}
+              {{ session.repoFullName || 'No repository' }}
               <span v-if="session.branch" class="branch">{{ session.branch }}</span>
-              <span class="branch">{{ providerNames[session.provider] }}</span>
+              <span v-if="session.provider" class="branch">
+                {{ providerNames[session.provider] }}
+              </span>
             </span>
           </div>
           <StatusDot :status="session.status" />
@@ -117,7 +119,7 @@ onUnmounted(() => window.clearInterval(timer))
         <div v-if="confirming === session.id" class="confirm">
           <label>
             <input type="checkbox" v-model="purge" />
-            also delete the clone on disk
+            also delete the workspace on disk
           </label>
           <div class="actions">
             <button type="button" @click="confirming = null">Cancel</button>
@@ -158,7 +160,7 @@ onUnmounted(() => window.clearInterval(timer))
     </ul>
 
     <p v-else-if="loaded" class="hint">
-      No sessions yet. Pick a repository and a base image to start one.
+      No sessions yet. Pick a base image, with or without a repository, to start one.
     </p>
 
     <NewSessionDialog v-if="dialogOpen" @close="dialogOpen = false" @created="created" />

@@ -148,12 +148,7 @@ func TestSessionContainerSpec(t *testing.T) {
 		}
 	}
 
-	env2 := map[string]string{}
-	for _, entry := range spec.Env {
-		if name, value, ok := strings.Cut(entry, "="); ok {
-			env2[name] = value
-		}
-	}
+	env2 := env.containerEnv()
 	if env2["HOME"] != dockerx.AgentHome {
 		t.Errorf("HOME = %q", env2["HOME"])
 	}
@@ -201,9 +196,9 @@ func TestCreateSessionValidation(t *testing.T) {
 		body string
 		want int
 	}{
-		"no repository": {`{"imageId":"whatever"}`, http.StatusBadRequest},
-		"no image":      {`{"repoFullName":"acme/widgets"}`, http.StatusBadRequest},
-		"unknown image": {`{"repoFullName":"acme/widgets","imageId":"nope"}`, http.StatusBadRequest},
+		"no image":       {`{"repoFullName":"acme/widgets"}`, http.StatusBadRequest},
+		"unknown image":  {`{"repoFullName":"acme/widgets","imageId":"nope"}`, http.StatusBadRequest},
+		"nothing at all": {`{}`, http.StatusBadRequest},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -411,6 +406,21 @@ func (e *testEnv) bootstrapScript(n int) string {
 	return strings.Join(commands[n], " ")
 }
 
+// containerEnv is the environment the session's container was created with,
+// which is where the provider credentials either are or deliberately are not.
+func (e *testEnv) containerEnv() map[string]string {
+	e.t.Helper()
+	env := map[string]string{}
+	for _, spec := range e.docker.containerSpecs() {
+		for _, entry := range spec.Env {
+			if name, value, ok := strings.Cut(entry, "="); ok {
+				env[name] = value
+			}
+		}
+	}
+	return env
+}
+
 func TestSessionStartsClaudeCodeByDefault(t *testing.T) {
 	env := newTestEnv(t, "alice")
 	env.signIn()
@@ -452,6 +462,75 @@ func TestSessionCanBeCreatedWithoutClaudeCode(t *testing.T) {
 
 	if script := env.bootstrapScript(0); strings.Contains(script, "claude") {
 		t.Errorf("the tmux session starts Claude Code anyway: %s", script)
+	}
+}
+
+// The default has to keep working exactly as it did: a session whose request
+// says nothing about the token is a session that can push.
+func TestSessionCarriesTheProviderTokenByDefault(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"repoFullName":"acme/widgets","imageId":%q}`, image.ID)), &created)
+	if !created.PropagateToken {
+		t.Error("propagateToken = false, want the token passed when nothing said otherwise")
+	}
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	containerEnv := env.containerEnv()
+	for _, name := range []string{"HEXAGON_GIT_USERNAME", "HEXAGON_GIT_PASSWORD", "GITHUB_TOKEN"} {
+		if containerEnv[name] == "" {
+			t.Errorf("%s is missing from the container: %v", name, containerEnv)
+		}
+	}
+	if script := env.bootstrapScript(0); !strings.Contains(script, "credential.helper") {
+		t.Errorf("the bootstrap does not install a credential helper: %s", script)
+	}
+}
+
+// The switch itself: the clone still happens with the credentials, because it
+// runs on the host and a private repository needs them, and the container gets
+// none of them.
+func TestSessionCanBeCreatedWithoutTheProviderToken(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"repoFullName":"acme/widgets","imageId":%q,"propagateToken":false}`, image.ID)), &created)
+	if created.PropagateToken {
+		t.Error("propagateToken = true, want the value the request asked for")
+	}
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	clones := env.cloner.clones()
+	if len(clones) != 1 || clones[0].Token != "gho_token" {
+		t.Errorf("clones = %+v, want one made with the caller's own token", clones)
+	}
+
+	containerEnv := env.containerEnv()
+	for _, name := range []string{"HEXAGON_GIT_USERNAME", "HEXAGON_GIT_PASSWORD", "GITHUB_TOKEN"} {
+		if _, ok := containerEnv[name]; ok {
+			t.Errorf("%s reached a container that asked not to have it: %v", name, containerEnv)
+		}
+	}
+	// A helper with nothing to read would answer with an empty username and
+	// password, which turns "no credentials" into a confusing rejection.
+	if script := env.bootstrapScript(0); strings.Contains(script, "credential.helper") {
+		t.Errorf("the bootstrap installs a credential helper anyway: %s", script)
+	}
+
+	// And the choice survives a round trip, because the session page reports it.
+	var reloaded sessionResponse
+	env.decode(env.do(http.MethodGet, "/api/sessions/"+created.ID, nil), &reloaded)
+	if reloaded.PropagateToken {
+		t.Error("the session reports itself as carrying the token")
 	}
 }
 
@@ -523,5 +602,147 @@ func TestUpdateSessionIsScopedToTheOwner(t *testing.T) {
 	}
 	if !after.AutoClaude {
 		t.Error("the refused request changed the session anyway")
+	}
+}
+
+// The other half of the create flow: no repository at all. Nothing is cloned,
+// /workspace is an empty directory, and with no account named the container
+// carries no credentials.
+func TestSessionWithoutARepository(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(`{"imageId":%q}`, image.ID)), &created)
+	if created.RepoFullName != "" || created.Branch != "" || created.Provider != "" {
+		t.Errorf("session = %+v, want no repository and no account", created)
+	}
+	if created.Title != "base" {
+		t.Errorf("title = %q, want the image name: there is no repository to name it after", created.Title)
+	}
+	if created.PropagateToken {
+		t.Error("propagateToken = true, want no token: no account was asked for")
+	}
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	if clones := env.cloner.clones(); len(clones) != 0 {
+		t.Errorf("a session without a repository cloned something: %+v", clones)
+	}
+	// The directory is still ours to create: Docker would make the missing bind
+	// source itself, owned by root, and the session runs as the host user.
+	workspace := filepath.Join(env.workspaces, created.ID, "repo")
+	info, err := os.Stat(workspace)
+	if err != nil || !info.IsDir() {
+		t.Fatalf("the workspace directory is missing: %v", err)
+	}
+	entries, err := os.ReadDir(workspace)
+	if err != nil || len(entries) != 0 {
+		t.Errorf("workspace contents = %v (%v), want it empty", entries, err)
+	}
+	var spec dockerx.ContainerSpec
+	for _, s := range env.docker.containerSpecs() {
+		spec = s
+	}
+	if !contains(spec.Binds, workspace+":"+dockerx.WorkspaceMount) {
+		t.Errorf("the empty workspace is not mounted at %s: %v", dockerx.WorkspaceMount, spec.Binds)
+	}
+
+	containerEnv := env.containerEnv()
+	for _, name := range []string{"HEXAGON_GIT_USERNAME", "HEXAGON_GIT_PASSWORD", "GITHUB_TOKEN"} {
+		if _, ok := containerEnv[name]; ok {
+			t.Errorf("%s reached a session that named no account: %v", name, containerEnv)
+		}
+	}
+	if script := env.bootstrapScript(0); strings.Contains(script, "credential.helper") {
+		t.Errorf("the bootstrap installs a credential helper with nothing to read: %s", script)
+	}
+	// Cloning something by hand is the obvious thing to do in such a session,
+	// and the mount is owned by whoever owns it on the host either way.
+	if script := env.bootstrapScript(0); !strings.Contains(script, "safe.directory") {
+		t.Errorf("the bootstrap does not mark the workspace safe for git: %s", script)
+	}
+}
+
+// The second sentence of the point: no repository, and a token anyway. The
+// account is named directly, and it does not have to be the one Hexagon signs
+// in with.
+func TestSessionWithoutARepositoryCanStillCarryAToken(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	env.connectBitbucket("alice@example.test", "atlassian-token")
+	image := env.readyImage("base")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"imageId":%q,"provider":"bitbucket","title":"scratch"}`, image.ID)), &created)
+	if created.Provider != "bitbucket" || !created.PropagateToken {
+		t.Errorf("session = %+v, want it attached to Bitbucket with its token", created)
+	}
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	if clones := env.cloner.clones(); len(clones) != 0 {
+		t.Errorf("a session without a repository cloned something: %+v", clones)
+	}
+
+	containerEnv := env.containerEnv()
+	if containerEnv["HEXAGON_GIT_USERNAME"] != "x-bitbucket-token" ||
+		containerEnv["HEXAGON_GIT_PASSWORD"] != "atlassian-token" {
+		t.Errorf("container git credentials = %v, want Bitbucket's", containerEnv)
+	}
+	// GITHUB_TOKEN is GitHub's name for GitHub's token, and this is not one.
+	if _, ok := containerEnv["GITHUB_TOKEN"]; ok {
+		t.Errorf("a Bitbucket session carries GITHUB_TOKEN: %v", containerEnv)
+	}
+	if script := env.bootstrapScript(0); !strings.Contains(script, "credential.helper") {
+		t.Errorf("the bootstrap does not install a credential helper: %s", script)
+	}
+}
+
+// Naming an account the caller does not have has to be refused here: nothing
+// else in this path looks, and the session would fail to provision with a
+// message about unsealing a credential that was never there.
+func TestSessionWithoutARepositoryChecksTheAccount(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+
+	cases := map[string]string{
+		"not connected": `{"imageId":%q,"provider":"bitbucket"}`,
+		"unknown":       `{"imageId":%q,"provider":"gitlab"}`,
+	}
+	for name, body := range cases {
+		t.Run(name, func(t *testing.T) {
+			if got := env.postJSON("/api/sessions", fmt.Sprintf(body, image.ID)).StatusCode; got != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", got)
+			}
+		})
+	}
+
+	var sessions []sessionResponse
+	env.decode(env.do(http.MethodGet, "/api/sessions", nil), &sessions)
+	if len(sessions) != 0 {
+		t.Errorf("a refused request left %d sessions behind", len(sessions))
+	}
+}
+
+// Asking for no token and naming an account at the same time is a contradiction
+// with no repository to settle it. The account is what gets dropped: it would
+// otherwise be recorded as an attachment the session does not have.
+func TestSessionWithoutARepositoryRefusingTheTokenDropsTheAccount(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"imageId":%q,"provider":"github","propagateToken":false}`, image.ID)), &created)
+	if created.Provider != "" || created.PropagateToken {
+		t.Errorf("session = %+v, want no account and no token", created)
+	}
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	if containerEnv := env.containerEnv(); containerEnv["GITHUB_TOKEN"] != "" {
+		t.Errorf("GITHUB_TOKEN reached a session that refused it: %v", containerEnv)
 	}
 }

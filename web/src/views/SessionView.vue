@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppHeader from '../components/AppHeader.vue'
 import Spinner from '../components/Spinner.vue'
@@ -23,6 +23,16 @@ const running = ref<'start' | 'stop' | 'autoClaude' | null>(null)
 // command, so the change is only visible after a restart.
 const pending = ref(false)
 const cheatsheetOpen = ref(false)
+
+// Why the session runs without credentials, which is a different sentence for a
+// session that has an account it was refused and one that has no account at all.
+const noToken = computed(() => {
+  const current = session.value
+  if (!current || current.propagateToken) return ''
+  return current.provider
+    ? `This session has no ${providerNames[current.provider]} token: it can read the clone, but not fetch or push.`
+    : 'This session carries no account credentials: nothing in it can fetch or push.'
+})
 
 async function refresh() {
   try {
@@ -101,9 +111,13 @@ onUnmounted(() => window.clearTimeout(timer))
         <div class="identity">
           <strong>{{ session.title }}</strong>
           <span class="repo">
-            {{ session.repoFullName }}
+            {{ session.repoFullName || 'No repository' }}
             <span v-if="session.branch" class="branch">{{ session.branch }}</span>
-            <span class="branch">{{ providerNames[session.provider] }}</span>
+            <span v-if="session.provider" class="branch">{{ providerNames[session.provider] }}</span>
+            <!-- A fact about the session rather than a control: the credentials
+                 are part of the container's environment, fixed when it was
+                 created. -->
+            <span v-if="!session.propagateToken" class="branch" :title="noToken">no token</span>
           </span>
         </div>
 
@@ -151,11 +165,11 @@ onUnmounted(() => window.clearTimeout(timer))
           The terminal opens as soon as the container is up.
         </p>
         <p v-else-if="session.status === 'stopped'" class="hint">
-          The clone is still on disk at <code>{{ session.repoDir }}</code>. Starting the session
-          brings the container back, with a fresh tmux.
+          The workspace is still on disk at <code>{{ session.repoDir }}</code>. Starting the
+          session brings the container back, with a fresh tmux.
         </p>
         <p v-else-if="session.status === 'gone'" class="hint">
-          The container behind this session no longer exists. The clone is still at
+          The container behind this session no longer exists. The workspace is still at
           <code>{{ session.repoDir }}</code>.
         </p>
       </div>

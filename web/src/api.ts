@@ -95,25 +95,37 @@ export type SessionStatus =
 export interface Session {
   id: string
   title: string
+  // Empty together for a session created without a repository: it started on
+  // an empty workspace instead of a clone.
   repoFullName: string
   branch: string
   imageId: string
   imageRef: string
-  provider: ProviderKind
+  // The account the session is attached to, empty when it is attached to none.
+  provider: ProviderKind | ''
+  // The directory mounted at /workspace, clone or not.
   repoDir: string
   status: SessionStatus
   error?: string
   autoClaude: boolean
+  // Whether the container was given the credentials of the account above.
+  // Decided when the session was created and never afterwards: a container
+  // keeps the environment it was created with.
+  propagateToken: boolean
   createdAt: string
 }
 
 export interface NewSession {
-  provider: ProviderKind
-  repoFullName: string
+  // With a repository, which account it comes from. Without one, which
+  // account's token the session gets: empty means none.
+  provider?: ProviderKind | ''
+  // Omitted for a session that starts on an empty workspace.
+  repoFullName?: string
   branch?: string
   imageId: string
   title?: string
   autoClaude?: boolean
+  propagateToken?: boolean
 }
 
 // What a session's settings can be changed to after it exists. Omitted fields

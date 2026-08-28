@@ -1,9 +1,9 @@
 # Hexagon
 
-A web UI for running Claude Code sessions in Docker containers. Pick a
-repository from your GitHub account and a base image, and Hexagon clones the
-repo, starts a container with the clone bind-mounted, runs `tmux` inside it, and
-renders that tmux in the browser.
+A web UI for running Claude Code sessions in Docker containers. Pick a base
+image, and a repository from a connected account or none at all: Hexagon clones
+the repo, starts a container with the workspace bind-mounted, runs `tmux` inside
+it, and renders that tmux in the browser.
 
 Go backend, Vue 3 frontend, one binary with the frontend embedded.
 
@@ -108,10 +108,18 @@ whether the account shows its username or its email. App passwords are not suppo
 credentials are checked against the call a listing starts from before they are stored, and sealed
 with the same key as the GitHub token.
 
-**Sessions** — pick a repository from any connected account and an image. Hexagon clones the
-repository into `<workspace root>/<session id>/repo` on the host, starts a container with
-that clone bind mounted on `/workspace`, and runs `tmux` inside it. The container runs as
-you, so files it writes stay yours rather than root's.
+**Sessions** — pick an image, and a repository from any connected account or none at all.
+With a repository Hexagon clones it into `<workspace root>/<session id>/repo` on the host;
+without one that directory starts empty. Either way it is bind mounted on `/workspace` in a
+container running `tmux`. The container runs as you, so files it writes stay yours rather
+than root's.
+
+**The provider token** — a session with a repository carries the credentials of the account
+the repository came from, unless the box is unticked when it is created; a session without a
+repository carries none unless an account is chosen for it. The clone on the host uses them
+either way — it could not reach a private repository otherwise — so the choice is only about
+what runs inside the container. It cannot be changed afterwards: a container keeps the
+environment it was created with. Without the token nothing in the session can fetch or push.
 
 **Starting Claude Code by itself** — a session either opens with `claude` already running in
 its tmux or leaves you at a shell prompt. It is a checkbox when you create the session, on
@@ -148,7 +156,7 @@ and has a default that suits a single user on a developer machine.
 | `HEXAGON_ADDR` | `addr` | `127.0.0.1:8080` | Listen address |
 | `HEXAGON_PUBLIC_URL` | `publicUrl` | `http://127.0.0.1:8080` | Origin the browser uses; OAuth callbacks and the origin check derive from it |
 | `HEXAGON_DATA_DIR` | `dataDir` | `~/.local/share/hexagon` | Database and secret key |
-| `HEXAGON_WORKSPACE_ROOT` | `workspaceRoot` | `<data dir>/workspaces` | One directory per session, holding the repository clone |
+| `HEXAGON_WORKSPACE_ROOT` | `workspaceRoot` | `<data dir>/workspaces` | One directory per session, holding its workspace |
 | `HEXAGON_GITHUB_CLIENT_ID` | `github.clientId` | — | Required |
 | `HEXAGON_GITHUB_CLIENT_SECRET` | `github.clientSecret` | — | Required |
 | `HEXAGON_ALLOWED_USERS` | `github.allowedUsers` | — | Required. GitHub logins allowed to sign in: comma-separated in the environment, a JSON array in the file |
@@ -274,6 +282,6 @@ deploy/images/      base image definitions for session containers (from M2)
   server key.
 - The `repo` scope grants full read/write over your repositories, and that token
   is handed to a container running an autonomous agent. That is the deliberate
-  trade-off of the project. The same applies to a connected Bitbucket token: a
-  session gets the credentials of the account its repository came from, and only
-  those.
+  trade-off of the project, and the reason it can be declined per session. The
+  same applies to a connected Bitbucket token: a session gets one account's
+  credentials at most, chosen when it is created, and never another's.

@@ -12,8 +12,8 @@ as described in [AGENTS.md](../../AGENTS.md).
 | 4 | tmux cheatsheet | [04-tmux-cheatsheet.md](04-tmux-cheatsheet.md) | done |
 | 5 | Dockerfile editor when creating an image | [05-dockerfile-editor.md](05-dockerfile-editor.md) | done |
 | 6 | Additional repository providers | [06-additional-providers.md](06-additional-providers.md) | done |
-| 7 | Switch to propagate the provider token | `07-token-propagation-switch.md` | not started |
-| 8 | Sessions without a repository | `08-sessions-without-repo.md` | not started |
+| 7 | Switch to propagate the provider token | [07-token-propagation-switch.md](07-token-propagation-switch.md) | done |
+| 8 | Sessions without a repository | [08-sessions-without-repo.md](08-sessions-without-repo.md) | done |
 | 9 | Claude login from the UI | `09-claude-login-from-ui.md` | not started |
 | 10 | Multiple Claude accounts | `10-multiple-claude-accounts.md` | not started |
 
