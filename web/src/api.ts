@@ -99,6 +99,7 @@ export interface Session {
   branch: string
   imageId: string
   imageRef: string
+  provider: ProviderKind
   repoDir: string
   status: SessionStatus
   error?: string
@@ -107,6 +108,7 @@ export interface Session {
 }
 
 export interface NewSession {
+  provider: ProviderKind
   repoFullName: string
   branch?: string
   imageId: string
@@ -120,13 +122,41 @@ export interface SessionSettings {
   autoClaude?: boolean
 }
 
+// The providers this build knows. The value is what the API sends and stores,
+// so it is part of the contract rather than a label.
+export type ProviderKind = 'github' | 'bitbucket'
+
+export const providerNames: Record<ProviderKind, string> = {
+  github: 'GitHub',
+  bitbucket: 'Bitbucket',
+}
+
 export interface Repo {
+  provider: ProviderKind
   fullName: string
   cloneUrl: string
   defaultBranch: string
   private: boolean
   description: string
   updatedAt: string
+}
+
+// Repositories from every connected account, plus the accounts that could not
+// be reached: one expired token must not hide the rest of the list.
+export interface RepoListing {
+  repos: Repo[]
+  failed?: Partial<Record<ProviderKind, string>>
+}
+
+export interface Account {
+  provider: ProviderKind
+  account: string
+  identity?: string
+  avatarUrl?: string
+  connected: boolean
+  updatedAt?: string
+  // False for GitHub: it is the account you signed in with.
+  removable: boolean
 }
 
 export const api = {
@@ -148,8 +178,17 @@ export const api = {
       request<null>(`/sessions/${id}?purge=${purge}`, { method: 'DELETE' }),
   },
 
-  github: {
-    repos: (refresh = false) => request<Repo[]>(`/github/repos${refresh ? '?refresh=1' : ''}`),
+  repos: (refresh = false) => request<RepoListing>(`/repos${refresh ? '?refresh=1' : ''}`),
+
+  accounts: {
+    list: () => request<Account[]>('/accounts'),
+    connect: (provider: ProviderKind, identity: string, secret: string) =>
+      request<Account>(`/accounts/${provider}`, {
+        method: 'PUT',
+        body: JSON.stringify({ identity, secret }),
+      }),
+    disconnect: (provider: ProviderKind) =>
+      request<null>(`/accounts/${provider}`, { method: 'DELETE' }),
   },
 
   images: {

@@ -20,6 +20,7 @@ import (
 	"github.com/andrea/hexagon/internal/config"
 	"github.com/andrea/hexagon/internal/github"
 	"github.com/andrea/hexagon/internal/gitops"
+	"github.com/andrea/hexagon/internal/provider"
 	"github.com/andrea/hexagon/internal/session"
 	"github.com/andrea/hexagon/internal/store"
 )
@@ -44,10 +45,15 @@ type testEnv struct {
 	store  *store.Store
 	auth   *auth.Service
 	github *fakeGitHub
-	repos  *fakeRepos
-	docker *fakeDocker
-	cloner *fakeCloner
-	editor *fakeEditor
+	// ghRepos and bbRepos are the two sources of repositories; repos is the
+	// real lister over them, so a test exercises the merging and the caching
+	// rather than a stub of them.
+	ghRepos *fakeProvider
+	bbRepos *fakeProvider
+	repos   *provider.Lister
+	docker  *fakeDocker
+	cloner  *fakeCloner
+	editor  *fakeEditor
 	// workspaces is the root the session manager provisions into.
 	workspaces string
 }
@@ -105,12 +111,15 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	logins := auth.NewService(st, cipher, cfg.PublicURL)
 	gh := &fakeGitHub{user: &github.User{Login: "alice", ID: 42, AvatarURL: "https://example.test/a.png"}}
 	docker := newFakeDocker()
-	repos := &fakeRepos{}
+	ghRepos := newFakeProvider(provider.GitHub, "alice")
+	bbRepos := newFakeProvider(provider.Bitbucket, "alice-bb")
+	providers := provider.NewRegistry(ghRepos, bbRepos)
+	repos := provider.NewLister(providers, logins, time.Minute)
 	cloner := &fakeCloner{}
 	editor := &fakeEditor{}
 	workspaces := filepath.Join(t.TempDir(), "workspaces")
 
-	sessions := session.NewManager(st, docker, cloner, logins, session.Config{
+	sessions := session.NewManager(st, docker, cloner, auth.NewGitCredentialSource(logins, providers), session.Config{
 		WorkspaceRoot: workspaces,
 		GitUserName:   "Hexagon User",
 		GitUserEmail:  "user@example.test",
@@ -134,6 +143,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		Auth:           logins,
 		OAuth:          oauth,
 		GitHub:         gh,
+		Providers:      providers,
 		Repos:          repos,
 		Docker:         docker,
 		Sessions:       sessions,
@@ -151,15 +161,17 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		t.Fatalf("new cookie jar: %v", err)
 	}
 	return &testEnv{
-		t:      t,
-		server: server,
-		store:  st,
-		auth:   logins,
-		github: gh,
-		repos:  repos,
-		docker: docker,
-		cloner: cloner,
-		editor: editor,
+		t:       t,
+		server:  server,
+		store:   st,
+		auth:    logins,
+		github:  gh,
+		ghRepos: ghRepos,
+		bbRepos: bbRepos,
+		repos:   repos,
+		docker:  docker,
+		cloner:  cloner,
+		editor:  editor,
 
 		workspaces: workspaces,
 		client: &http.Client{
@@ -170,6 +182,16 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 }
 
 // signIn completes a login so the client holds a session cookie.
+// userID is the database id of the signed-in user.
+func (e *testEnv) userID() string {
+	e.t.Helper()
+	user, err := e.store.UserByGitHubID(e.t.Context(), 42)
+	if err != nil {
+		e.t.Fatalf("look up the signed-in user: %v", err)
+	}
+	return user.ID
+}
+
 func (e *testEnv) signIn() {
 	e.t.Helper()
 	state := e.startLogin()
@@ -253,17 +275,23 @@ func TestLoginFlowIssuesSession(t *testing.T) {
 		t.Errorf("/api/auth/me body = %s", body)
 	}
 
-	// The GitHub token must be stored sealed, and must come back out.
-	user, err := env.store.UserByGitHubID(context.Background(), 42)
+	// The token the login came with is stored sealed, as the GitHub provider
+	// account, and must come back out.
+	ctx := context.Background()
+	user, err := env.store.UserByGitHubID(ctx, 42)
 	if err != nil {
 		t.Fatalf("look up user: %v", err)
 	}
-	if strings.Contains(string(user.GitHubTokenEnc), "gho_token") {
+	account, err := env.store.ProviderAccount(ctx, user.ID, string(provider.GitHub))
+	if err != nil {
+		t.Fatalf("look up the github account: %v", err)
+	}
+	if strings.Contains(string(account.SecretEnc), "gho_token") {
 		t.Error("the GitHub token is stored in the clear")
 	}
-	token, err := env.auth.GitHubToken(user)
-	if err != nil || token != "gho_token" {
-		t.Errorf("GitHubToken = %q, %v; want the original token", token, err)
+	credentials, err := env.auth.Credentials(ctx, user.ID, provider.GitHub)
+	if err != nil || credentials.Secret != "gho_token" {
+		t.Errorf("Credentials = %q, %v; want the original token", credentials.Secret, err)
 	}
 }
 

@@ -1,6 +1,10 @@
 // Package auth handles who may use Hexagon: the GitHub OAuth login, the browser
-// session cookies that follow it, and the encryption of the GitHub tokens the
-// rest of the application uses on the user's behalf.
+// session cookies that follow it, and the encryption of the provider
+// credentials the rest of the application uses on the user's behalf.
+//
+// Signing in is GitHub only, and stays that way: the allowlist is a list of
+// GitHub logins. Other providers are accounts a signed-in user connects, which
+// is a different question from who they are.
 package auth
 
 import (
@@ -15,6 +19,7 @@ import (
 	"time"
 
 	"github.com/andrea/hexagon/internal/github"
+	"github.com/andrea/hexagon/internal/provider"
 	"github.com/andrea/hexagon/internal/store"
 )
 
@@ -137,27 +142,112 @@ func (s *Service) clearCookie(w http.ResponseWriter, name, path string) {
 	})
 }
 
-// SaveLogin seals the GitHub token and records the login.
+// SaveLogin records the login and stores the token that came with it.
+//
+// Two writes, because they are two different things: the user row is the
+// identity, and the GitHub provider account is one of the places this user's
+// repositories come from. The login just happens to hand us both at once.
 func (s *Service) SaveLogin(ctx context.Context, ghUser *github.User, token string) (*store.User, error) {
-	sealed, err := s.cipher.Seal([]byte(token))
+	user, err := s.store.UpsertUser(ctx, &store.User{
+		GitHubLogin: ghUser.Login,
+		GitHubID:    ghUser.ID,
+		AvatarURL:   ghUser.AvatarURL,
+	})
 	if err != nil {
 		return nil, err
 	}
-	return s.store.UpsertUser(ctx, &store.User{
-		GitHubLogin:    ghUser.Login,
-		GitHubID:       ghUser.ID,
-		AvatarURL:      ghUser.AvatarURL,
-		GitHubTokenEnc: sealed,
+	_, err = s.Connect(ctx, user, provider.Account{
+		Kind:      provider.GitHub,
+		Account:   ghUser.Login,
+		AvatarURL: ghUser.AvatarURL,
+	}, token)
+	if err != nil {
+		return nil, err
+	}
+	return user, nil
+}
+
+// Connect stores an account's secret, sealed. The account has already been
+// verified against the provider by the time it gets here.
+func (s *Service) Connect(ctx context.Context, user *store.User, account provider.Account, secret string) (*store.ProviderAccount, error) {
+	sealed, err := s.cipher.Seal([]byte(secret))
+	if err != nil {
+		return nil, err
+	}
+	return s.store.UpsertProviderAccount(ctx, &store.ProviderAccount{
+		UserID:    user.ID,
+		Provider:  string(account.Kind),
+		Account:   account.Account,
+		Identity:  account.Identity,
+		AvatarURL: account.AvatarURL,
+		SecretEnc: sealed,
 	})
 }
 
-// GitHubToken unseals the token Hexagon uses to act on the user's behalf.
-func (s *Service) GitHubToken(user *store.User) (string, error) {
-	token, err := s.cipher.Open(user.GitHubTokenEnc)
+// Credentials unseals one connected account, for acting on the user's behalf.
+func (s *Service) Credentials(ctx context.Context, userID string, kind provider.Kind) (provider.Credentials, error) {
+	account, err := s.store.ProviderAccount(ctx, userID, string(kind))
 	if err != nil {
-		return "", err
+		return provider.Credentials{}, err
 	}
-	return string(token), nil
+	return s.credentials(account)
+}
+
+// Connected unseals every account the user has connected. It is what
+// provider.Lister needs, and the reason the cipher never has to leave this
+// package.
+func (s *Service) Connected(ctx context.Context, userID string) (map[provider.Kind]provider.Credentials, error) {
+	accounts, err := s.store.ListProviderAccounts(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[provider.Kind]provider.Credentials, len(accounts))
+	for _, account := range accounts {
+		credentials, err := s.credentials(account)
+		if err != nil {
+			return nil, err
+		}
+		out[provider.Kind(account.Provider)] = credentials
+	}
+	return out, nil
+}
+
+// GitCredentialSource pairs a user's sealed credentials with the provider that
+// knows what git wants for them. The session orchestrator holds one of these
+// rather than a cipher and a registry.
+type GitCredentialSource struct {
+	service  *Service
+	registry provider.Registry
+}
+
+// NewGitCredentialSource wires the two together.
+func NewGitCredentialSource(service *Service, registry provider.Registry) *GitCredentialSource {
+	return &GitCredentialSource{service: service, registry: registry}
+}
+
+// GitCredentials returns what git needs to reach one of the user's accounts.
+func (g *GitCredentialSource) GitCredentials(ctx context.Context, userID string, kind provider.Kind) (provider.GitAuth, error) {
+	p, err := g.registry.Get(kind)
+	if err != nil {
+		return provider.GitAuth{}, err
+	}
+	credentials, err := g.service.Credentials(ctx, userID, kind)
+	if err != nil {
+		return provider.GitAuth{}, err
+	}
+	return p.GitCredentials(credentials), nil
+}
+
+func (s *Service) credentials(account *store.ProviderAccount) (provider.Credentials, error) {
+	secret, err := s.cipher.Open(account.SecretEnc)
+	if err != nil {
+		return provider.Credentials{}, err
+	}
+	return provider.Credentials{
+		Account:  account.Account,
+		Identity: account.Identity,
+		Secret:   string(secret),
+	}, nil
 }
 
 // NewState returns a fresh OAuth state value.

@@ -396,7 +396,7 @@ func TestImagesAreScopedToTheirOwner(t *testing.T) {
 	env.decode(env.postJSON("/api/images", `{"name":"mine","sourceType":"dockerfile","dockerfile":"FROM x"}`), &mine)
 
 	ctx := context.Background()
-	other, err := env.store.UpsertUser(ctx, &store.User{GitHubLogin: "bob", GitHubID: 7, GitHubTokenEnc: []byte("x")})
+	other, err := env.store.UpsertUser(ctx, &store.User{GitHubLogin: "bob", GitHubID: 7})
 	if err != nil {
 		t.Fatalf("create other user: %v", err)
 	}

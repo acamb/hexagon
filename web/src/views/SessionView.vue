@@ -6,7 +6,7 @@ import Spinner from '../components/Spinner.vue'
 import StatusDot from '../components/StatusDot.vue'
 import TerminalPane from '../components/TerminalPane.vue'
 import TmuxCheatsheet from '../components/TmuxCheatsheet.vue'
-import { ApiError, api, type Session } from '../api'
+import { ApiError, api, providerNames, type Session } from '../api'
 import { isProvisioning, sessionLabel } from '../status'
 
 const route = useRoute()
@@ -103,6 +103,7 @@ onUnmounted(() => window.clearTimeout(timer))
           <span class="repo">
             {{ session.repoFullName }}
             <span v-if="session.branch" class="branch">{{ session.branch }}</span>
+            <span class="branch">{{ providerNames[session.provider] }}</span>
           </span>
         </div>
 

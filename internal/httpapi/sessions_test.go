@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/andrea/hexagon/internal/dockerx"
-	"github.com/andrea/hexagon/internal/github"
 	"github.com/andrea/hexagon/internal/store"
 )
 
@@ -28,13 +27,7 @@ func (e *testEnv) readyImage(name string) imageResponse {
 
 // offerRepo makes a repository visible in the caller's GitHub listing.
 func (e *testEnv) offerRepo(fullName, defaultBranch string) {
-	e.repos.mu.Lock()
-	defer e.repos.mu.Unlock()
-	e.repos.repos = append(e.repos.repos, github.Repo{
-		FullName:      fullName,
-		CloneURL:      "https://github.com/" + fullName + ".git",
-		DefaultBranch: defaultBranch,
-	})
+	e.ghRepos.offer(fullName, defaultBranch)
 }
 
 func (e *testEnv) waitForSessionStatus(id, want string) sessionResponse {
@@ -76,17 +69,22 @@ func TestCreateSessionProvisionsAContainer(t *testing.T) {
 		t.Errorf("a running session carries an error: %q", running.Error)
 	}
 
-	// The clone happens on the host, from the URL GitHub gave us.
+	// The clone happens on the host, from the URL the provider gave us.
 	clones := env.cloner.clones()
 	if len(clones) != 1 {
 		t.Fatalf("made %d clones, want 1", len(clones))
 	}
 	clone := clones[0]
-	if clone.CloneURL != "https://github.com/acme/widgets.git" || clone.Branch != "main" {
+	if clone.CloneURL != "https://github.test/acme/widgets.git" || clone.Branch != "main" {
 		t.Errorf("clone = %+v", clone)
 	}
 	if clone.Token != "gho_token" {
 		t.Errorf("clone token = %q, want the caller's own", clone.Token)
+	}
+	// The username half comes from the provider, not from the account name:
+	// GitHub and Bitbucket want different placeholders next to their tokens.
+	if clone.Username != "x-github-token" {
+		t.Errorf("clone username = %q, want the provider's", clone.Username)
 	}
 	if want := filepath.Join(env.workspaces, created.ID, "repo"); clone.Dest != want {
 		t.Errorf("clone destination = %q, want %q", clone.Dest, want)
@@ -502,7 +500,7 @@ func TestUpdateSessionIsScopedToTheOwner(t *testing.T) {
 	image := env.readyImage("base")
 
 	ctx := context.Background()
-	other, err := env.store.UpsertUser(ctx, &store.User{GitHubLogin: "bob", GitHubID: 7, GitHubTokenEnc: []byte("x")})
+	other, err := env.store.UpsertUser(ctx, &store.User{GitHubLogin: "bob", GitHubID: 7})
 	if err != nil {
 		t.Fatalf("create other user: %v", err)
 	}

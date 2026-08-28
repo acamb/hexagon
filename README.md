@@ -98,7 +98,17 @@ ignores your own Claude Code configuration (`--safe-mode`). It uses the host's C
 credentials and therefore its quota. Without a `claude` binary on the server the control
 is not shown and the box is edited by hand, as before.
 
-**Sessions** — pick a repository from your GitHub account and an image. Hexagon clones the
+**Accounts** — repositories come from the accounts you connect on the Accounts page. GitHub is
+there already: it is how you signed in. Bitbucket is added with an Atlassian account email and an
+API token, created under Atlassian account settings → Security → API tokens with
+`read:workspace:bitbucket` and `read:repository:bitbucket`, plus `write:repository:bitbucket` if
+Claude Code should push. Both reads are needed because Bitbucket lists the workspaces first and
+their repositories one workspace at a time. `read:user:bitbucket` is optional and only decides
+whether the account shows its username or its email. App passwords are not supported: Atlassian removed them in July 2026. The
+credentials are checked against the call a listing starts from before they are stored, and sealed
+with the same key as the GitHub token.
+
+**Sessions** — pick a repository from any connected account and an image. Hexagon clones the
 repository into `<workspace root>/<session id>/repo` on the host, starts a container with
 that clone bind mounted on `/workspace`, and runs `tmux` inside it. The container runs as
 you, so files it writes stay yours rather than root's.
@@ -143,6 +153,7 @@ and has a default that suits a single user on a developer machine.
 | `HEXAGON_GITHUB_CLIENT_SECRET` | `github.clientSecret` | — | Required |
 | `HEXAGON_ALLOWED_USERS` | `github.allowedUsers` | — | Required. GitHub logins allowed to sign in: comma-separated in the environment, a JSON array in the file |
 | `HEXAGON_GITHUB_API_URL` | `github.apiUrl` | `https://api.github.com` | Override for GitHub Enterprise, or a stub in development |
+| `HEXAGON_BITBUCKET_API_URL` | `bitbucket.apiUrl` | `https://api.bitbucket.org/2.0` | Override, or a stub in development |
 | `HEXAGON_SECRET_KEY` | `secretKey` | `<data dir>/secret.key` | 32 bytes, base64. Generated on first run |
 | `HEXAGON_DEV_USER` | `dev.user` | — | Development bypass, see below |
 | `HEXAGON_GITHUB_TOKEN` | `dev.githubToken` | — | Personal access token used by the bypass |
@@ -241,8 +252,11 @@ make vet
 cmd/hexagon/        entry point: config, database, HTTP server
 internal/config/    environment configuration
 internal/store/     SQLite: schema migrations and queries
-internal/auth/      GitHub OAuth login, session cookies, token encryption
+internal/auth/      GitHub OAuth login, session cookies, credential encryption
+internal/provider/  what a source of repositories is, and merging the connected ones
 internal/github/    GitHub REST client
+internal/bitbucket/ Bitbucket Cloud REST client
+internal/claudex/   runs `claude -p` for the Dockerfile editor
 internal/dockerx/   Docker Engine API: images, and exec attach for the terminal
 internal/gitops/    host-side git: cloning a repository into a session workspace
 internal/session/   orchestrator: provisioning, lifecycle, reconciliation
@@ -260,4 +274,6 @@ deploy/images/      base image definitions for session containers (from M2)
   server key.
 - The `repo` scope grants full read/write over your repositories, and that token
   is handed to a container running an autonomous agent. That is the deliberate
-  trade-off of the project.
+  trade-off of the project. The same applies to a connected Bitbucket token: a
+  session gets the credentials of the account its repository came from, and only
+  those.

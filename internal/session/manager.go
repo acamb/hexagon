@@ -16,6 +16,7 @@ import (
 
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/gitops"
+	"github.com/andrea/hexagon/internal/provider"
 	"github.com/andrea/hexagon/internal/store"
 	"github.com/google/uuid"
 )
@@ -44,9 +45,11 @@ var (
 	ErrImageNotReady = errors.New("image is not ready")
 )
 
-// TokenSource unseals the GitHub token stored for a user.
-type TokenSource interface {
-	GitHubToken(user *store.User) (string, error)
+// CredentialSource hands over the git credentials for one of a user's connected
+// accounts. It is an interface so the orchestrator never sees the cipher, and
+// so tests do not need one.
+type CredentialSource interface {
+	GitCredentials(ctx context.Context, userID string, kind provider.Kind) (provider.GitAuth, error)
 }
 
 // Cloner checks a repository out on the host. The indirection exists so the
@@ -77,24 +80,26 @@ type Config struct {
 
 // Manager creates and controls sessions.
 type Manager struct {
-	store  *store.Store
-	docker dockerx.API
-	cloner Cloner
-	tokens TokenSource
-	cfg    Config
-	log    *slog.Logger
+	store       *store.Store
+	docker      dockerx.API
+	cloner      Cloner
+	credentials CredentialSource
+	cfg         Config
+	log         *slog.Logger
 }
 
 // NewManager wires the orchestrator.
-func NewManager(st *store.Store, docker dockerx.API, cloner Cloner, tokens TokenSource, cfg Config, log *slog.Logger) *Manager {
-	return &Manager{store: st, docker: docker, cloner: cloner, tokens: tokens, cfg: cfg, log: log}
+func NewManager(st *store.Store, docker dockerx.API, cloner Cloner, credentials CredentialSource, cfg Config, log *slog.Logger) *Manager {
+	return &Manager{store: st, docker: docker, cloner: cloner, credentials: credentials, cfg: cfg, log: log}
 }
 
 // CreateRequest describes the session to set up. The repository is named by the
 // caller but resolved against their GitHub account before it gets here, so the
 // clone URL is one GitHub gave us rather than one the browser made up.
 type CreateRequest struct {
-	Title        string
+	Title string
+	// Provider is the connected account the repository came from.
+	Provider     provider.Kind
 	RepoFullName string
 	RepoCloneURL string
 	Branch       string
@@ -117,9 +122,9 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 		return nil, fmt.Errorf("%w: %s is %s", ErrImageNotReady, image.Name, image.Status)
 	}
 
-	token, err := m.tokens.GitHubToken(user)
+	credentials, err := m.credentials.GitCredentials(ctx, user.ID, req.Provider)
 	if err != nil {
-		return nil, fmt.Errorf("read the stored GitHub token: %w", err)
+		return nil, fmt.Errorf("read the stored %s credentials: %w", req.Provider, err)
 	}
 
 	// The workspace path is derived from the id, so it has to exist first.
@@ -135,6 +140,7 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 		ID:           id,
 		UserID:       user.ID,
 		Title:        title,
+		Provider:     string(req.Provider),
 		RepoFullName: req.RepoFullName,
 		RepoCloneURL: req.RepoCloneURL,
 		Branch:       req.Branch,
@@ -149,18 +155,18 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 		return nil, err
 	}
 
-	go m.provision(session, token)
+	go m.provision(session, credentials)
 	return session, nil
 }
 
 // provision walks the session from an empty directory to a running container
 // with tmux in it. It runs on its own context: a browser navigating away must
 // not cancel a clone half way through.
-func (m *Manager) provision(session *store.Session, token string) {
+func (m *Manager) provision(session *store.Session, credentials provider.GitAuth) {
 	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
 	defer cancel()
 
-	if err := m.provisionSteps(ctx, session, token); err != nil {
+	if err := m.provisionSteps(ctx, session, credentials); err != nil {
 		m.log.Error("provision session", "session", session.ID, "err", err)
 		m.cleanUpFailure(session)
 		m.setStatus(session.ID, store.SessionStatusFailed, err.Error())
@@ -170,7 +176,7 @@ func (m *Manager) provision(session *store.Session, token string) {
 	m.log.Info("session running", "session", session.ID, "repo", session.RepoFullName)
 }
 
-func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, token string) error {
+func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, credentials provider.GitAuth) error {
 	homeDir := filepath.Join(session.WorkspaceDir, "home")
 	// The container runs as the host user with HOME here, and Claude Code wants
 	// somewhere to keep its own state.
@@ -187,7 +193,8 @@ func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, to
 		CloneURL:  session.RepoCloneURL,
 		Branch:    session.Branch,
 		Dest:      session.RepoDir,
-		Token:     token,
+		Username:  credentials.Username,
+		Token:     credentials.Secret,
 		UserName:  m.cfg.GitUserName,
 		UserEmail: m.cfg.GitUserEmail,
 	})
@@ -196,7 +203,7 @@ func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, to
 	}
 
 	m.setStatus(session.ID, store.SessionStatusCreating, "")
-	containerID, err := m.docker.CreateContainer(ctx, m.containerSpec(session, homeDir, token))
+	containerID, err := m.docker.CreateContainer(ctx, m.containerSpec(session, homeDir, credentials))
 	if err != nil {
 		return err
 	}
@@ -252,11 +259,24 @@ func seedClaudeConfig(homeDir string) error {
 }
 
 // containerSpec is the whole contract between Hexagon and a session container.
-func (m *Manager) containerSpec(session *store.Session, homeDir, token string) dockerx.ContainerSpec {
+func (m *Manager) containerSpec(session *store.Session, homeDir string, credentials provider.GitAuth) dockerx.ContainerSpec {
 	env := []string{
 		"HOME=" + dockerx.AgentHome,
 		"TERM=xterm-256color",
-		"GITHUB_TOKEN=" + token,
+	}
+	if credentials.Secret != "" {
+		// Provider-neutral, because the credential helper the bootstrap
+		// installs is the same whichever account the repository came from.
+		env = append(env,
+			gitUserEnv+"="+credentials.Username,
+			gitSecretEnv+"="+credentials.Secret,
+		)
+		// GITHUB_TOKEN as well for a GitHub session: the reference image bakes
+		// in an askpass that reads it, and tools in the container — gh, and
+		// Claude Code itself — expect it under that name.
+		if session.Provider == string(provider.GitHub) {
+			env = append(env, "GITHUB_TOKEN="+credentials.Secret)
+		}
 	}
 	if m.cfg.GitUserName != "" {
 		env = append(env, "GIT_AUTHOR_NAME="+m.cfg.GitUserName, "GIT_COMMITTER_NAME="+m.cfg.GitUserName)
@@ -310,26 +330,54 @@ func (m *Manager) containerSpec(session *store.Session, homeDir, token string) d
 // bash because the reference base image is a reference, not a guarantee.
 const claudeCommand = `claude; exec "${SHELL:-sh}"`
 
+// Environment variables carrying the git credentials into the container. The
+// bootstrap's credential helper reads them by name, so they are part of the
+// contract between the two.
+const (
+	gitUserEnv   = "HEXAGON_GIT_USERNAME"
+	gitSecretEnv = "HEXAGON_GIT_PASSWORD"
+)
+
+// containerCredentialHelper teaches git inside the container to answer with the
+// credentials Hexagon put in its environment.
+//
+// It is installed here rather than baked into the image on purpose. The
+// reference Dockerfile carries an askpass that answers x-access-token and
+// $GITHUB_TOKEN, which is GitHub and nothing else; a Bitbucket session in an
+// image someone built last month would fail to authenticate, and Hexagon cannot
+// tell what is inside an image it did not build. A helper written at bootstrap
+// works with any image, wins over GIT_ASKPASS, and still keeps the secret out of
+// every file: what is written names the variables, it does not contain them.
+const containerCredentialHelper = `!f(){ echo "username=$` + gitUserEnv + `"; echo "password=$` + gitSecretEnv + `"; }; f`
+
 // bootstrapScript prepares a freshly started container: git has to be told the
 // bind mounted clone is safe to use (its owner may not match inside the
-// container), and tmux has to be running before a terminal can attach.
+// container) and how to authenticate to the provider, and tmux has to be
+// running before a terminal can attach.
 //
 // Whether Claude Code starts by itself is decided here, once, because it is the
 // command the tmux session is created with — which is why flipping the switch
 // on a running session only shows up the next time it starts.
-func bootstrapScript(autoClaude bool) string {
+func bootstrapScript(autoClaude, credentials bool) string {
 	newSession := "tmux new-session -d -s " + TmuxSession + " -c " + dockerx.WorkspaceMount
 	if autoClaude {
 		newSession += " '" + claudeCommand + "'"
 	}
-	return "set -e\n" +
-		"git config --global --add safe.directory " + dockerx.WorkspaceMount + "\n" +
-		"tmux has-session -t " + TmuxSession + " 2>/dev/null || " + newSession
+
+	script := "set -e\n" +
+		"git config --global --add safe.directory " + dockerx.WorkspaceMount + "\n"
+	if credentials {
+		script += "git config --global credential.helper '" + containerCredentialHelper + "'\n"
+	}
+	return script + "tmux has-session -t " + TmuxSession + " 2>/dev/null || " + newSession
 }
 
 func (m *Manager) bootstrap(ctx context.Context, session *store.Session) error {
 	containerID := session.ContainerID
-	script := bootstrapScript(session.AutoClaude)
+	// The container was created with the credentials in its environment, so
+	// whether to install the helper is a question about the session, not about
+	// anything the bootstrap can see.
+	script := bootstrapScript(session.AutoClaude, session.RepoCloneURL != "")
 	output, code, err := m.docker.RunExec(ctx, containerID, []string{"sh", "-c", script})
 	if err != nil {
 		return fmt.Errorf("bootstrap: %w", err)

@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import Spinner from './Spinner.vue'
-import { ApiError, api, type Image, type Repo, type Session } from '../api'
+import {
+  ApiError,
+  api,
+  providerNames,
+  type Image,
+  type ProviderKind,
+  type Repo,
+  type Session,
+} from '../api'
 
 const emit = defineEmits<{ close: []; created: [session: Session] }>()
 
@@ -12,6 +20,13 @@ const submitting = ref(false)
 const error = ref<string | null>(null)
 
 const filter = ref('')
+// Which account's repositories to show. Empty means all of them, which is the
+// useful default: typing part of a name is how anyone with more than a handful
+// of repositories finds one.
+const only = ref<ProviderKind | ''>('')
+// Accounts that could not be reached, so the list can say what is missing
+// instead of quietly being short.
+const failed = ref<Partial<Record<ProviderKind, string>>>({})
 const selected = ref<Repo | null>(null)
 const branch = ref('')
 const imageId = ref('')
@@ -23,11 +38,17 @@ const autoClaude = ref(true)
 // Only images that finished building can start a session.
 const usableImages = computed(() => images.value.filter((i) => i.status === 'ready'))
 
+// The providers with something to show, so the filter only appears when there
+// is a choice to make.
+const sources = computed(() => [...new Set(repos.value.map((r) => r.provider))])
+
 const matches = computed(() => {
   const needle = filter.value.trim().toLowerCase()
-  const list = needle
-    ? repos.value.filter((r) => r.fullName.toLowerCase().includes(needle))
-    : repos.value
+  const list = repos.value.filter(
+    (r) =>
+      (!only.value || r.provider === only.value) &&
+      (!needle || r.fullName.toLowerCase().includes(needle)),
+  )
   return list.slice(0, 100)
 })
 
@@ -40,8 +61,9 @@ async function load(refresh = false) {
   loading.value = true
   error.value = null
   try {
-    const [repoList, imageList] = await Promise.all([api.github.repos(refresh), api.images.list()])
-    repos.value = repoList
+    const [listing, imageList] = await Promise.all([api.repos(refresh), api.images.list()])
+    repos.value = listing.repos
+    failed.value = listing.failed ?? {}
     images.value = imageList
     if (!imageId.value) imageId.value = usableImages.value[0]?.id ?? ''
   } catch (e) {
@@ -57,6 +79,7 @@ async function submit() {
   error.value = null
   try {
     const session = await api.sessions.create({
+      provider: selected.value.provider,
       repoFullName: selected.value.fullName,
       branch: branch.value.trim() || undefined,
       imageId: imageId.value,
@@ -106,14 +129,32 @@ onMounted(() => load())
             <input v-model="filter" placeholder="Filter by name" />
           </label>
 
+          <div v-if="sources.length > 1" class="sources">
+            <button type="button" :class="{ chosen: only === '' }" @click="only = ''">All</button>
+            <button
+              v-for="source in sources"
+              :key="source"
+              type="button"
+              :class="{ chosen: only === source }"
+              @click="only = source"
+            >
+              {{ providerNames[source] }}
+            </button>
+          </div>
+
+          <p v-for="(reason, source) in failed" :key="source" class="hint">
+            {{ providerNames[source as ProviderKind] }} could not be reached: {{ reason }}
+          </p>
+
           <ul class="repos">
-            <li v-for="repo in matches" :key="repo.fullName">
+            <li v-for="repo in matches" :key="repo.provider + '/' + repo.fullName">
               <button
                 type="button"
-                :class="{ chosen: selected?.fullName === repo.fullName }"
+                :class="{ chosen: selected?.provider === repo.provider && selected?.fullName === repo.fullName }"
                 @click="choose(repo)"
               >
                 <span class="name">{{ repo.fullName }}</span>
+                <span v-if="sources.length > 1" class="tag">{{ providerNames[repo.provider] }}</span>
                 <span v-if="repo.private" class="tag">private</span>
                 <span class="desc">{{ repo.description }}</span>
               </button>
@@ -229,6 +270,22 @@ select {
 form {
   display: grid;
   gap: 1rem;
+}
+
+.sources {
+  display: flex;
+  gap: 0.4rem;
+}
+
+.sources button {
+  padding: 0.25rem 0.7rem;
+  border-radius: 999px;
+  font-size: 0.85rem;
+}
+
+.sources button.chosen {
+  border-color: var(--accent);
+  color: var(--accent);
 }
 
 .repos {

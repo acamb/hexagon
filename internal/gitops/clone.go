@@ -12,14 +12,19 @@ import (
 	"strings"
 )
 
-// tokenEnvVar carries the GitHub token to git. It is passed through the
+// tokenEnvVar carries the provider's secret to git. It is passed through the
 // environment rather than the command line so it never appears in the process
 // table, and never through the URL so it never lands in .git/config.
-const tokenEnvVar = "HEXAGON_GH_TOKEN"
+const tokenEnvVar = "HEXAGON_GIT_SECRET"
+
+// userEnvVar carries the username half. Which one it is depends on the
+// provider: GitHub takes a placeholder next to an OAuth token, Bitbucket takes
+// a different placeholder next to an API token.
+const userEnvVar = "HEXAGON_GIT_USER"
 
 // credentialHelper answers git's credential prompt from the environment. The
 // helper runs for the duration of the clone and nothing is written to disk.
-const credentialHelper = `!f(){ echo username=x-access-token; echo "password=$` + tokenEnvVar + `"; }; f`
+const credentialHelper = `!f(){ echo "username=$` + userEnvVar + `"; echo "password=$` + tokenEnvVar + `"; }; f`
 
 // Options describes one clone.
 type Options struct {
@@ -30,8 +35,10 @@ type Options struct {
 	// Dest is the directory to create the working tree in. It must not exist,
 	// or must be empty.
 	Dest string
-	// Token authenticates to GitHub. Empty works for public repositories.
-	Token string
+	// Username and Token authenticate to the provider over HTTPS. Both empty
+	// works for a public repository.
+	Username string
+	Token    string
 	// UserName and UserEmail become the repository's commit identity. When
 	// empty, git falls back to whatever the host has configured globally.
 	UserName  string
@@ -59,7 +66,7 @@ func Clone(ctx context.Context, opts Options) error {
 	}
 	args = append(args, "--", opts.CloneURL, opts.Dest)
 
-	if err := run(ctx, "", opts.Token, args...); err != nil {
+	if err := run(ctx, "", opts.Username, opts.Token, args...); err != nil {
 		return fmt.Errorf("clone %s: %w", opts.CloneURL, err)
 	}
 	return configureIdentity(ctx, opts)
@@ -76,7 +83,7 @@ func configureIdentity(ctx context.Context, opts Options) error {
 		if setting[1] == "" {
 			continue
 		}
-		if err := run(ctx, opts.Dest, "", "config", "--local", setting[0], setting[1]); err != nil {
+		if err := run(ctx, opts.Dest, "", "", "config", "--local", setting[0], setting[1]); err != nil {
 			return fmt.Errorf("configure %s: %w", setting[0], err)
 		}
 	}
@@ -84,10 +91,11 @@ func configureIdentity(ctx context.Context, opts Options) error {
 }
 
 // run executes git, returning its output as part of any error.
-func run(ctx context.Context, dir, token string, args ...string) error {
+func run(ctx context.Context, dir, username, token string, args ...string) error {
 	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(),
+		userEnvVar+"="+username,
 		tokenEnvVar+"="+token,
 		// Without this a repository we cannot authenticate to would sit
 		// waiting for a username on a terminal that does not exist.

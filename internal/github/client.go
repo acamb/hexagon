@@ -1,21 +1,27 @@
 // Package github talks to the GitHub REST API on behalf of a Hexagon user.
+//
+// It serves two roles: the login, which is GitHub-specific and lives in
+// CurrentUser, and one implementation of provider.Provider, which is how the
+// rest of Hexagon reaches repositories without knowing where they come from.
 package github
 
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/andrea/hexagon/internal/provider"
 )
 
 // ErrUnauthorized reports a token GitHub no longer accepts: revoked, expired,
 // or with the app's access removed. The caller has to sign in again; retrying
-// will not help.
-var ErrUnauthorized = errors.New("github: token rejected")
+// will not help. It wraps provider.ErrUnauthorized so callers that do not know
+// which provider they are talking to can still recognise it.
+var ErrUnauthorized = fmt.Errorf("%w: github: token rejected", provider.ErrUnauthorized)
 
 const (
 	defaultBaseURL = "https://api.github.com"
@@ -64,8 +70,32 @@ func (c *Client) CurrentUser(ctx context.Context, token string) (*User, error) {
 	return &user, nil
 }
 
-// Repo is the subset of a repository the session picker needs.
-type Repo struct {
+// Kind identifies this provider.
+func (c *Client) Kind() provider.Kind { return provider.GitHub }
+
+// GitCredentials are what git wants over HTTPS: the placeholder GitHub expects
+// alongside an OAuth token, and the token itself.
+func (c *Client) GitCredentials(cred provider.Credentials) provider.GitAuth {
+	return provider.GitAuth{Username: "x-access-token", Secret: cred.Secret}
+}
+
+// Verify identifies the account behind a token. The login is the same call the
+// OAuth callback makes, reached through the provider interface.
+func (c *Client) Verify(ctx context.Context, cred provider.Credentials) (provider.Account, error) {
+	user, err := c.CurrentUser(ctx, cred.Secret)
+	if err != nil {
+		return provider.Account{}, err
+	}
+	return provider.Account{
+		Kind:      provider.GitHub,
+		Account:   user.Login,
+		AvatarURL: user.AvatarURL,
+	}, nil
+}
+
+// repo is the subset of a repository the session picker needs, in the shape
+// GitHub sends it.
+type repo struct {
 	FullName      string    `json:"full_name"`
 	CloneURL      string    `json:"clone_url"`
 	DefaultBranch string    `json:"default_branch"`
@@ -79,19 +109,29 @@ type Repo struct {
 // it means a misbehaving server cannot keep us looping.
 const maxRepoPages = 20
 
-// ListRepos returns every repository the token can reach, newest activity
+// ListRepos returns every repository the credentials can reach, newest activity
 // first: owned, collaborated on, and through organisation membership.
-func (c *Client) ListRepos(ctx context.Context, token string) ([]Repo, error) {
+func (c *Client) ListRepos(ctx context.Context, cred provider.Credentials) ([]provider.Repo, error) {
 	next := c.baseURL + "/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member"
 
-	var repos []Repo
+	var repos []provider.Repo
 	for page := 0; next != "" && page < maxRepoPages; page++ {
-		var batch []Repo
-		link, err := c.get(ctx, token, next, &batch)
+		var batch []repo
+		link, err := c.get(ctx, cred.Secret, next, &batch)
 		if err != nil {
 			return nil, err
 		}
-		repos = append(repos, batch...)
+		for _, r := range batch {
+			repos = append(repos, provider.Repo{
+				Provider:      provider.GitHub,
+				FullName:      r.FullName,
+				CloneURL:      r.CloneURL,
+				DefaultBranch: r.DefaultBranch,
+				Private:       r.Private,
+				Description:   r.Description,
+				UpdatedAt:     r.UpdatedAt,
+			})
+		}
 		next = nextPageURL(link)
 	}
 	return repos, nil

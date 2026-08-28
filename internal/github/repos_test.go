@@ -8,8 +8,12 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
-	"time"
+
+	"github.com/andrea/hexagon/internal/provider"
 )
+
+// creds is what the provider interface takes; GitHub only reads the secret.
+func creds(token string) provider.Credentials { return provider.Credentials{Secret: token} }
 
 // pagedRepos serves a two-page listing the way GitHub does, with the next page
 // announced only through the Link header.
@@ -38,7 +42,7 @@ func TestListReposFollowsPagination(t *testing.T) {
 	var requests atomic.Int32
 	server := pagedRepos(t, &requests)
 
-	repos, err := NewWithBaseURL(server.URL).ListRepos(context.Background(), "token")
+	repos, err := NewWithBaseURL(server.URL).ListRepos(context.Background(), creds("token"))
 	if err != nil {
 		t.Fatalf("ListRepos: %v", err)
 	}
@@ -56,6 +60,11 @@ func TestListReposFollowsPagination(t *testing.T) {
 	}
 	if repos[0].UpdatedAt.IsZero() {
 		t.Error("updated_at did not parse")
+	}
+	// Every repository has to say where it came from: the merged listing is
+	// sorted and filtered by it, and a session's credentials follow it.
+	if repos[0].Provider != provider.GitHub {
+		t.Errorf("provider = %q, want %q", repos[0].Provider, provider.GitHub)
 	}
 }
 
@@ -82,63 +91,8 @@ func TestListReposReportsARejectedToken(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := NewWithBaseURL(server.URL).ListRepos(context.Background(), "stale")
+	_, err := NewWithBaseURL(server.URL).ListRepos(context.Background(), creds("stale"))
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("error = %v, want ErrUnauthorized", err)
-	}
-}
-
-func TestRepoCacheServesRepeatCallsWithoutRefetching(t *testing.T) {
-	var requests atomic.Int32
-	server := pagedRepos(t, &requests)
-	cache := NewRepoCache(NewWithBaseURL(server.URL), time.Minute)
-
-	ctx := context.Background()
-	if _, err := cache.List(ctx, "user-1", "token"); err != nil {
-		t.Fatalf("first List: %v", err)
-	}
-	firstRound := requests.Load()
-	if firstRound != 2 {
-		t.Fatalf("first listing made %d requests, want 2 (one per page)", firstRound)
-	}
-
-	if _, err := cache.List(ctx, "user-1", "token"); err != nil {
-		t.Fatalf("second List: %v", err)
-	}
-	if requests.Load() != firstRound {
-		t.Errorf("a cached listing still hit the API: %d requests", requests.Load())
-	}
-
-	// Another user has their own repositories, so their listing is separate.
-	if _, err := cache.List(ctx, "user-2", "other-token"); err != nil {
-		t.Fatalf("List for another user: %v", err)
-	}
-	if requests.Load() != firstRound*2 {
-		t.Errorf("another user's listing was served from the first user's cache")
-	}
-
-	cache.Invalidate("user-1")
-	if _, err := cache.List(ctx, "user-1", "token"); err != nil {
-		t.Fatalf("List after Invalidate: %v", err)
-	}
-	if requests.Load() != firstRound*3 {
-		t.Errorf("Invalidate did not force a refetch: %d requests", requests.Load())
-	}
-}
-
-func TestRepoCacheExpires(t *testing.T) {
-	var requests atomic.Int32
-	server := pagedRepos(t, &requests)
-	cache := NewRepoCache(NewWithBaseURL(server.URL), time.Nanosecond)
-
-	ctx := context.Background()
-	if _, err := cache.List(ctx, "user-1", "token"); err != nil {
-		t.Fatalf("first List: %v", err)
-	}
-	if _, err := cache.List(ctx, "user-1", "token"); err != nil {
-		t.Fatalf("second List: %v", err)
-	}
-	if requests.Load() != 4 {
-		t.Errorf("made %d requests, want 4: an expired entry must be refetched", requests.Load())
 	}
 }

@@ -41,8 +41,11 @@ cmd/hexagon/        entry point: config, database, wiring, graceful shutdown
 embed.go            embeds web/dist and the reference Dockerfile
 internal/config/    environment configuration
 internal/store/     SQLite: schema migrations and queries
-internal/auth/      GitHub OAuth login, session cookies, token encryption
-internal/github/    GitHub REST client and the repository cache
+internal/auth/      GitHub OAuth login, session cookies, credential encryption
+internal/provider/  the interface a source of repositories implements, and the merged listing
+internal/github/    GitHub REST client
+internal/bitbucket/ Bitbucket Cloud REST client
+internal/claudex/   runs the Claude Code CLI for the Dockerfile editor
 internal/dockerx/   Docker Engine API behind an interface
 internal/gitops/    host-side git: cloning a repository into a session workspace
 internal/session/   orchestrator: provisioning, lifecycle, reconciliation

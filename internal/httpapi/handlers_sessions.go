@@ -8,7 +8,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/andrea/hexagon/internal/github"
+	"github.com/andrea/hexagon/internal/provider"
 	"github.com/andrea/hexagon/internal/session"
 	"github.com/andrea/hexagon/internal/store"
 )
@@ -20,6 +20,7 @@ const maxSessionRequestBody = 8 << 10
 type sessionResponse struct {
 	ID           string    `json:"id"`
 	Title        string    `json:"title"`
+	Provider     string    `json:"provider"`
 	RepoFullName string    `json:"repoFullName"`
 	Branch       string    `json:"branch"`
 	ImageID      string    `json:"imageId"`
@@ -35,6 +36,7 @@ func newSessionResponse(s *store.Session) sessionResponse {
 	return sessionResponse{
 		ID:           s.ID,
 		Title:        s.Title,
+		Provider:     s.Provider,
 		RepoFullName: s.RepoFullName,
 		Branch:       s.Branch,
 		ImageID:      s.ImageID,
@@ -75,6 +77,9 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 }
 
 type createSessionRequest struct {
+	// Provider is which connected account the repository comes from. An empty
+	// one matches on name alone, across every account.
+	Provider     string `json:"provider"`
 	RepoFullName string `json:"repoFullName"`
 	Branch       string `json:"branch"`
 	ImageID      string `json:"imageId"`
@@ -104,9 +109,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The clone URL is never taken from the request: it is looked up in the
-	// caller's own GitHub account, so a session can only ever clone something
-	// they actually have.
-	repo, ok := s.resolveRepo(w, r, req.RepoFullName)
+	// caller's own accounts, so a session can only ever clone something they
+	// actually have.
+	repo, ok := s.resolveRepo(w, r, provider.Kind(req.Provider), req.RepoFullName)
 	if !ok {
 		return
 	}
@@ -117,6 +122,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	created, err := s.sessions.Create(r.Context(), s.user(r), session.CreateRequest{
 		Title:        req.Title,
+		Provider:     repo.Provider,
 		RepoFullName: repo.FullName,
 		RepoCloneURL: repo.CloneURL,
 		Branch:       branch,
@@ -140,35 +146,28 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, newSessionResponse(created))
 }
 
-// resolveRepo finds a repository in the caller's GitHub listing.
-func (s *Server) resolveRepo(w http.ResponseWriter, r *http.Request, fullName string) (github.Repo, bool) {
+// resolveRepo finds a repository in the caller's own listing, which is what
+// makes the clone URL trustworthy: it comes from the provider, not the browser.
+func (s *Server) resolveRepo(w http.ResponseWriter, r *http.Request, kind provider.Kind, fullName string) (provider.Repo, bool) {
 	user := s.user(r)
 
-	token, err := s.auth.GitHubToken(user)
-	if err != nil {
-		s.log.Error("unseal github token", "login", user.GitHubLogin, "err", err)
-		writeError(w, http.StatusInternalServerError, "cannot read your GitHub credentials")
-		return github.Repo{}, false
-	}
-
-	repos, err := s.repos.List(r.Context(), user.ID, token)
+	repo, err := s.repos.Find(r.Context(), user.ID, kind, fullName)
 	switch {
-	case errors.Is(err, github.ErrUnauthorized):
-		writeError(w, http.StatusUnauthorized, "GitHub access expired, sign in again")
-		return github.Repo{}, false
+	case errors.Is(err, provider.ErrRepoNotFound):
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("%q is not a repository in your connected accounts", fullName))
+		return provider.Repo{}, false
+	case errors.Is(err, provider.ErrUnauthorized):
+		// 401 is what the SPA turns into a redirect to the login, which is the
+		// right move when the rejected account is the GitHub one it signed in
+		// with.
+		writeError(w, http.StatusUnauthorized, "your access to that account expired, connect it again")
+		return provider.Repo{}, false
 	case err != nil:
-		s.log.Error("list repositories", "login", user.GitHubLogin, "err", err)
-		writeError(w, http.StatusBadGateway, "cannot reach GitHub")
-		return github.Repo{}, false
+		s.log.Error("resolve repository", "login", user.GitHubLogin, "repo", fullName, "err", err)
+		writeError(w, http.StatusBadGateway, "cannot reach the provider")
+		return provider.Repo{}, false
 	}
-
-	for _, repo := range repos {
-		if strings.EqualFold(repo.FullName, fullName) {
-			return repo, true
-		}
-	}
-	writeError(w, http.StatusBadRequest, fmt.Sprintf("%q is not a repository in your GitHub account", fullName))
-	return github.Repo{}, false
+	return repo, true
 }
 
 type updateSessionRequest struct {

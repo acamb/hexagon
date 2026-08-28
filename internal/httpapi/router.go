@@ -16,17 +16,10 @@ import (
 	"github.com/andrea/hexagon/internal/claudex"
 	"github.com/andrea/hexagon/internal/config"
 	"github.com/andrea/hexagon/internal/dockerx"
-	"github.com/andrea/hexagon/internal/github"
+	"github.com/andrea/hexagon/internal/provider"
 	"github.com/andrea/hexagon/internal/session"
 	"github.com/andrea/hexagon/internal/store"
 )
-
-// RepoLister returns the repositories a user can start a session from,
-// remembering them for a short while.
-type RepoLister interface {
-	List(ctx context.Context, userID, token string) ([]github.Repo, error)
-	Invalidate(userID string)
-}
 
 // DockerfileEditor rewrites a Dockerfile from an instruction in English. It is
 // nil when the server has no Claude Code binary to run, which is a state the UI
@@ -43,11 +36,14 @@ type Deps struct {
 	// OAuth drives the GitHub login. Nil when the development bypass is active.
 	OAuth *auth.OAuth
 	// Dev is the HEXAGON_DEV_USER bypass. Nil during normal operation.
-	Dev      *auth.DevProvider
-	GitHub   auth.UserFetcher
-	Repos    RepoLister
-	Docker   dockerx.API
-	Sessions *session.Manager
+	Dev    *auth.DevProvider
+	GitHub auth.UserFetcher
+	// Providers are the sources of repositories this build knows about, and
+	// Repos merges the listings of the accounts a user has connected to them.
+	Providers provider.Registry
+	Repos     *provider.Lister
+	Docker    dockerx.API
+	Sessions  *session.Manager
 	// BaseDockerfile is offered to the UI as the starting point for a new image.
 	BaseDockerfile string
 	// Editor is optional: without it the Images page only edits by hand.
@@ -64,7 +60,8 @@ type Server struct {
 	oauth          *auth.OAuth
 	dev            *auth.DevProvider
 	github         auth.UserFetcher
-	repos          RepoLister
+	providers      provider.Registry
+	repos          *provider.Lister
 	docker         dockerx.API
 	sessions       *session.Manager
 	baseDockerfile string
@@ -83,6 +80,7 @@ func New(deps Deps) http.Handler {
 		oauth:          deps.OAuth,
 		dev:            deps.Dev,
 		github:         deps.GitHub,
+		providers:      deps.Providers,
 		repos:          deps.Repos,
 		docker:         deps.Docker,
 		sessions:       deps.Sessions,
@@ -111,7 +109,11 @@ func New(deps Deps) http.Handler {
 		"GET /api/images/{id}":        s.handleGetImage,
 		"GET /api/images/{id}/log":    s.handleImageLog,
 		"DELETE /api/images/{id}":     s.handleDeleteImage,
-		"GET /api/github/repos":       s.handleListRepos,
+
+		"GET /api/repos":                  s.handleListRepos,
+		"GET /api/accounts":               s.handleListAccounts,
+		"PUT /api/accounts/{provider}":    s.handleConnectAccount,
+		"DELETE /api/accounts/{provider}": s.handleDisconnectAccount,
 
 		"GET /api/sessions":               s.handleListSessions,
 		"POST /api/sessions":              s.handleCreateSession,

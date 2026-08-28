@@ -16,6 +16,7 @@ async function signOut() {
       <strong>Hexagon</strong>
       <RouterLink :to="{ name: 'sessions' }">Sessions</RouterLink>
       <RouterLink :to="{ name: 'images' }">Images</RouterLink>
+      <RouterLink :to="{ name: 'accounts' }">Accounts</RouterLink>
     </nav>
 
     <div class="account" v-if="currentUser">

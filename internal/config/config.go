@@ -45,6 +45,9 @@ type Config struct {
 	// and for pointing a development instance at a stub.
 	GitHubAPIURL string // HEXAGON_GITHUB_API_URL, github.apiUrl
 
+	// BitbucketAPIURL overrides api.bitbucket.org, for the same reasons.
+	BitbucketAPIURL string // HEXAGON_BITBUCKET_API_URL, bitbucket.apiUrl
+
 	// Development bypass. When DevUser is set the server skips OAuth and treats
 	// every request as that user, authenticating to GitHub with DevGitHubToken.
 	DevUser        string // HEXAGON_DEV_USER, dev.user
@@ -92,6 +95,10 @@ type file struct {
 		AllowedUsers []string `json:"allowedUsers"`
 		APIURL       string   `json:"apiUrl"`
 	} `json:"github"`
+
+	Bitbucket struct {
+		APIURL string `json:"apiUrl"`
+	} `json:"bitbucket"`
 
 	Claude struct {
 		Credentials     *string `json:"credentials"`
@@ -147,6 +154,8 @@ func Load(path string) (*Config, error) {
 		GitHubClientSecret: pick("HEXAGON_GITHUB_CLIENT_SECRET", f.GitHub.ClientSecret, ""),
 		AllowedUsers:       allowedUsers(f.GitHub.AllowedUsers),
 		GitHubAPIURL:       pick("HEXAGON_GITHUB_API_URL", f.GitHub.APIURL, ""),
+
+		BitbucketAPIURL: pick("HEXAGON_BITBUCKET_API_URL", f.Bitbucket.APIURL, ""),
 
 		DevUser:        pick("HEXAGON_DEV_USER", f.Dev.User, ""),
 		DevGitHubToken: pick("HEXAGON_GITHUB_TOKEN", f.Dev.GitHubToken, ""),

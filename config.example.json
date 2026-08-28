@@ -13,6 +13,10 @@
     "apiUrl": ""
   },
 
+  "bitbucket": {
+    "apiUrl": ""
+  },
+
   "claude": {
     "credentials": "~/.claude/.credentials.json",
     "anthropicApiKey": "",

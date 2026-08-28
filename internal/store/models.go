@@ -21,16 +21,17 @@ func parseTime(s string) (time.Time, error) {
 }
 
 // User is someone allowed to use Hexagon, identified by their GitHub account.
+//
+// The account is the identity only. The token that came with it lives in
+// provider_accounts, with the other accounts the user has connected, because
+// listing repositories and cloning them are not identity.
 type User struct {
 	ID          string
 	GitHubLogin string
 	GitHubID    int64
 	AvatarURL   string
-	// GitHubTokenEnc is the OAuth access token sealed with the server key. It is
-	// never exposed outside internal/auth.
-	GitHubTokenEnc []byte
-	CreatedAt      time.Time
-	LastLoginAt    time.Time
+	CreatedAt   time.Time
+	LastLoginAt time.Time
 }
 
 // UpsertUser records a login, creating the user on first sight and refreshing
@@ -38,14 +39,13 @@ type User struct {
 func (s *Store) UpsertUser(ctx context.Context, u *User) (*User, error) {
 	now := time.Now()
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO users (id, github_login, github_id, avatar_url, github_token_enc, created_at, last_login_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO users (id, github_login, github_id, avatar_url, created_at, last_login_at)
+		VALUES (?, ?, ?, ?, ?, ?)
 		ON CONFLICT(github_id) DO UPDATE SET
-			github_login     = excluded.github_login,
-			avatar_url       = excluded.avatar_url,
-			github_token_enc = excluded.github_token_enc,
-			last_login_at    = excluded.last_login_at`,
-		uuid.NewString(), u.GitHubLogin, u.GitHubID, u.AvatarURL, u.GitHubTokenEnc,
+			github_login  = excluded.github_login,
+			avatar_url    = excluded.avatar_url,
+			last_login_at = excluded.last_login_at`,
+		uuid.NewString(), u.GitHubLogin, u.GitHubID, u.AvatarURL,
 		formatTime(now), formatTime(now))
 	if err != nil {
 		return nil, fmt.Errorf("upsert user: %w", err)
@@ -65,7 +65,7 @@ func (s *Store) UserByGitHubID(ctx context.Context, githubID int64) (*User, erro
 
 func (s *Store) userWhere(ctx context.Context, where string, args ...any) (*User, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT id, github_login, github_id, avatar_url, github_token_enc, created_at, last_login_at
+		SELECT id, github_login, github_id, avatar_url, created_at, last_login_at
 		FROM users WHERE `+where, args...)
 	return scanUser(row)
 }
@@ -75,7 +75,7 @@ func scanUser(row *sql.Row) (*User, error) {
 		u                      User
 		createdAt, lastLoginAt string
 	)
-	err := row.Scan(&u.ID, &u.GitHubLogin, &u.GitHubID, &u.AvatarURL, &u.GitHubTokenEnc, &createdAt, &lastLoginAt)
+	err := row.Scan(&u.ID, &u.GitHubLogin, &u.GitHubID, &u.AvatarURL, &createdAt, &lastLoginAt)
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 		return nil, ErrNotFound
@@ -108,7 +108,7 @@ func (s *Store) CreateUserSession(ctx context.Context, tokenHash []byte, userID 
 // treated as absent.
 func (s *Store) UserBySessionToken(ctx context.Context, tokenHash []byte) (*User, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT u.id, u.github_login, u.github_id, u.avatar_url, u.github_token_enc, u.created_at, u.last_login_at
+		SELECT u.id, u.github_login, u.github_id, u.avatar_url, u.created_at, u.last_login_at
 		FROM user_sessions s
 		JOIN users u ON u.id = s.user_id
 		WHERE s.token_hash = ? AND s.expires_at > ?`,

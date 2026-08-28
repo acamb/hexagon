@@ -5,7 +5,7 @@ import AppHeader from '../components/AppHeader.vue'
 import NewSessionDialog from '../components/NewSessionDialog.vue'
 import Spinner from '../components/Spinner.vue'
 import StatusDot from '../components/StatusDot.vue'
-import { ApiError, api, type Session } from '../api'
+import { ApiError, api, providerNames, type Session } from '../api'
 import { isProvisioning, sessionLabel } from '../status'
 
 const router = useRouter()
@@ -104,6 +104,7 @@ onUnmounted(() => window.clearInterval(timer))
             <span class="repo">
               {{ session.repoFullName }}
               <span v-if="session.branch" class="branch">{{ session.branch }}</span>
+              <span class="branch">{{ providerNames[session.provider] }}</span>
             </span>
           </div>
           <StatusDot :status="session.status" />

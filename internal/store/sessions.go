@@ -26,9 +26,12 @@ const (
 // Session is one Claude Code session: a repository clone on the host, bind
 // mounted into a container running tmux.
 type Session struct {
-	ID           string
-	UserID       string
-	Title        string
+	ID     string
+	UserID string
+	Title  string
+	// Provider is which connected account the repository came from, as
+	// internal/provider names it.
+	Provider     string
 	RepoFullName string
 	RepoCloneURL string
 	Branch       string
@@ -49,7 +52,7 @@ type Session struct {
 	UpdatedAt  time.Time
 }
 
-const sessionColumns = `id, user_id, title, repo_full_name, repo_clone_url, branch, image_id, image_ref,
+const sessionColumns = `id, user_id, title, provider, repo_full_name, repo_clone_url, branch, image_id, image_ref,
 	workspace_dir, repo_dir, container_id, status, error, auto_claude, created_at, updated_at`
 
 // SessionByID returns one of the user's sessions, or ErrNotFound.
@@ -69,7 +72,7 @@ func scanSession(row scanner) (*Session, error) {
 		session              Session
 		createdAt, updatedAt string
 	)
-	err := row.Scan(&session.ID, &session.UserID, &session.Title, &session.RepoFullName,
+	err := row.Scan(&session.ID, &session.UserID, &session.Title, &session.Provider, &session.RepoFullName,
 		&session.RepoCloneURL, &session.Branch, &session.ImageID, &session.ImageRef,
 		&session.WorkspaceDir, &session.RepoDir, &session.ContainerID, &session.Status,
 		&session.Error, &session.AutoClaude, &createdAt, &updatedAt)
@@ -95,8 +98,8 @@ func (s *Store) CreateSession(ctx context.Context, session *Session) (*Session, 
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (`+sessionColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		session.ID, session.UserID, session.Title, session.RepoFullName, session.RepoCloneURL,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		session.ID, session.UserID, session.Title, session.Provider, session.RepoFullName, session.RepoCloneURL,
 		session.Branch, session.ImageID, session.ImageRef, session.WorkspaceDir, session.RepoDir,
 		session.ContainerID, session.Status, session.Error, session.AutoClaude,
 		formatTime(now), formatTime(now))

@@ -245,7 +245,7 @@ func TestTerminalRequiresASessionOfYourOwn(t *testing.T) {
 	// Signed in, but the session belongs to somebody else.
 	env.signIn()
 	ctx := context.Background()
-	other, err := env.store.UpsertUser(ctx, &store.User{GitHubLogin: "bob", GitHubID: 7, GitHubTokenEnc: []byte("x")})
+	other, err := env.store.UpsertUser(ctx, &store.User{GitHubLogin: "bob", GitHubID: 7})
 	if err != nil {
 		t.Fatalf("create other user: %v", err)
 	}

@@ -9,7 +9,7 @@ import (
 func testUser(t *testing.T, s *Store, login string, githubID int64) *User {
 	t.Helper()
 	user, err := s.UpsertUser(context.Background(), &User{
-		GitHubLogin: login, GitHubID: githubID, GitHubTokenEnc: []byte("sealed"),
+		GitHubLogin: login, GitHubID: githubID,
 	})
 	if err != nil {
 		t.Fatalf("create user %s: %v", login, err)

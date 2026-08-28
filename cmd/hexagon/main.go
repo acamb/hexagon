@@ -16,11 +16,13 @@ import (
 
 	"github.com/andrea/hexagon"
 	"github.com/andrea/hexagon/internal/auth"
+	"github.com/andrea/hexagon/internal/bitbucket"
 	"github.com/andrea/hexagon/internal/claudex"
 	"github.com/andrea/hexagon/internal/config"
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/github"
 	"github.com/andrea/hexagon/internal/httpapi"
+	"github.com/andrea/hexagon/internal/provider"
 	"github.com/andrea/hexagon/internal/session"
 	"github.com/andrea/hexagon/internal/store"
 )
@@ -154,11 +156,17 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		gh = github.NewWithBaseURL(cfg.GitHubAPIURL)
 	}
 	logins := auth.NewService(st, cipher, cfg.PublicURL)
-	repos := github.NewRepoCache(gh, github.DefaultRepoTTL)
+
+	// Every source of repositories this build knows about. GitHub is also the
+	// login, which is why its client is built above; the rest are accounts a
+	// signed-in user connects.
+	providers := provider.NewRegistry(gh, bitbucket.NewWithBaseURL(cfg.BitbucketAPIURL))
+	repos := provider.NewLister(providers, logins, provider.DefaultRepoTTL)
+	credentials := auth.NewGitCredentialSource(logins, providers)
 
 	// Containers run as the user running the server, so files written into the
 	// bind mounted clone stay owned by them rather than by root.
-	sessions := session.NewManager(st, docker, session.GitCloner{}, logins, session.Config{
+	sessions := session.NewManager(st, docker, session.GitCloner{}, credentials, session.Config{
 		WorkspaceRoot:     cfg.WorkspaceRoot,
 		ClaudeCredentials: cfg.ClaudeCredentials,
 		AnthropicAPIKey:   cfg.AnthropicAPIKey,
@@ -172,6 +180,7 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		Store:          st,
 		Auth:           logins,
 		GitHub:         gh,
+		Providers:      providers,
 		Repos:          repos,
 		Docker:         docker,
 		Sessions:       sessions,

@@ -89,7 +89,7 @@ func TestReconcile(t *testing.T) {
 	}}
 	manager, st, root := testManager(t, docker)
 
-	user, err := st.UpsertUser(ctx, &store.User{GitHubLogin: "alice", GitHubID: 1, GitHubTokenEnc: []byte("x")})
+	user, err := st.UpsertUser(ctx, &store.User{GitHubLogin: "alice", GitHubID: 1})
 	if err != nil {
 		t.Fatalf("create user: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestReconcile(t *testing.T) {
 	newSession := func(id, containerID, status string) {
 		t.Helper()
 		_, err := st.CreateSession(ctx, &store.Session{
-			ID: id, UserID: user.ID, Title: id, RepoFullName: "acme/widgets",
+			ID: id, UserID: user.ID, Title: id, Provider: "github", RepoFullName: "acme/widgets",
 			RepoCloneURL: "https://example.test/x.git", ImageID: image.ID, ImageRef: "ref",
 			WorkspaceDir: filepath.Join(root, id), RepoDir: filepath.Join(root, id, "repo"),
 			ContainerID: containerID, Status: status,
@@ -161,5 +161,27 @@ func TestIsSettled(t *testing.T) {
 		if isSettled(status) {
 			t.Errorf("isSettled(%q) = true, want false", status)
 		}
+	}
+}
+
+// The bootstrap is the only place that teaches git inside the container how to
+// authenticate, and it has to work with images Hexagon did not build.
+func TestBootstrapScriptInstallsTheCredentialHelper(t *testing.T) {
+	script := bootstrapScript(false, true)
+
+	if !strings.Contains(script, "credential.helper") {
+		t.Errorf("no credential helper in the bootstrap:\n%s", script)
+	}
+	// The helper names the variables; it must never carry their values, which
+	// would put the secret in a file inside the workspace.
+	for _, want := range []string{"$HEXAGON_GIT_USERNAME", "$HEXAGON_GIT_PASSWORD"} {
+		if !strings.Contains(script, want) {
+			t.Errorf("the helper does not read %s:\n%s", want, script)
+		}
+	}
+
+	// A session with no repository has nothing to authenticate to.
+	if script := bootstrapScript(false, false); strings.Contains(script, "credential.helper") {
+		t.Errorf("a session with no credentials got a helper anyway:\n%s", script)
 	}
 }

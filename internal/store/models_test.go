@@ -23,10 +23,9 @@ func TestUpsertUserCreatesThenUpdates(t *testing.T) {
 	s := testStore(t)
 
 	created, err := s.UpsertUser(ctx, &User{
-		GitHubLogin:    "alice",
-		GitHubID:       42,
-		AvatarURL:      "https://example.test/old.png",
-		GitHubTokenEnc: []byte("sealed-1"),
+		GitHubLogin: "alice",
+		GitHubID:    42,
+		AvatarURL:   "https://example.test/old.png",
 	})
 	if err != nil {
 		t.Fatalf("UpsertUser: %v", err)
@@ -41,10 +40,9 @@ func TestUpsertUserCreatesThenUpdates(t *testing.T) {
 	// A second login refreshes the token and the display fields but keeps the
 	// identity: sessions and workspaces are tied to the id.
 	updated, err := s.UpsertUser(ctx, &User{
-		GitHubLogin:    "alice-renamed",
-		GitHubID:       42,
-		AvatarURL:      "https://example.test/new.png",
-		GitHubTokenEnc: []byte("sealed-2"),
+		GitHubLogin: "alice-renamed",
+		GitHubID:    42,
+		AvatarURL:   "https://example.test/new.png",
 	})
 	if err != nil {
 		t.Fatalf("UpsertUser again: %v", err)
@@ -52,7 +50,7 @@ func TestUpsertUserCreatesThenUpdates(t *testing.T) {
 	if updated.ID != created.ID {
 		t.Errorf("id changed on re-login: %s -> %s", created.ID, updated.ID)
 	}
-	if updated.GitHubLogin != "alice-renamed" || string(updated.GitHubTokenEnc) != "sealed-2" {
+	if updated.GitHubLogin != "alice-renamed" {
 		t.Errorf("re-login did not refresh the row: %+v", updated)
 	}
 	if !updated.CreatedAt.Equal(created.CreatedAt) {
@@ -70,7 +68,7 @@ func TestUserSessionsLifecycle(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)
 
-	user, err := s.UpsertUser(ctx, &User{GitHubLogin: "alice", GitHubID: 1, GitHubTokenEnc: []byte("x")})
+	user, err := s.UpsertUser(ctx, &User{GitHubLogin: "alice", GitHubID: 1})
 	if err != nil {
 		t.Fatalf("UpsertUser: %v", err)
 	}
