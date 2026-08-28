@@ -288,7 +288,7 @@ CMD ["sleep", "infinity"]
 be on the `PATH`, and the image must run as a non-root-agnostic user (see the UID note in
 M4). Optional post-build check: `docker run --rm <ref> sh -c 'command -v git tmux claude'`.
 
-### M3 — GitHub and cloning
+### M3 — GitHub and cloning — **done**
 
 `internal/github/client.go`: `ListRepos(ctx, token)` →
 `GET https://api.github.com/user/repos?per_page=100&sort=updated&affiliation=owner,collaborator,organization_member`,

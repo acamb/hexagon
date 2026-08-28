@@ -3,6 +3,7 @@
 package httpapi
 
 import (
+	"context"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -11,8 +12,16 @@ import (
 	"github.com/andrea/hexagon/internal/auth"
 	"github.com/andrea/hexagon/internal/config"
 	"github.com/andrea/hexagon/internal/dockerx"
+	"github.com/andrea/hexagon/internal/github"
 	"github.com/andrea/hexagon/internal/store"
 )
+
+// RepoLister returns the repositories a user can start a session from,
+// remembering them for a short while.
+type RepoLister interface {
+	List(ctx context.Context, userID, token string) ([]github.Repo, error)
+	Invalidate(userID string)
+}
 
 // Deps are the collaborators the handlers need.
 type Deps struct {
@@ -24,6 +33,7 @@ type Deps struct {
 	// Dev is the HEXAGON_DEV_USER bypass. Nil during normal operation.
 	Dev    *auth.DevProvider
 	GitHub auth.UserFetcher
+	Repos  RepoLister
 	Docker dockerx.API
 	// BaseDockerfile is offered to the UI as the starting point for a new image.
 	BaseDockerfile string
@@ -39,6 +49,7 @@ type Server struct {
 	oauth          *auth.OAuth
 	dev            *auth.DevProvider
 	github         auth.UserFetcher
+	repos          RepoLister
 	docker         dockerx.API
 	baseDockerfile string
 	log            *slog.Logger
@@ -55,6 +66,7 @@ func New(deps Deps) http.Handler {
 		oauth:          deps.OAuth,
 		dev:            deps.Dev,
 		github:         deps.GitHub,
+		repos:          deps.Repos,
 		docker:         deps.Docker,
 		baseDockerfile: deps.BaseDockerfile,
 		log:            deps.Log,
@@ -79,6 +91,7 @@ func New(deps Deps) http.Handler {
 		"GET /api/images/{id}":     s.handleGetImage,
 		"GET /api/images/{id}/log": s.handleImageLog,
 		"DELETE /api/images/{id}":  s.handleDeleteImage,
+		"GET /api/github/repos":    s.handleListRepos,
 	}
 	for pattern, handler := range protected {
 		mux.Handle(pattern, s.requireAuth(handler))

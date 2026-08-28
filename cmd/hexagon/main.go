@@ -126,12 +126,14 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 	}
 	gh := github.New()
 	sessions := auth.NewService(st, cipher, cfg.PublicURL)
+	repos := github.NewRepoCache(gh, github.DefaultRepoTTL)
 
 	deps := httpapi.Deps{
 		Config:         cfg,
 		Store:          st,
 		Auth:           sessions,
 		GitHub:         gh,
+		Repos:          repos,
 		Docker:         docker,
 		BaseDockerfile: hexagon.BaseDockerfile,
 		Frontend:       frontend,

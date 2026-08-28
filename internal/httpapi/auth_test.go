@@ -40,6 +40,7 @@ type testEnv struct {
 	store  *store.Store
 	auth   *auth.Service
 	github *fakeGitHub
+	repos  *fakeRepos
 	docker *fakeDocker
 }
 
@@ -71,6 +72,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	sessions := auth.NewService(st, cipher, cfg.PublicURL)
 	gh := &fakeGitHub{user: &github.User{Login: "alice", ID: 42, AvatarURL: "https://example.test/a.png"}}
 	docker := newFakeDocker()
+	repos := &fakeRepos{}
 
 	oauth, err := auth.NewOAuth(auth.OAuthConfig{
 		ClientID:     "client",
@@ -89,6 +91,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		Auth:           sessions,
 		OAuth:          oauth,
 		GitHub:         gh,
+		Repos:          repos,
 		Docker:         docker,
 		BaseDockerfile: "FROM scratch\n",
 		Frontend:       fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}},
@@ -108,6 +111,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		store:  st,
 		auth:   sessions,
 		github: gh,
+		repos:  repos,
 		docker: docker,
 		client: &http.Client{
 			Jar:           jar,

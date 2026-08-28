@@ -17,7 +17,7 @@ milestone.
 | M0 — scaffolding, config, database, embedded SPA | done |
 | M1 — GitHub sign-in, sessions, allowlist | done |
 | M2 — base image management | done |
-| M3 — repository listing and cloning | not started |
+| M3 — repository listing and cloning | done |
 | M4 — session containers | not started |
 | M5 — browser terminal | not started |
 | M6 — frontend and polish | not started |
