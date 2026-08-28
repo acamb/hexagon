@@ -10,7 +10,7 @@ as described in [AGENTS.md](../../AGENTS.md).
 | 2 | Configuration file | [02-configuration-file.md](02-configuration-file.md) | done |
 | 3 | Switch to launch claude automatically | [03-auto-claude-switch.md](03-auto-claude-switch.md) | done |
 | 4 | tmux cheatsheet | [04-tmux-cheatsheet.md](04-tmux-cheatsheet.md) | done |
-| 5 | Dockerfile editor during session creation | `05-dockerfile-editor.md` | not started |
+| 5 | Dockerfile editor when creating an image | [05-dockerfile-editor.md](05-dockerfile-editor.md) | done |
 | 6 | Additional repository providers | `06-additional-providers.md` | not started |
 | 7 | Switch to propagate the provider token | `07-token-propagation-switch.md` | not started |
 | 8 | Sessions without a repository | `08-sessions-without-repo.md` | not started |

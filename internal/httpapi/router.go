@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/andrea/hexagon/internal/auth"
+	"github.com/andrea/hexagon/internal/claudex"
 	"github.com/andrea/hexagon/internal/config"
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/github"
@@ -25,6 +26,13 @@ import (
 type RepoLister interface {
 	List(ctx context.Context, userID, token string) ([]github.Repo, error)
 	Invalidate(userID string)
+}
+
+// DockerfileEditor rewrites a Dockerfile from an instruction in English. It is
+// nil when the server has no Claude Code binary to run, which is a state the UI
+// is told about rather than a startup failure.
+type DockerfileEditor interface {
+	EditDockerfile(ctx context.Context, dockerfile, instruction string) (claudex.DockerfileEdit, error)
 }
 
 // Deps are the collaborators the handlers need.
@@ -42,8 +50,10 @@ type Deps struct {
 	Sessions *session.Manager
 	// BaseDockerfile is offered to the UI as the starting point for a new image.
 	BaseDockerfile string
-	Frontend       fs.FS
-	Log            *slog.Logger
+	// Editor is optional: without it the Images page only edits by hand.
+	Editor   DockerfileEditor
+	Frontend fs.FS
+	Log      *slog.Logger
 }
 
 // Server carries the dependencies shared by the handlers.
@@ -58,6 +68,7 @@ type Server struct {
 	docker         dockerx.API
 	sessions       *session.Manager
 	baseDockerfile string
+	editor         DockerfileEditor
 	log            *slog.Logger
 	frontend       fs.FS
 	started        time.Time
@@ -76,6 +87,7 @@ func New(deps Deps) http.Handler {
 		docker:         deps.Docker,
 		sessions:       deps.Sessions,
 		baseDockerfile: deps.BaseDockerfile,
+		editor:         deps.Editor,
 		log:            deps.Log,
 		frontend:       deps.Frontend,
 		started:        time.Now(),
@@ -90,15 +102,16 @@ func New(deps Deps) http.Handler {
 
 	// Authenticated.
 	protected := map[string]http.HandlerFunc{
-		"GET /api/auth/me":         s.handleAuthMe,
-		"POST /api/auth/logout":    s.handleAuthLogout,
-		"GET /api/images":          s.handleListImages,
-		"POST /api/images":         s.handleCreateImage,
-		"GET /api/images/template": s.handleImageTemplate,
-		"GET /api/images/{id}":     s.handleGetImage,
-		"GET /api/images/{id}/log": s.handleImageLog,
-		"DELETE /api/images/{id}":  s.handleDeleteImage,
-		"GET /api/github/repos":    s.handleListRepos,
+		"GET /api/auth/me":            s.handleAuthMe,
+		"POST /api/auth/logout":       s.handleAuthLogout,
+		"GET /api/images":             s.handleListImages,
+		"POST /api/images":            s.handleCreateImage,
+		"GET /api/images/template":    s.handleImageTemplate,
+		"POST /api/images/dockerfile": s.handleEditDockerfile,
+		"GET /api/images/{id}":        s.handleGetImage,
+		"GET /api/images/{id}/log":    s.handleImageLog,
+		"DELETE /api/images/{id}":     s.handleDeleteImage,
+		"GET /api/github/repos":       s.handleListRepos,
 
 		"GET /api/sessions":               s.handleListSessions,
 		"POST /api/sessions":              s.handleCreateSession,

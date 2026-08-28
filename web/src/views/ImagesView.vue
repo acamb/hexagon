@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import AppHeader from '../components/AppHeader.vue'
+import Spinner from '../components/Spinner.vue'
 import StatusDot from '../components/StatusDot.vue'
 import { ApiError, api, type Image, type ImageSource } from '../api'
 
@@ -14,6 +15,41 @@ const sourceType = ref<ImageSource>('dockerfile')
 const dockerfile = ref('')
 const registryRef = ref('')
 
+// Asking Claude Code to edit the Dockerfile. canAsk is false when the server has
+// no claude binary to run; previous holds the text the answer replaced, which is
+// what Undo puts back.
+const canAsk = ref(false)
+const instruction = ref('')
+const asking = ref(false)
+const summary = ref('')
+const previous = ref<string | null>(null)
+
+async function ask() {
+  const said = instruction.value.trim()
+  if (!said || asking.value) return
+  asking.value = true
+  error.value = null
+  try {
+    const edit = await api.images.editDockerfile(dockerfile.value, said)
+    previous.value = dockerfile.value
+    dockerfile.value = edit.dockerfile
+    summary.value = edit.summary
+    instruction.value = ''
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    asking.value = false
+  }
+}
+
+function undo() {
+  if (previous.value === null) return
+  dockerfile.value = previous.value
+  previous.value = null
+  summary.value = ''
+}
+
+const removing = ref<string | null>(null)
 const openLogId = ref<string | null>(null)
 const log = ref('')
 
@@ -90,12 +126,15 @@ async function create() {
 
 async function remove(image: Image) {
   if (!window.confirm(`Delete image "${image.name}"?`)) return
+  removing.value = image.id
   try {
     await api.images.remove(image.id)
     if (openLogId.value === image.id) openLogId.value = null
     await refresh()
   } catch (e) {
     error.value = message(e)
+  } finally {
+    removing.value = null
   }
 }
 
@@ -140,7 +179,9 @@ onMounted(async () => {
   await refresh()
   schedule()
   try {
-    dockerfile.value = (await api.images.template()).dockerfile
+    const template = await api.images.template()
+    dockerfile.value = template.dockerfile
+    canAsk.value = template.canAsk
   } catch {
     // The template is a convenience; the form still works without it.
   }
@@ -175,10 +216,29 @@ onUnmounted(() => window.clearInterval(timer))
         </div>
       </div>
 
-      <label v-if="sourceType === 'dockerfile'" class="field">
-        <span>Dockerfile</span>
-        <textarea v-model="dockerfile" rows="14" spellcheck="false" required></textarea>
-      </label>
+      <div v-if="sourceType === 'dockerfile'" class="field">
+        <label>
+          <span>Dockerfile</span>
+          <textarea v-model="dockerfile" rows="14" spellcheck="false" required></textarea>
+        </label>
+
+        <div v-if="canAsk" class="ask">
+          <input
+            v-model="instruction"
+            :disabled="asking"
+            placeholder="Ask Claude to change it: add the Go toolchain"
+            @keydown.enter.prevent="ask"
+          />
+          <button type="button" :disabled="asking || !instruction.trim()" @click="ask">
+            <Spinner v-if="asking" />{{ asking ? 'Asking…' : 'Ask Claude' }}
+          </button>
+        </div>
+
+        <p v-if="summary" class="summary">
+          {{ summary }}
+          <button v-if="previous !== null" type="button" class="link" @click="undo">undo</button>
+        </p>
+      </div>
 
       <label v-else class="field">
         <span>Image reference</span>
@@ -186,7 +246,7 @@ onUnmounted(() => window.clearInterval(timer))
       </label>
 
       <button type="submit" :disabled="submitting">
-        {{ sourceType === 'dockerfile' ? 'Build image' : 'Pull image' }}
+        <Spinner v-if="submitting" />{{ sourceType === 'dockerfile' ? 'Build image' : 'Pull image' }}
       </button>
     </form>
 
@@ -202,7 +262,14 @@ onUnmounted(() => window.clearInterval(timer))
             <button type="button" @click="toggleLog(image)">
               {{ openLogId === image.id ? 'Hide log' : 'Log' }}
             </button>
-            <button type="button" class="danger" @click="remove(image)">Delete</button>
+            <button
+              type="button"
+              class="danger"
+              :disabled="removing === image.id"
+              @click="remove(image)"
+            >
+              <Spinner v-if="removing === image.id" />Delete
+            </button>
           </div>
         </div>
 
@@ -260,14 +327,45 @@ h1 {
   background: var(--surface);
 }
 
-.field {
+.field,
+/* The Dockerfile field wraps its label so the ask-Claude row can sit under the
+   textarea without the click target of the label covering it. */
+.field > label {
   display: grid;
   gap: 0.35rem;
 }
 
-.field > span {
+.field > span,
+.field > label > span {
   font-weight: 600;
   font-size: 0.9rem;
+}
+
+.ask {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.ask input {
+  flex: 1;
+  min-width: 0;
+}
+
+.summary {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.link {
+  margin-left: 0.4rem;
+  padding: 0;
+  border: none;
+  background: none;
+  color: var(--accent);
+  font: inherit;
+  font-size: 0.9rem;
+  cursor: pointer;
 }
 
 .choices {

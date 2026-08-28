@@ -56,6 +56,10 @@ type Config struct {
 	// Claude Code credentials handed to session containers.
 	ClaudeCredentials string // HEXAGON_CLAUDE_CREDENTIALS, claude.credentials: empty disables the mount
 	AnthropicAPIKey   string // ANTHROPIC_API_KEY, claude.anthropicApiKey
+	// ClaudeBinary runs `claude -p` on the host, for editing a Dockerfile from
+	// the Images page. Empty means the PATH, then ~/.local/bin/claude.
+	ClaudeBinary string // HEXAGON_CLAUDE_BINARY, claude.binary
+	ClaudeModel  string // HEXAGON_CLAUDE_MODEL, claude.model: empty leaves the choice to the CLI
 
 	// Git identity used for clones and for commits made inside containers.
 	GitUserName  string // HEXAGON_GIT_USER_NAME, git.userName
@@ -92,6 +96,8 @@ type file struct {
 	Claude struct {
 		Credentials     *string `json:"credentials"`
 		AnthropicAPIKey string  `json:"anthropicApiKey"`
+		Binary          string  `json:"binary"`
+		Model           string  `json:"model"`
 	} `json:"claude"`
 
 	Git struct {
@@ -147,6 +153,8 @@ func Load(path string) (*Config, error) {
 
 		ClaudeCredentials: expandHome(home, claudeCredentials(f, home)),
 		AnthropicAPIKey:   pick("ANTHROPIC_API_KEY", f.Claude.AnthropicAPIKey, ""),
+		ClaudeBinary:      expandHome(home, pick("HEXAGON_CLAUDE_BINARY", f.Claude.Binary, "")),
+		ClaudeModel:       pick("HEXAGON_CLAUDE_MODEL", f.Claude.Model, ""),
 
 		GitUserName:  pick("HEXAGON_GIT_USER_NAME", f.Git.UserName, ""),
 		GitUserEmail: pick("HEXAGON_GIT_USER_EMAIL", f.Git.UserEmail, ""),

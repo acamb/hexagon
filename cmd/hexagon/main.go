@@ -16,6 +16,7 @@ import (
 
 	"github.com/andrea/hexagon"
 	"github.com/andrea/hexagon/internal/auth"
+	"github.com/andrea/hexagon/internal/claudex"
 	"github.com/andrea/hexagon/internal/config"
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/github"
@@ -177,6 +178,15 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		BaseDockerfile: hexagon.BaseDockerfile,
 		Frontend:       frontend,
 		Log:            log,
+	}
+
+	// Optional: without a claude binary the Images page can still be edited by
+	// hand, so a missing one is a note in the log rather than a refusal to run.
+	// The interface is left nil in that case, which is what the UI asks about.
+	if runner, err := claudex.New(cfg.ClaudeBinary); err != nil {
+		log.Info("no claude binary: Dockerfiles can only be edited by hand", "err", err)
+	} else {
+		deps.Editor = runner.WithModel(cfg.ClaudeModel)
 	}
 
 	if cfg.DevUser != "" {

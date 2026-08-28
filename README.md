@@ -90,6 +90,14 @@ provide `git`, `tmux` and `claude` on the `PATH`, and a long-running `CMD`; the 
 [deploy/images/base/Dockerfile](deploy/images/base/Dockerfile) is offered as the starting
 point and is the reference for what a session needs.
 
+**Editing a Dockerfile with Claude Code** — under the Dockerfile box, say what to change
+("add the Go toolchain") and Hexagon runs `claude -p` on the host to rewrite it, showing
+what changed with an undo. The call has every built-in tool removed (`--tools ""`), so it
+is a text transformation with no shell, no file access and no fetch of its own, and it
+ignores your own Claude Code configuration (`--safe-mode`). It uses the host's Claude Code
+credentials and therefore its quota. Without a `claude` binary on the server the control
+is not shown and the box is edited by hand, as before.
+
 **Sessions** — pick a repository from your GitHub account and an image. Hexagon clones the
 repository into `<workspace root>/<session id>/repo` on the host, starts a container with
 that clone bind mounted on `/workspace`, and runs `tmux` inside it. The container runs as
@@ -141,6 +149,8 @@ and has a default that suits a single user on a developer machine.
 | `HEXAGON_DEBUG` | `debug` | — | Set to anything for debug logging |
 | `HEXAGON_CLAUDE_CREDENTIALS` | `claude.credentials` | `~/.claude/.credentials.json` | Mounted read-only into session containers (from M4). Empty disables the mount |
 | `ANTHROPIC_API_KEY` | `claude.anthropicApiKey` | — | Injected into session containers instead of the credentials mount (from M4) |
+| `HEXAGON_CLAUDE_BINARY` | `claude.binary` | `claude` on `PATH`, then `~/.local/bin/claude` | Runs `claude -p` to edit a Dockerfile from the Images page |
+| `HEXAGON_CLAUDE_MODEL` | `claude.model` | — | Model for that call; empty leaves the choice to the CLI |
 | `HEXAGON_GIT_USER_NAME` | `git.userName` | — | Git identity for clones and container commits (from M3) |
 | `HEXAGON_GIT_USER_EMAIL` | `git.userEmail` | — | |
 | `DOCKER_HOST` | `docker.host` | SDK default | Docker Engine endpoint (from M2) |

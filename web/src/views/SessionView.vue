@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppHeader from '../components/AppHeader.vue'
+import Spinner from '../components/Spinner.vue'
 import StatusDot from '../components/StatusDot.vue'
 import TerminalPane from '../components/TerminalPane.vue'
 import TmuxCheatsheet from '../components/TmuxCheatsheet.vue'
@@ -14,7 +15,9 @@ const sessionId = route.params.id as string
 
 const session = ref<Session | null>(null)
 const error = ref<string | null>(null)
-const busy = ref(false)
+// Which action is in flight, not merely whether one is: all three controls are
+// disabled while any of them runs, but only the one that was clicked spins.
+const running = ref<'start' | 'stop' | 'autoClaude' | null>(null)
 // Set when the switch is flipped on a session that is already up: the tmux
 // session it is running was created with, or without, Claude Code as its
 // command, so the change is only visible after a restart.
@@ -32,38 +35,38 @@ async function refresh() {
 }
 
 async function setAutoClaude(auto: boolean) {
-  busy.value = true
+  running.value = 'autoClaude'
   try {
     session.value = await api.sessions.update(sessionId, { autoClaude: auto })
     pending.value = session.value.status === 'running'
   } catch (e) {
     error.value = message(e)
   } finally {
-    busy.value = false
+    running.value = null
   }
 }
 
 async function start() {
-  busy.value = true
+  running.value = 'start'
   pending.value = false
   try {
     session.value = await api.sessions.start(sessionId)
   } catch (e) {
     error.value = message(e)
   } finally {
-    busy.value = false
+    running.value = null
   }
 }
 
 async function stop() {
-  busy.value = true
+  running.value = 'stop'
   pending.value = false
   try {
     session.value = await api.sessions.stop(sessionId)
   } catch (e) {
     error.value = message(e)
   } finally {
-    busy.value = false
+    running.value = null
   }
 }
 
@@ -109,9 +112,10 @@ onUnmounted(() => window.clearTimeout(timer))
             <input
               type="checkbox"
               :checked="session.autoClaude"
-              :disabled="busy"
+              :disabled="running !== null"
               @change="setAutoClaude(($event.target as HTMLInputElement).checked)"
             />
+            <Spinner v-if="running === 'autoClaude'" />
             Start Claude
           </label>
 
@@ -119,18 +123,18 @@ onUnmounted(() => window.clearTimeout(timer))
           <button
             v-if="session.status === 'running'"
             type="button"
-            :disabled="busy"
+            :disabled="running !== null"
             @click="stop"
           >
-            Stop
+            <Spinner v-if="running === 'stop'" />Stop
           </button>
           <button
             v-else-if="session.status === 'stopped'"
             type="button"
-            :disabled="busy"
+            :disabled="running !== null"
             @click="start"
           >
-            Start
+            <Spinner v-if="running === 'start'" />Start
           </button>
           <button type="button" @click="cheatsheetOpen = true">tmux keys</button>
           <button type="button" @click="router.push({ name: 'sessions' })">All sessions</button>

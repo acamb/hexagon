@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrea/hexagon/internal/claudex"
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/store"
 )
@@ -434,5 +435,117 @@ func TestImageTemplateIsTheBaseDockerfile(t *testing.T) {
 	env.decode(env.do(http.MethodGet, "/api/images/template", nil), &body)
 	if !strings.HasPrefix(body.Dockerfile, "FROM scratch") {
 		t.Errorf("template = %q, want the configured base Dockerfile", body.Dockerfile)
+	}
+}
+
+// fakeEditor stands in for Claude Code. The real one is exercised in
+// internal/claudex against a fake binary; here what matters is the handler.
+type fakeEditor struct {
+	mu          sync.Mutex
+	err         error
+	dockerfile  string
+	instruction string
+}
+
+func (f *fakeEditor) EditDockerfile(_ context.Context, dockerfile, instruction string) (claudex.DockerfileEdit, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.dockerfile, f.instruction = dockerfile, instruction
+	if f.err != nil {
+		return claudex.DockerfileEdit{}, f.err
+	}
+	return claudex.DockerfileEdit{Dockerfile: dockerfile + "RUN apt-get install -y ripgrep\n", Summary: "Added ripgrep"}, nil
+}
+
+func (f *fakeEditor) asked() (dockerfile, instruction string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.dockerfile, f.instruction
+}
+
+func TestEditDockerfileReturnsWhatClaudeAnswered(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	resp := env.postJSON("/api/images/dockerfile",
+		`{"dockerfile":"FROM busybox\n","instruction":"add ripgrep"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	var edit claudex.DockerfileEdit
+	env.decode(resp, &edit)
+	if !strings.Contains(edit.Dockerfile, "ripgrep") || !strings.HasPrefix(edit.Dockerfile, "FROM busybox") {
+		t.Errorf("dockerfile = %q", edit.Dockerfile)
+	}
+	if edit.Summary != "Added ripgrep" {
+		t.Errorf("summary = %q", edit.Summary)
+	}
+
+	dockerfile, instruction := env.editor.asked()
+	if dockerfile != "FROM busybox\n" || instruction != "add ripgrep" {
+		t.Errorf("asked for %q with %q", dockerfile, instruction)
+	}
+}
+
+func TestEditDockerfileNeedsSomethingToDo(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	for _, body := range []string{
+		`{"dockerfile":"FROM busybox\n","instruction":"   "}`,
+		`{"dockerfile":"  ","instruction":"add ripgrep"}`,
+	} {
+		if resp := env.postJSON("/api/images/dockerfile", body); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d for %s, want 400", resp.StatusCode, body)
+		}
+	}
+	if _, instruction := env.editor.asked(); instruction != "" {
+		t.Errorf("a refused request still reached Claude Code: %q", instruction)
+	}
+}
+
+// The failure is in something this server called out to, and the message is
+// what the user needs to see: not logged in, out of credit, and so on.
+func TestEditDockerfileReportsAFailureAsABadGateway(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	env.editor.err = fmt.Errorf("claude code failed: credit balance too low")
+
+	resp := env.postJSON("/api/images/dockerfile",
+		`{"dockerfile":"FROM busybox\n","instruction":"add ripgrep"}`)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("status = %d, want 502", resp.StatusCode)
+	}
+	var body map[string]string
+	env.decode(resp, &body)
+	if !strings.Contains(body["error"], "credit balance") {
+		t.Errorf("error = %q, want the reason Claude Code gave", body["error"])
+	}
+}
+
+func TestEditDockerfileNeedsAuthentication(t *testing.T) {
+	env := newTestEnv(t, "alice")
+
+	resp := env.postJSON("/api/images/dockerfile",
+		`{"dockerfile":"FROM busybox\n","instruction":"add ripgrep"}`)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestTemplateSaysWhetherClaudeCanBeAsked(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	var body struct {
+		Dockerfile string `json:"dockerfile"`
+		CanAsk     bool   `json:"canAsk"`
+	}
+	env.decode(env.do(http.MethodGet, "/api/images/template", nil), &body)
+	if body.Dockerfile == "" {
+		t.Error("the template came back empty")
+	}
+	if !body.CanAsk {
+		t.Error("canAsk = false with an editor wired in")
 	}
 }

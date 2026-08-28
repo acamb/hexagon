@@ -47,6 +47,7 @@ type testEnv struct {
 	repos  *fakeRepos
 	docker *fakeDocker
 	cloner *fakeCloner
+	editor *fakeEditor
 	// workspaces is the root the session manager provisions into.
 	workspaces string
 }
@@ -106,6 +107,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	docker := newFakeDocker()
 	repos := &fakeRepos{}
 	cloner := &fakeCloner{}
+	editor := &fakeEditor{}
 	workspaces := filepath.Join(t.TempDir(), "workspaces")
 
 	sessions := session.NewManager(st, docker, cloner, logins, session.Config{
@@ -136,6 +138,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		Docker:         docker,
 		Sessions:       sessions,
 		BaseDockerfile: "FROM scratch\n",
+		Editor:         editor,
 		Frontend:       fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}},
 		Log:            slog.New(slog.DiscardHandler),
 	})
@@ -156,6 +159,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		repos:  repos,
 		docker: docker,
 		cloner: cloner,
+		editor: editor,
 
 		workspaces: workspaces,
 		client: &http.Client{

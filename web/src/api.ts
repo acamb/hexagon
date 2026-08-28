@@ -70,6 +70,12 @@ export interface ImageLog {
   error: string
 }
 
+// What Claude Code came back with when asked to change a Dockerfile.
+export interface DockerfileEdit {
+  dockerfile: string
+  summary: string
+}
+
 export interface NewImage {
   name: string
   sourceType: ImageSource
@@ -152,6 +158,13 @@ export const api = {
       request<Image>('/images', { method: 'POST', body: JSON.stringify(image) }),
     remove: (id: string) => request<null>(`/images/${id}`, { method: 'DELETE' }),
     log: (id: string) => request<ImageLog>(`/images/${id}/log`),
-    template: () => request<{ dockerfile: string }>('/images/template'),
+    // canAsk is false when the server has no Claude Code binary to run, and the
+    // page then leaves the control out instead of offering one that fails.
+    template: () => request<{ dockerfile: string; canAsk: boolean }>('/images/template'),
+    editDockerfile: (dockerfile: string, instruction: string) =>
+      request<DockerfileEdit>('/images/dockerfile', {
+        method: 'POST',
+        body: JSON.stringify({ dockerfile, instruction }),
+      }),
   },
 }

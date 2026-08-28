@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import Spinner from './Spinner.vue'
 import { ApiError, api, type Image, type Repo, type Session } from '../api'
 
 const emit = defineEmits<{ close: []; created: [session: Session] }>()
@@ -152,7 +153,7 @@ onMounted(() => load())
           <footer>
             <button type="button" @click="emit('close')">Cancel</button>
             <button type="submit" class="primary" :disabled="!selected || !imageId || submitting">
-              {{ submitting ? 'Creating…' : 'Create session' }}
+              <Spinner v-if="submitting" />{{ submitting ? 'Creating…' : 'Create session' }}
             </button>
           </footer>
         </form>

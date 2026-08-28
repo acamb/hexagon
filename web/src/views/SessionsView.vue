@@ -3,6 +3,7 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppHeader from '../components/AppHeader.vue'
 import NewSessionDialog from '../components/NewSessionDialog.vue'
+import Spinner from '../components/Spinner.vue'
 import StatusDot from '../components/StatusDot.vue'
 import { ApiError, api, type Session } from '../api'
 import { isProvisioning, sessionLabel } from '../status'
@@ -120,7 +121,7 @@ onUnmounted(() => window.clearInterval(timer))
           <div class="actions">
             <button type="button" @click="confirming = null">Cancel</button>
             <button type="button" class="danger" :disabled="busy === session.id" @click="remove(session)">
-              Delete
+              <Spinner v-if="busy === session.id" />Delete
             </button>
           </div>
         </div>
@@ -139,7 +140,7 @@ onUnmounted(() => window.clearInterval(timer))
             :disabled="busy === session.id"
             @click="act(session, 'stop')"
           >
-            Stop
+            <Spinner v-if="busy === session.id" />Stop
           </button>
           <button
             v-else-if="session.status === 'stopped'"
@@ -147,7 +148,7 @@ onUnmounted(() => window.clearInterval(timer))
             :disabled="busy === session.id"
             @click="act(session, 'start')"
           >
-            Start
+            <Spinner v-if="busy === session.id" />Start
           </button>
           <span v-else-if="isProvisioning(session.status)" class="spacer" />
           <button type="button" class="danger" @click="armDelete(session)">Delete</button>

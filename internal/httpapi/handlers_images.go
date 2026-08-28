@@ -30,6 +30,11 @@ const (
 	// buildLogFlush is how often a running build's output reaches the database,
 	// and therefore the UI.
 	buildLogFlush = time.Second
+	// dockerfileEditTimeout bounds a call to Claude Code. It answers in seconds;
+	// this is the point at which something has gone wrong rather than slow.
+	dockerfileEditTimeout = 3 * time.Minute
+	// maxInstruction bounds what the user can ask for. It is a sentence or two.
+	maxInstruction = 4 << 10
 )
 
 // imageNamePattern keeps names readable and safe to show anywhere.
@@ -100,9 +105,65 @@ func (s *Server) handleImageLog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleImageTemplate hands the UI the reference Dockerfile to start from.
+// handleImageTemplate hands the UI the reference Dockerfile to start from, and
+// says whether this server can also edit one: with no Claude Code binary the
+// page leaves the control out rather than offering a button that always fails.
 func (s *Server) handleImageTemplate(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, map[string]string{"dockerfile": s.baseDockerfile})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"dockerfile": s.baseDockerfile,
+		"canAsk":     s.editor != nil,
+	})
+}
+
+type editDockerfileRequest struct {
+	Dockerfile  string `json:"dockerfile"`
+	Instruction string `json:"instruction"`
+}
+
+// handleEditDockerfile asks Claude Code to apply an instruction to a Dockerfile
+// and hands back the result. Nothing is stored: this is the editor's undo
+// buffer, not an image.
+//
+// It lives outside /api/images/{id} because the image does not exist yet, and
+// may never: the answer is something to read before deciding to build.
+func (s *Server) handleEditDockerfile(w http.ResponseWriter, r *http.Request) {
+	if s.editor == nil {
+		writeError(w, http.StatusServiceUnavailable, "this server has no Claude Code binary to run")
+		return
+	}
+
+	var req editDockerfileRequest
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxImageRequestBody)).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	instruction := strings.TrimSpace(req.Instruction)
+	switch {
+	case instruction == "":
+		writeError(w, http.StatusBadRequest, "say what to change")
+		return
+	case len(instruction) > maxInstruction:
+		writeError(w, http.StatusBadRequest, "that instruction is too long")
+		return
+	case strings.TrimSpace(req.Dockerfile) == "":
+		writeError(w, http.StatusBadRequest, "there is no Dockerfile to change")
+		return
+	}
+
+	// Tied to the request: a browser that has gone away is not going to read
+	// the answer, and this call costs money for as long as it runs.
+	ctx, cancel := context.WithTimeout(r.Context(), dockerfileEditTimeout)
+	defer cancel()
+
+	edit, err := s.editor.EditDockerfile(ctx, req.Dockerfile, instruction)
+	if err != nil {
+		s.log.Error("edit dockerfile", "login", s.user(r).GitHubLogin, "err", err)
+		// 502: the thing that failed is something this server called out to.
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	s.log.Info("dockerfile edited", "login", s.user(r).GitHubLogin, "summary", edit.Summary)
+	writeJSON(w, http.StatusOK, edit)
 }
 
 type createImageRequest struct {

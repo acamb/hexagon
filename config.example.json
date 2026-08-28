@@ -15,7 +15,9 @@
 
   "claude": {
     "credentials": "~/.claude/.credentials.json",
-    "anthropicApiKey": ""
+    "anthropicApiKey": "",
+    "binary": "",
+    "model": ""
   },
 
   "git": {
