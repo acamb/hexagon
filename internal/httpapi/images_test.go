@@ -150,6 +150,7 @@ func (e *testEnv) sendJSON(method, path, body string) *http.Response {
 		e.t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Origin", testOrigin)
 	resp, err := e.client.Do(req)
 	if err != nil {
 		e.t.Fatalf("%s %s: %v", method, path, err)

@@ -121,6 +121,7 @@ func TestVSCodeProxyForwardsRequests(t *testing.T) {
 		t.Fatalf("build request: %v", err)
 	}
 	sessionsReq.Header.Set("Content-Type", "text/plain")
+	sessionsReq.Header.Set("Origin", "http://127.0.0.1:8080")
 	rejected, err := env.client.Do(sessionsReq)
 	if err != nil {
 		t.Fatalf("post to sessions: %v", err)
@@ -256,7 +257,9 @@ func TestVSCodeProxyEnforcesTheRequestsOrigin(t *testing.T) {
 	// The public URL newTestEnv configures, which is what the origin check
 	// compares against — not the random port httptest bound.
 	const ours = "http://127.0.0.1:8080"
-	upgrade := map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"}
+	// An empty Origin means the header is not sent at all: testEnv.do adds one
+	// by default, the way a browser does on everything but a navigation.
+	upgrade := map[string]string{"Connection": "Upgrade", "Upgrade": "websocket", "Origin": ""}
 	with := func(base map[string]string, extra ...string) map[string]string {
 		headers := map[string]string{}
 		for k, v := range base {
@@ -275,20 +278,22 @@ func TestVSCodeProxyEnforcesTheRequestsOrigin(t *testing.T) {
 		want    int
 	}{
 		{"the button, a top-level navigation with no Origin", http.MethodGet,
-			map[string]string{"Sec-Fetch-Site": "none"}, http.StatusOK},
+			map[string]string{"Sec-Fetch-Site": "none", "Origin": ""}, http.StatusOK},
 		{"an asset load from the editor's own page", http.MethodGet,
-			map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusOK},
-		{"a client that sends neither header", http.MethodGet, nil, http.StatusOK},
+			map[string]string{"Sec-Fetch-Site": "same-origin", "Origin": ""}, http.StatusOK},
+		{"a client that sends neither header", http.MethodGet,
+			map[string]string{"Origin": ""}, http.StatusOK},
 		{"a navigation another site caused", http.MethodGet,
-			map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+			map[string]string{"Sec-Fetch-Site": "cross-site", "Origin": ""}, http.StatusForbidden},
 		{"a page framing the editor", http.MethodGet,
-			map[string]string{"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Dest": "iframe"}, http.StatusForbidden},
+			map[string]string{"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Dest": "iframe", "Origin": ""}, http.StatusForbidden},
 		{"an upgrade with no Origin", http.MethodGet, upgrade, http.StatusForbidden},
 		{"an upgrade from another origin", http.MethodGet,
 			with(upgrade, "Origin", "https://evil.example"), http.StatusForbidden},
 		{"an upgrade from our own page", http.MethodGet,
 			with(upgrade, "Origin", ours), http.StatusOK},
-		{"a POST with no Origin", http.MethodPost, nil, http.StatusForbidden},
+		{"a POST with no Origin", http.MethodPost,
+			map[string]string{"Origin": ""}, http.StatusForbidden},
 		{"a POST from our own page", http.MethodPost,
 			map[string]string{"Origin": ours}, http.StatusOK},
 	} {

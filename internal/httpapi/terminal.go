@@ -56,10 +56,11 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A browser always sends Origin on a WebSocket handshake, so here — unlike
-	// the rest of the API — a missing one is refused too: this endpoint hands
-	// out a shell, and there is no legitimate browser caller without it.
-	if r.Header.Get("Origin") == "" || !s.sameOrigin(r) {
+	// A browser always sends Origin on a WebSocket handshake, so this endpoint
+	// asks for the header itself instead of taking the Sec-Fetch-Site signal
+	// guardStateChanges also accepts: it hands out a shell, and there is no
+	// legitimate browser caller without it.
+	if !s.originMatches(r.Header.Get("Origin")) {
 		writeError(w, http.StatusForbidden, "cross-origin request rejected")
 		return
 	}

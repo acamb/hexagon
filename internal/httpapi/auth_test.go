@@ -242,7 +242,17 @@ func (e *testEnv) do(method, path string, headers map[string]string) *http.Respo
 	if err != nil {
 		e.t.Fatalf("build request: %v", err)
 	}
+	// What a browser puts on every request to its own origin, and what the
+	// guard on mutating calls demands. A test that is about the header itself
+	// overrides it through headers.
+	req.Header.Set("Origin", testOrigin)
 	for k, v := range headers {
+		// An empty value means "send this request without the header", which is
+		// the only way to ask for one the default above already set.
+		if v == "" {
+			req.Header.Del(k)
+			continue
+		}
 		req.Header.Set(k, v)
 	}
 	resp, err := e.client.Do(req)
@@ -437,8 +447,33 @@ func TestStateChangingRequestsAreGuarded(t *testing.T) {
 		t.Errorf("logout from a foreign origin = %d, want 403", resp.StatusCode)
 	}
 
+	// Neither header. This used to be accepted, on the reasoning that browsers
+	// always send Origin where it matters; SameSite=Lax was the whole defence,
+	// and it is a browser default rather than something this server enforces.
+	resp = env.do(http.MethodPost, "/api/auth/logout", map[string]string{
+		"Content-Type": "application/json",
+		"Origin":       "",
+	})
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("logout with no origin signal = %d, want 403", resp.StatusCode)
+	}
+
 	if env.sessionCookie() == nil {
 		t.Error("the guarded requests ended the session anyway")
+	}
+
+	// Sec-Fetch-Site on its own is enough, which is what keeps the rule from
+	// depending on a header browsers leave out of a navigation.
+	resp = env.do(http.MethodPost, "/api/auth/logout", map[string]string{
+		"Content-Type":   "application/json",
+		"Origin":         "",
+		"Sec-Fetch-Site": "same-origin",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("logout with Sec-Fetch-Site: same-origin = %d, want 200", resp.StatusCode)
+	}
+	if env.sessionCookie() != nil {
+		t.Error("the accepted logout did not end the session")
 	}
 }
 

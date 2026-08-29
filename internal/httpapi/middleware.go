@@ -96,18 +96,24 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// guardStateChanges is defence in depth against cross-site requests. The
-// session cookie is SameSite=Lax, which already blocks cross-site form posts;
-// on top of that a mutating API call must look like it came from our own
-// frontend: a JSON content type (which HTML forms cannot produce) and, when the
-// browser sends one, a matching Origin.
+// guardStateChanges is what stands between a mutating API call and a cross-site
+// request. SameSite=Lax is a browser default rather than something this server
+// enforces, and what browsers do with it has changed between versions, so the
+// call has to show where it came from: a same-origin signal — a matching Origin,
+// or Sec-Fetch-Site saying same-origin — and a JSON content type, which an HTML
+// form cannot produce.
+//
+// Silence is not a signal. A request with neither header is refused, which
+// breaks bare curl deliberately: -H "Origin: $HEXAGON_PUBLIC_URL" is the fix,
+// and it is in the README. A bypass header was considered and rejected — it
+// would be one more thing that has to stay secret to be worth anything.
 func (s *Server) guardStateChanges(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !strings.HasPrefix(r.URL.Path, "/api/") || isSafeMethod(r.Method) {
 			next.ServeHTTP(w, r)
 			return
 		}
-		if !s.sameOrigin(r) {
+		if s.sameOriginSignal(r) != originSame {
 			writeError(w, http.StatusForbidden, "cross-origin request rejected")
 			return
 		}
@@ -142,20 +148,10 @@ func isSafeMethod(method string) bool {
 	return false
 }
 
-// sameOrigin reports whether the request originates from the configured public
-// URL. A missing Origin header is accepted: non-browser clients such as curl do
-// not send one, and browsers always do on the requests we care about.
-func (s *Server) sameOrigin(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		return true
-	}
-	return s.originMatches(origin)
-}
-
 // originMatches compares one origin against the configured public URL. Scheme
 // and host, because that is what an origin is: a path or a trailing slash in
-// either value is not part of the comparison.
+// either value is not part of the comparison. An empty origin matches nothing,
+// which is what a caller demanding the header wants.
 func (s *Server) originMatches(origin string) bool {
 	got, err := url.Parse(origin)
 	if err != nil {

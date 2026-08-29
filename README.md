@@ -252,6 +252,14 @@ Sign out from the header and you land back on `/login`; reloading `/` keeps you
 there. Sessions last 30 days, so closing and reopening the browser keeps you
 signed in.
 
+Calling the API by hand takes one more header: a mutating request has to show
+that it came from our own pages, and `curl` says nothing about where it is from.
+
+```sh
+curl -X POST -H "Content-Type: application/json" -H "Origin: $HEXAGON_PUBLIC_URL" \
+  -b "hexagon_session=..." http://127.0.0.1:8080/api/auth/logout
+```
+
 For a session, the things worth checking are that a file Claude writes in the
 container belongs to you on the host, and that closing the tab does not
 interrupt it:
@@ -293,6 +301,9 @@ deploy/images/      base image definitions for session containers (from M2)
   put a TLS reverse proxy in front and leave the bind where it is: the server
   refuses to start on a listen address the network can reach unless
   `publicUrl` is https, or `insecureHttp` says the plaintext is deliberate.
+- A mutating API call is refused unless it shows a same-origin signal — a
+  matching `Origin`, or `Sec-Fetch-Site: same-origin` — and a JSON content type.
+  `SameSite=Lax` is a browser default, not something this server enforces.
 - Session cookies are `HttpOnly` and `SameSite=Lax`; only the SHA-256 of the
   cookie value is stored. Over https the cookie is `Secure` and named
   `__Host-hexagon_session`, a prefix the browser enforces so no sibling
