@@ -58,6 +58,14 @@ func (s *Server) handleVSCode(w http.ResponseWriter, r *http.Request) {
 			pr.Out.URL.Path = "/" + pr.In.PathValue("path")
 			pr.Out.URL.RawPath = ""
 			pr.SetXForwarded()
+			// code-server runs with --auth none and has no use for either header.
+			// The session cookie must not reach the container: it is the
+			// credential that authorises creating sessions and attaching
+			// terminals, and that container runs an agent over repository
+			// content nobody here has read. ReverseProxy strips hop-by-hop
+			// headers and forwards the rest, Cookie included.
+			pr.Out.Header.Del("Cookie")
+			pr.Out.Header.Del("Authorization")
 		},
 		ErrorHandler: func(w http.ResponseWriter, r *http.Request, err error) {
 			s.log.Warn("vscode proxy", "session", found.ID, "err", err)

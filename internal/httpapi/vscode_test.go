@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -186,5 +187,51 @@ func TestVSCodeProxyRejectsASessionThatIsNotRunning(t *testing.T) {
 
 	if got := env.do(http.MethodGet, "/api/sessions/s-stopped/vscode/", nil).StatusCode; got != http.StatusConflict {
 		t.Errorf("a stopped session: status = %d, want 409", got)
+	}
+}
+
+// The container behind the proxy runs an agent over repository content, and the
+// session cookie is the credential for the whole API. It has no business
+// crossing that boundary.
+func TestVSCodeProxyStripsTheCallersCredentials(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	var gotCookie, gotAuthorization string
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotCookie = r.Header.Get("Cookie")
+		gotAuthorization = r.Header.Get("Authorization")
+		w.Write([]byte("hello from code-server"))
+	}))
+	defer backend.Close()
+
+	env.insertVSCodeSession("s-vscode", env.userID(), true, "container-vscode", true)
+	env.docker.setContainerPort("container-vscode", dockerx.VSCodePort, backendPort(t, backend))
+
+	req, err := http.NewRequest(http.MethodGet, env.server.URL+"/api/sessions/s-vscode/vscode/foo", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer something")
+	resp, err := env.client.Do(req)
+	if err != nil {
+		t.Fatalf("get through the proxy: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// The response still has to come back: stripping the headers must not break
+	// the proxy itself.
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	if got := string(body); got != "hello from code-server" {
+		t.Errorf("body = %q", got)
+	}
+	if gotCookie != "" {
+		t.Errorf("backend saw Cookie %q, want none: the session cookie reached the container", gotCookie)
+	}
+	if gotAuthorization != "" {
+		t.Errorf("backend saw Authorization %q, want none", gotAuthorization)
 	}
 }
