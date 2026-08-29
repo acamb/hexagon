@@ -14,6 +14,10 @@ import (
 // own HTTP and its own WebSocket — which is why the routes above match every
 // method: there is no verb this handler can rule out in advance.
 func (s *Server) handleVSCode(w http.ResponseWriter, r *http.Request) {
+	if !s.allowVSCodeOrigin(w, r) {
+		return
+	}
+
 	found, ok := s.sessionOr404(w, r)
 	if !ok {
 		return
@@ -74,4 +78,46 @@ func (s *Server) handleVSCode(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+// allowVSCodeOrigin refuses a request to the editor that another site could have
+// made, and reports whether the caller may go on. guardStateChanges cannot do
+// this job: it returns early for GET, and code-server's own WebSocket upgrade is
+// a GET that CORS does not cover either.
+//
+// The rule is by request shape rather than by route, because the shapes differ
+// in what a browser sends. Requiring Origin outright — the way the terminal
+// endpoint does — would break the feature: the VS Code button is a link opened
+// in a new tab, and a top-level navigation carries no Origin at all.
+func (s *Server) allowVSCodeOrigin(w http.ResponseWriter, r *http.Request) bool {
+	// There is no legitimate way to embed a session's editor, and refusing it
+	// here means it holds without waiting for a Content-Security-Policy the
+	// proxy route is exempt from anyway.
+	switch r.Header.Get("Sec-Fetch-Dest") {
+	case "iframe", "frame", "embed", "object":
+		writeError(w, http.StatusForbidden, "the editor cannot be embedded")
+		return false
+	}
+
+	signal := s.sameOriginSignal(r)
+
+	// A browser always sends Origin on a WebSocket handshake, and an unsafe
+	// method is a state change wherever it lands, so for both an origin we
+	// cannot place is refused rather than assumed.
+	if isWebSocketUpgrade(r) || !isSafeMethod(r.Method) {
+		if signal != originSame {
+			writeError(w, http.StatusForbidden, "cross-origin request rejected")
+			return false
+		}
+		return true
+	}
+
+	// What is left is the navigation and the editor's own asset loads. Only a
+	// browser saying outright that another site made the request is refused;
+	// an absent signal is accepted, as it is everywhere else in this server.
+	if signal == originCross {
+		writeError(w, http.StatusForbidden, "cross-origin request rejected")
+		return false
+	}
+	return true
 }

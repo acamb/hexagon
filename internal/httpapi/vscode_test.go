@@ -95,12 +95,15 @@ func TestVSCodeProxyForwardsRequests(t *testing.T) {
 	}
 
 	// The two halves of one decision: the proxy carries traffic that is not
-	// JSON, but the ordinary API still refuses it.
+	// JSON, but the ordinary API still refuses it. The Origin is what a browser
+	// sends on any POST, and the proxy route demands it; the subject here is
+	// the content type.
 	req, err := http.NewRequest(http.MethodPost, env.server.URL+"/api/sessions/s-vscode/vscode/edit", strings.NewReader("plain text"))
 	if err != nil {
 		t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Origin", "http://127.0.0.1:8080")
 	posted, err := env.client.Do(req)
 	if err != nil {
 		t.Fatalf("post to proxy: %v", err)
@@ -233,5 +236,66 @@ func TestVSCodeProxyStripsTheCallersCredentials(t *testing.T) {
 	}
 	if gotAuthorization != "" {
 		t.Errorf("backend saw Authorization %q, want none", gotAuthorization)
+	}
+}
+
+// The proxy is the one authenticated route a browser reaches by navigation, so
+// its origin rule is by request shape. These are the shapes.
+func TestVSCodeProxyEnforcesTheRequestsOrigin(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("hello from code-server"))
+	}))
+	defer backend.Close()
+
+	env.insertVSCodeSession("s-vscode", env.userID(), true, "container-vscode", true)
+	env.docker.setContainerPort("container-vscode", dockerx.VSCodePort, backendPort(t, backend))
+
+	// The public URL newTestEnv configures, which is what the origin check
+	// compares against — not the random port httptest bound.
+	const ours = "http://127.0.0.1:8080"
+	upgrade := map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"}
+	with := func(base map[string]string, extra ...string) map[string]string {
+		headers := map[string]string{}
+		for k, v := range base {
+			headers[k] = v
+		}
+		for i := 0; i < len(extra); i += 2 {
+			headers[extra[i]] = extra[i+1]
+		}
+		return headers
+	}
+
+	for _, c := range []struct {
+		name    string
+		method  string
+		headers map[string]string
+		want    int
+	}{
+		{"the button, a top-level navigation with no Origin", http.MethodGet,
+			map[string]string{"Sec-Fetch-Site": "none"}, http.StatusOK},
+		{"an asset load from the editor's own page", http.MethodGet,
+			map[string]string{"Sec-Fetch-Site": "same-origin"}, http.StatusOK},
+		{"a client that sends neither header", http.MethodGet, nil, http.StatusOK},
+		{"a navigation another site caused", http.MethodGet,
+			map[string]string{"Sec-Fetch-Site": "cross-site"}, http.StatusForbidden},
+		{"a page framing the editor", http.MethodGet,
+			map[string]string{"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Dest": "iframe"}, http.StatusForbidden},
+		{"an upgrade with no Origin", http.MethodGet, upgrade, http.StatusForbidden},
+		{"an upgrade from another origin", http.MethodGet,
+			with(upgrade, "Origin", "https://evil.example"), http.StatusForbidden},
+		{"an upgrade from our own page", http.MethodGet,
+			with(upgrade, "Origin", ours), http.StatusOK},
+		{"a POST with no Origin", http.MethodPost, nil, http.StatusForbidden},
+		{"a POST from our own page", http.MethodPost,
+			map[string]string{"Origin": ours}, http.StatusOK},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if got := env.do(c.method, "/api/sessions/s-vscode/vscode/foo", c.headers).StatusCode; got != c.want {
+				t.Errorf("status = %d, want %d", got, c.want)
+			}
+		})
 	}
 }
