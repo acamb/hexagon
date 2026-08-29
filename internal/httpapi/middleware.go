@@ -18,7 +18,7 @@ import (
 // differently from the rest of the API.
 func (s *Server) requireAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		user, err := s.authenticate(r)
+		user, err := s.auth.Authenticate(r.Context(), r)
 		switch {
 		case errors.Is(err, auth.ErrNoSession):
 			writeError(w, http.StatusUnauthorized, "authentication required")
@@ -30,14 +30,6 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		}
 		next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), user)))
 	})
-}
-
-// authenticate resolves the caller, honouring the development bypass.
-func (s *Server) authenticate(r *http.Request) (*store.User, error) {
-	if s.dev != nil {
-		return s.dev.User(r.Context())
-	}
-	return s.auth.Authenticate(r.Context(), r)
 }
 
 // user returns the authenticated caller. Only call it from handlers behind

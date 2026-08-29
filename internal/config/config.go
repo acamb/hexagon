@@ -50,11 +50,6 @@ type Config struct {
 	// BitbucketAPIURL overrides api.bitbucket.org, for the same reasons.
 	BitbucketAPIURL string // HEXAGON_BITBUCKET_API_URL, bitbucket.apiUrl
 
-	// Development bypass. When DevUser is set the server skips OAuth and treats
-	// every request as that user, authenticating to GitHub with DevGitHubToken.
-	DevUser        string // HEXAGON_DEV_USER, dev.user
-	DevGitHubToken string // HEXAGON_GITHUB_TOKEN, dev.githubToken
-
 	// SecretKey seals GitHub tokens at rest. 32 bytes.
 	SecretKey []byte // HEXAGON_SECRET_KEY, secretKey, else <DataDir>/secret.key
 
@@ -127,11 +122,6 @@ type file struct {
 	Docker struct {
 		Host string `json:"host"`
 	} `json:"docker"`
-
-	Dev struct {
-		User        string `json:"user"`
-		GitHubToken string `json:"githubToken"`
-	} `json:"dev"`
 }
 
 // Load resolves the configuration, creates the data directories and resolves
@@ -168,9 +158,6 @@ func Load(path string) (*Config, error) {
 		GitHubAPIURL:       pick("HEXAGON_GITHUB_API_URL", f.GitHub.APIURL, ""),
 
 		BitbucketAPIURL: pick("HEXAGON_BITBUCKET_API_URL", f.Bitbucket.APIURL, ""),
-
-		DevUser:        pick("HEXAGON_DEV_USER", f.Dev.User, ""),
-		DevGitHubToken: pick("HEXAGON_GITHUB_TOKEN", f.Dev.GitHubToken, ""),
 
 		ClaudeCredentials: expandHome(home, claudeCredentials(f, home)),
 		AnthropicAPIKey:   pick("ANTHROPIC_API_KEY", f.Claude.AnthropicAPIKey, ""),

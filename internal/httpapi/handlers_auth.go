@@ -13,12 +13,6 @@ const loginPath = "/login"
 
 // handleAuthLogin starts the GitHub OAuth dance.
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
-	if s.dev != nil {
-		// Nothing to log into: every request is already the dev user.
-		http.Redirect(w, r, "/", http.StatusFound)
-		return
-	}
-
 	state, err := auth.NewState()
 	if err != nil {
 		s.log.Error("generate oauth state", "err", err)
@@ -32,11 +26,6 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 // handleAuthCallback completes the login: verify state, exchange the code,
 // identify the account, check the allowlist, issue a session.
 func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
-	if s.dev != nil {
-		http.Redirect(w, r, "/", http.StatusFound)
-		return
-	}
-
 	want := s.auth.State(w, r)
 	got := r.URL.Query().Get("state")
 	if want == "" || subtle.ConstantTimeCompare([]byte(want), []byte(got)) != 1 {

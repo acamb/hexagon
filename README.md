@@ -185,8 +185,6 @@ and has a default that suits a single user on a developer machine.
 | `HEXAGON_GITHUB_API_URL` | `github.apiUrl` | `https://api.github.com` | Override for GitHub Enterprise, or a stub in development |
 | `HEXAGON_BITBUCKET_API_URL` | `bitbucket.apiUrl` | `https://api.bitbucket.org/2.0` | Override, or a stub in development |
 | `HEXAGON_SECRET_KEY` | `secretKey` | `<data dir>/secret.key` | 32 bytes, base64. Generated on first run |
-| `HEXAGON_DEV_USER` | `dev.user` | — | Development bypass, see below |
-| `HEXAGON_GITHUB_TOKEN` | `dev.githubToken` | — | Personal access token used by the bypass |
 | `HEXAGON_DEBUG` | `debug` | — | Set to anything for debug logging |
 | `HEXAGON_CLAUDE_CREDENTIALS` | `claude.credentials` | `~/.claude/.credentials.json` | Mounted read-only into session containers (from M4). Empty disables the mount. Also the file a browser login from the Accounts page writes |
 | `ANTHROPIC_API_KEY` | `claude.anthropicApiKey` | — | Injected into session containers instead of the credentials mount (from M4) |
@@ -227,22 +225,12 @@ is how you tell a session to use `anthropicApiKey` instead.
 The server refuses to start without a client id, a client secret and a non-empty
 allowlist. That is deliberate: it drives the Docker socket and holds GitHub
 credentials, so an unauthenticated instance is a root shell on this machine.
-
-### Development bypass
-
-To work on the UI without registering an OAuth App (`dev.user` and
-`dev.githubToken` in the file do the same thing):
-
-```sh
-export HEXAGON_DEV_USER=your-github-login
-export HEXAGON_GITHUB_TOKEN=ghp_...   # personal access token, scope: repo
-make dev
-```
-
-Every request is then treated as coming from that user, with no login at all.
-The identity is still resolved through GitHub, so the token is verified and must
-belong to `HEXAGON_DEV_USER`. The bypass refuses to run on anything but a
-loopback listen address.
+There is no way to skip the login: the development bypass that used to exist
+(`dev.user` / `HEXAGON_DEV_USER`, `dev.githubToken` / `HEXAGON_GITHUB_TOKEN`)
+has been removed, and a configuration file that still names them will not start,
+because an unknown key is an error. Working on the UI means registering an OAuth
+App, which is [step 1 of Getting started](#1-register-a-github-oauth-app) and
+takes a minute.
 
 ## Testing it by hand
 

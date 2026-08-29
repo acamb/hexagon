@@ -21,8 +21,8 @@ func isolate(t *testing.T) string {
 		"XDG_CONFIG_HOME", "HEXAGON_CONFIG", "HEXAGON_ADDR", "HEXAGON_PUBLIC_URL",
 		"HEXAGON_DATA_DIR", "HEXAGON_WORKSPACE_ROOT", "HEXAGON_SECRET_KEY",
 		"HEXAGON_DEBUG", "HEXAGON_GITHUB_CLIENT_ID", "HEXAGON_GITHUB_CLIENT_SECRET",
-		"HEXAGON_ALLOWED_USERS", "HEXAGON_GITHUB_API_URL", "HEXAGON_DEV_USER",
-		"HEXAGON_GITHUB_TOKEN", "HEXAGON_CLAUDE_CREDENTIALS", "ANTHROPIC_API_KEY",
+		"HEXAGON_ALLOWED_USERS", "HEXAGON_GITHUB_API_URL",
+		"HEXAGON_CLAUDE_CREDENTIALS", "ANTHROPIC_API_KEY",
 		"HEXAGON_GIT_USER_NAME", "HEXAGON_GIT_USER_EMAIL", "DOCKER_HOST",
 	} {
 		// t.Setenv registers the restore; os.Unsetenv then leaves the variable
@@ -132,8 +132,7 @@ func TestLoadReadsEverySettingFromTheFile(t *testing.T) {
 		},
 		"claude": {"credentials": "/etc/creds.json", "anthropicApiKey": "sk-ant"},
 		"git": {"userName": "Andrea", "userEmail": "andrea@example.com"},
-		"docker": {"host": "tcp://127.0.0.1:2375"},
-		"dev": {"user": "alice", "githubToken": "ghp_token"}
+		"docker": {"host": "tcp://127.0.0.1:2375"}
 	}`)
 
 	cfg, err := Load(path)
@@ -160,8 +159,6 @@ func TestLoadReadsEverySettingFromTheFile(t *testing.T) {
 		{"GitUserName", cfg.GitUserName, "Andrea"},
 		{"GitUserEmail", cfg.GitUserEmail, "andrea@example.com"},
 		{"DockerHost", cfg.DockerHost, "tcp://127.0.0.1:2375"},
-		{"DevUser", cfg.DevUser, "alice"},
-		{"DevGitHubToken", cfg.DevGitHubToken, "ghp_token"},
 	} {
 		if c.got != c.want {
 			t.Errorf("%s = %q, want %q", c.field, c.got, c.want)

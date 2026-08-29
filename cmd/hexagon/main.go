@@ -139,9 +139,9 @@ func run(configPath string) error {
 	return nil
 }
 
-// buildDeps wires authentication. Exactly one of the two modes is configured:
-// the GitHub OAuth login, or the development bypass. Neither can be skipped, so
-// the server never starts with an unauthenticated API.
+// buildDeps wires authentication. The GitHub OAuth login is the only mode there
+// is, and its constructor refuses an empty allowlist, so the server never starts
+// with an unauthenticated API.
 func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slog.Logger) (httpapi.Deps, error) {
 	frontend, err := hexagon.FrontendFS()
 	if err != nil {
@@ -201,16 +201,6 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		log.Info("no claude binary: Dockerfiles can only be edited by hand", "err", err)
 	} else {
 		deps.Editor = runner.WithModel(cfg.ClaudeModel)
-	}
-
-	if cfg.DevUser != "" {
-		dev, err := auth.NewDevProvider(cfg.DevUser, cfg.DevGitHubToken, cfg.Addr, gh, logins)
-		if err != nil {
-			return httpapi.Deps{}, err
-		}
-		log.Warn("the development bypass is configured: authentication is skipped", "user", cfg.DevUser)
-		deps.Dev = dev
-		return deps, nil
 	}
 
 	oauth, err := auth.NewOAuth(auth.OAuthConfig{

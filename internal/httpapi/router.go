@@ -35,10 +35,8 @@ type Deps struct {
 	Config *config.Config
 	Store  *store.Store
 	Auth   *auth.Service
-	// OAuth drives the GitHub login. Nil when the development bypass is active.
-	OAuth *auth.OAuth
-	// Dev is the HEXAGON_DEV_USER bypass. Nil during normal operation.
-	Dev    *auth.DevProvider
+	// OAuth drives the GitHub login.
+	OAuth  *auth.OAuth
 	GitHub auth.UserFetcher
 	// Providers are the sources of repositories this build knows about, and
 	// Repos merges the listings of the accounts a user has connected to them.
@@ -60,7 +58,6 @@ type Server struct {
 	store          *store.Store
 	auth           *auth.Service
 	oauth          *auth.OAuth
-	dev            *auth.DevProvider
 	github         auth.UserFetcher
 	providers      provider.Registry
 	repos          *provider.Lister
@@ -80,7 +77,6 @@ func New(deps Deps) http.Handler {
 		store:          deps.Store,
 		auth:           deps.Auth,
 		oauth:          deps.OAuth,
-		dev:            deps.Dev,
 		github:         deps.GitHub,
 		providers:      deps.Providers,
 		repos:          deps.Repos,
