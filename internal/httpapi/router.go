@@ -144,7 +144,7 @@ func New(deps Deps) http.Handler {
 	})
 	mux.Handle("/", s.spaHandler())
 
-	return requestLogger(s.log, s.guardStateChanges(mux))
+	return requestLogger(s.log, s.securityHeaders(s.guardStateChanges(mux)))
 }
 
 // handleHealth reports whether the process can serve traffic. It touches the

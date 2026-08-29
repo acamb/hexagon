@@ -42,6 +42,60 @@ func (s *Server) user(r *http.Request) *store.User {
 	return user
 }
 
+// contentSecurityPolicy is what a browser is allowed to load for a page this
+// server renders itself. Three of the directives are looser than they look, and
+// each is a place where tightening it would break something:
+//
+//   - style-src 'unsafe-inline', because xterm.js injects its stylesheet at
+//     runtime. A nonce would work and would have to be threaded into a hashed
+//     asset this server does not template. Not worth it for style.
+//   - img-src https:, because avatars come from whichever provider the account
+//     is on — GitHub's CDN, Bitbucket's, a different host again. Enumerating
+//     provider CDNs is a list that goes stale the first time one of them moves.
+//   - frame-ancestors 'none', which is not loose at all: nothing here is meant
+//     to be embedded, and this is what makes the session controls
+//     unclickjackable.
+//
+// connect-src 'self' covers the terminal WebSocket: 'self' matches the ws and
+// wss forms of our own origin, so the socket needs no directive of its own.
+const contentSecurityPolicy = "default-src 'self'; " +
+	"script-src 'self'; " +
+	"style-src 'self' 'unsafe-inline'; " +
+	"img-src 'self' data: https:; " +
+	"connect-src 'self'; " +
+	"font-src 'self' data:; " +
+	"frame-ancestors 'none'; " +
+	"base-uri 'none'; " +
+	"form-action 'none'"
+
+// securityHeaders sets what the browser is told about every response, and wraps
+// the router from outside the way requestLogger does: a header that is only on
+// the routes someone remembered is not a policy.
+func (s *Server) securityHeaders(next http.Handler) http.Handler {
+	// HSTS is emitted only over https. Served over plaintext it is ignored, and
+	// served from a development instance on localhost it is a trap that
+	// outlives the instance: the browser remembers the host for a year.
+	hsts := strings.HasPrefix(s.cfg.PublicURL, "https://")
+
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		header := w.Header()
+		header.Set("X-Content-Type-Options", "nosniff")
+		header.Set("Referrer-Policy", "same-origin")
+		if hsts {
+			header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+		}
+		// The VS Code proxy is exempt. code-server needs inline scripts,
+		// workers and blob: URLs; the policy above would break it, and one
+		// loose enough for it would be worth nothing on our own pages. The
+		// answer to that is serving the editor from its own origin, which is a
+		// larger change than this one.
+		if !isVSCodeProxyPath(r.URL.Path) {
+			header.Set("Content-Security-Policy", contentSecurityPolicy)
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // guardStateChanges is defence in depth against cross-site requests. The
 // session cookie is SameSite=Lax, which already blocks cross-site form posts;
 // on top of that a mutating API call must look like it came from our own
