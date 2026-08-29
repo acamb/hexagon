@@ -5,3 +5,9 @@ bin/
 .env
 /.idea/hexagon.iml
 /config.json
+
+# Certificates for the reference proxy: never in the repository. The directory
+# itself is kept, because compose mounts it and Docker would otherwise create it
+# as root.
+deploy/proxy/certs/*
+!deploy/proxy/certs/.gitkeep

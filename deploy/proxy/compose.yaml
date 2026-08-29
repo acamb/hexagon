@@ -1,0 +1,20 @@
+# The reference reverse proxy for a published Hexagon. It is an example known to
+# work, not a deployment: change server_name, put certificates in certs/, and
+# run it next to a Hexagon that is listening on 127.0.0.1:8080.
+services:
+  proxy:
+    image: nginx:1.29-alpine
+    # Hexagon binds loopback and should keep doing so: that bind is the last
+    # line of defence if this proxy is ever misconfigured. A bridged container
+    # cannot reach the host's loopback without host.docker.internal, which is a
+    # special case on Linux and one more thing to explain. Host networking also
+    # lets nginx bind 80 and 443 directly.
+    network_mode: host
+    volumes:
+      # Mounted over the stock default.conf rather than added beside it: the
+      # image ships a catch-all server on port 80, and leaving it in place means
+      # a request with an unexpected Host gets nginx's welcome page instead of a
+      # redirect.
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    restart: unless-stopped

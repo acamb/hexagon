@@ -73,6 +73,15 @@ scope: Claude Code needs it to clone and push), and come back signed in.
 `make dev` runs the Go server on `:8080` and the Vite dev server on `:5173`,
 which proxies `/api` to the Go process. Ctrl-C stops both.
 
+### Publishing it
+
+Hexagon has no TLS of its own. To reach it from anywhere but the machine it runs
+on, leave it bound to loopback and put a reverse proxy in front:
+[deploy/proxy/](deploy/proxy/) is the nginx configuration known to work, with a
+compose file and the two settings to change. It refuses to start on an address
+the network can reach unless its public URL is https, so this is not optional by
+accident.
+
 ### Production-style run
 
 ```sh
@@ -304,6 +313,7 @@ internal/session/   orchestrator: provisioning, lifecycle, reconciliation
 internal/httpapi/   routes, middleware, handlers, the terminal WebSocket, SPA serving
 web/                Vue 3 + Vite frontend, embedded into the binary at build time
 deploy/images/      base image definitions for session containers (from M2)
+deploy/proxy/       the reference nginx reverse proxy for a published instance
 ```
 
 ## Security notes
