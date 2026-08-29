@@ -276,7 +276,7 @@ func (e *testEnv) sessionCookie() *http.Cookie {
 	e.t.Helper()
 	u, _ := url.Parse(e.server.URL)
 	for _, c := range e.client.Jar.Cookies(u) {
-		if c.Name == auth.SessionCookie {
+		if c.Name == e.auth.CookieName() {
 			return c
 		}
 	}

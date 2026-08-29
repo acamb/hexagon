@@ -21,7 +21,7 @@ func isolate(t *testing.T) string {
 		"XDG_CONFIG_HOME", "HEXAGON_CONFIG", "HEXAGON_ADDR", "HEXAGON_PUBLIC_URL",
 		"HEXAGON_DATA_DIR", "HEXAGON_WORKSPACE_ROOT", "HEXAGON_SECRET_KEY",
 		"HEXAGON_DEBUG", "HEXAGON_GITHUB_CLIENT_ID", "HEXAGON_GITHUB_CLIENT_SECRET",
-		"HEXAGON_ALLOWED_USERS", "HEXAGON_GITHUB_API_URL",
+		"HEXAGON_INSECURE_HTTP", "HEXAGON_ALLOWED_USERS", "HEXAGON_GITHUB_API_URL",
 		"HEXAGON_CLAUDE_CREDENTIALS", "ANTHROPIC_API_KEY",
 		"HEXAGON_GIT_USER_NAME", "HEXAGON_GIT_USER_EMAIL", "DOCKER_HOST",
 	} {
@@ -120,6 +120,7 @@ func TestLoadReadsEverySettingFromTheFile(t *testing.T) {
 	path := writeConfig(t, `{
 		"addr": "0.0.0.0:9000",
 		"publicUrl": "https://hexagon.example/",
+		"insecureHttp": true,
 		"dataDir": "`+dataDir+`",
 		"workspaceRoot": "`+filepath.Join(dataDir, "ws")+`",
 		"secretKey": "`+key+`",
@@ -169,6 +170,9 @@ func TestLoadReadsEverySettingFromTheFile(t *testing.T) {
 	}
 	if !cfg.Debug {
 		t.Error("Debug = false, want the file's true")
+	}
+	if !cfg.InsecureHTTP {
+		t.Error("InsecureHTTP = false, want the file's true")
 	}
 	if base64.StdEncoding.EncodeToString(cfg.SecretKey) != key {
 		t.Error("SecretKey is not the one the file supplied")
@@ -326,5 +330,67 @@ func TestClaudeCredentialsCanBeSetToEmpty(t *testing.T) {
 	}
 	if cfg.ClaudeCredentials != "" {
 		t.Errorf("ClaudeCredentials = %q, want empty: the variable disabled the mount", cfg.ClaudeCredentials)
+	}
+}
+
+// Whoever reaches the port controls the Docker socket, so an instance the
+// network can reach has to be behind https before it starts at all.
+func TestLoadRefusesAPublicAddressWithoutHTTPS(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		addr      string
+		publicURL string
+		insecure  string
+		wantErr   bool
+	}{
+		{name: "the default: loopback over http", addr: "127.0.0.1:8080", publicURL: "http://127.0.0.1:8080"},
+		{name: "loopback behind a TLS proxy", addr: "127.0.0.1:8080", publicURL: "https://hexagon.example"},
+		{name: "every interface, https", addr: "0.0.0.0:8080", publicURL: "https://hexagon.example"},
+		{name: "every interface, plaintext", addr: "0.0.0.0:8080", publicURL: "http://hexagon.example", wantErr: true},
+		{name: "no host at all, plaintext", addr: ":8080", publicURL: "http://hexagon.example", wantErr: true},
+		{name: "plaintext said out loud", addr: "0.0.0.0:8080", publicURL: "http://hexagon.example", insecure: "1"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			isolate(t)
+			t.Setenv("HEXAGON_DATA_DIR", t.TempDir())
+			t.Setenv("HEXAGON_ADDR", c.addr)
+			t.Setenv("HEXAGON_PUBLIC_URL", c.publicURL)
+			if c.insecure != "" {
+				t.Setenv("HEXAGON_INSECURE_HTTP", c.insecure)
+			}
+
+			cfg, err := Load("")
+			switch {
+			case c.wantErr && err == nil:
+				t.Fatal("Load accepted a public address in plaintext")
+			case c.wantErr:
+				// The message has to name both values, since neither is wrong
+				// on its own.
+				if !strings.Contains(err.Error(), c.addr) || !strings.Contains(err.Error(), c.publicURL) {
+					t.Errorf("error = %q, want it to name both the address and the public URL", err)
+				}
+			case err != nil:
+				t.Fatalf("Load: %v", err)
+			case cfg.InsecureHTTP != (c.insecure != ""):
+				t.Errorf("InsecureHTTP = %v, want %v", cfg.InsecureHTTP, c.insecure != "")
+			}
+		})
+	}
+}
+
+func TestIsLoopbackAddr(t *testing.T) {
+	loopback := []string{"127.0.0.1:8080", "localhost:8080", "[::1]:8080", "127.0.0.1"}
+	for _, addr := range loopback {
+		if !isLoopbackAddr(addr) {
+			t.Errorf("isLoopbackAddr(%q) = false, want true", addr)
+		}
+	}
+
+	// An empty host means every interface, which is the case that matters here.
+	exposed := []string{":8080", "0.0.0.0:8080", "192.168.1.10:8080", "[::]:8080", "example.com:8080"}
+	for _, addr := range exposed {
+		if isLoopbackAddr(addr) {
+			t.Errorf("isLoopbackAddr(%q) = true, want false", addr)
+		}
 	}
 }

@@ -53,6 +53,12 @@ func run(configPath string) error {
 	if cfg.ConfigFile != "" {
 		log.Info("configuration loaded", "file", cfg.ConfigFile)
 	}
+	// Every start, not just the first: the whole value of the setting is that
+	// nobody discovers by accident that the session cookie is on the wire.
+	if cfg.InsecureHTTP {
+		log.Warn("insecureHttp is set: the session cookie may travel in plaintext",
+			"addr", cfg.Addr, "public_url", cfg.PublicURL)
+	}
 
 	st, err := store.Open(cfg.DatabasePath)
 	if err != nil {

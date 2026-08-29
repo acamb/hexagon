@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,6 +34,10 @@ type Config struct {
 	// HTTP
 	Addr      string // HEXAGON_ADDR, addr
 	PublicURL string // HEXAGON_PUBLIC_URL, publicUrl: used for OAuth callbacks and Origin checks
+	// InsecureHTTP lifts the refusal to serve a non-loopback address without
+	// https. "http on a private network" is a real deployment; this is how it
+	// says so out loud.
+	InsecureHTTP bool // HEXAGON_INSECURE_HTTP, insecureHttp
 
 	// Storage
 	DataDir       string // HEXAGON_DATA_DIR, dataDir
@@ -86,6 +91,7 @@ const secretKeyLen = 32
 type file struct {
 	Addr          string `json:"addr"`
 	PublicURL     string `json:"publicUrl"`
+	InsecureHTTP  bool   `json:"insecureHttp"`
 	DataDir       string `json:"dataDir"`
 	WorkspaceRoot string `json:"workspaceRoot"`
 	SecretKey     string `json:"secretKey"`
@@ -145,8 +151,9 @@ func Load(path string) (*Config, error) {
 	cfg := &Config{
 		ConfigFile: from,
 
-		Addr:      pick("HEXAGON_ADDR", f.Addr, "127.0.0.1:8080"),
-		PublicURL: strings.TrimRight(pick("HEXAGON_PUBLIC_URL", f.PublicURL, "http://127.0.0.1:8080"), "/"),
+		Addr:         pick("HEXAGON_ADDR", f.Addr, "127.0.0.1:8080"),
+		PublicURL:    strings.TrimRight(pick("HEXAGON_PUBLIC_URL", f.PublicURL, "http://127.0.0.1:8080"), "/"),
+		InsecureHTTP: pickBool("HEXAGON_INSECURE_HTTP", f.InsecureHTTP),
 
 		DataDir:       dataDir,
 		WorkspaceRoot: expandHome(home, pick("HEXAGON_WORKSPACE_ROOT", f.WorkspaceRoot, filepath.Join(dataDir, "workspaces"))),
@@ -172,9 +179,11 @@ func Load(path string) (*Config, error) {
 
 		DockerHost: pick("DOCKER_HOST", f.Docker.Host, ""),
 
-		// The variable has never carried a value, only a presence, so it can
-		// turn debug logging on but not off again.
-		Debug: os.Getenv("HEXAGON_DEBUG") != "" || f.Debug,
+		Debug: pickBool("HEXAGON_DEBUG", f.Debug),
+	}
+
+	if err := checkTransport(cfg); err != nil {
+		return nil, err
 	}
 
 	for _, dir := range []string{cfg.DataDir, cfg.WorkspaceRoot} {
@@ -189,6 +198,42 @@ func Load(path string) (*Config, error) {
 		return nil, err
 	}
 	return cfg, nil
+}
+
+// checkTransport refuses a configuration that would publish Hexagon in
+// plaintext. Whoever reaches the port controls the Docker socket, and over http
+// the session cookie that opens it travels in the clear; binding loopback is the
+// only reason a plaintext instance is survivable at all.
+//
+// The check is a property of the pair rather than of either setting, which is
+// why it lives here and not in a consumer of one of them. Note what it does not
+// catch: a loopback address with an https public URL is the deployment behind a
+// TLS proxy, and passes.
+func checkTransport(cfg *Config) error {
+	switch {
+	case cfg.InsecureHTTP, isLoopbackAddr(cfg.Addr), strings.HasPrefix(cfg.PublicURL, "https://"):
+		return nil
+	}
+	return fmt.Errorf("addr %s accepts traffic from the network but publicUrl %s is not https: "+
+		"put a TLS reverse proxy in front and bind loopback, or set insecureHttp / HEXAGON_INSECURE_HTTP "+
+		"to serve plaintext deliberately", cfg.Addr, cfg.PublicURL)
+}
+
+// isLoopbackAddr reports whether a listen address only accepts local traffic.
+// An address with no host ("" or ":8080") listens on every interface.
+func isLoopbackAddr(addr string) bool {
+	host, _, err := net.SplitHostPort(addr)
+	if err != nil {
+		host = addr
+	}
+	if host == "" {
+		return false
+	}
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // loadFile reads the configuration file and reports which one it was.
@@ -301,6 +346,15 @@ func pick(key, fromFile, def string) string {
 		return fromFile
 	}
 	return def
+}
+
+// pickBool resolves a boolean setting. The environment carries these as a
+// presence rather than a value — HEXAGON_DEBUG has never meant anything but
+// "set" — so any value in the variable turns the setting on and none of them
+// turns it off again. Saying false is the configuration file's job, which is
+// also the layer an operator reads back later.
+func pickBool(key string, fromFile bool) bool {
+	return os.Getenv(key) != "" || fromFile
 }
 
 // allowedUsers reads the allowlist from whichever layer supplies one. The

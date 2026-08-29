@@ -177,6 +177,7 @@ and has a default that suits a single user on a developer machine.
 | `HEXAGON_CONFIG` | — | `~/.config/hexagon/config.json` | Where the configuration file is; `-config <path>` overrides it |
 | `HEXAGON_ADDR` | `addr` | `127.0.0.1:8080` | Listen address |
 | `HEXAGON_PUBLIC_URL` | `publicUrl` | `http://127.0.0.1:8080` | Origin the browser uses; OAuth callbacks and the origin check derive from it |
+| `HEXAGON_INSECURE_HTTP` | `insecureHttp` | — | Set to anything to serve a non-loopback address without https, which the server otherwise refuses to do |
 | `HEXAGON_DATA_DIR` | `dataDir` | `~/.local/share/hexagon` | Database and secret key |
 | `HEXAGON_WORKSPACE_ROOT` | `workspaceRoot` | `<data dir>/workspaces` | One directory per session, holding its workspace |
 | `HEXAGON_GITHUB_CLIENT_ID` | `github.clientId` | — | Required |
@@ -288,9 +289,14 @@ deploy/images/      base image definitions for session containers (from M2)
 ## Security notes
 
 - Hexagon binds to loopback by default and should stay there. Anyone who can
-  reach the port and hold a session controls the Docker socket.
+  reach the port and hold a session controls the Docker socket. To publish it,
+  put a TLS reverse proxy in front and leave the bind where it is: the server
+  refuses to start on a listen address the network can reach unless
+  `publicUrl` is https, or `insecureHttp` says the plaintext is deliberate.
 - Session cookies are `HttpOnly` and `SameSite=Lax`; only the SHA-256 of the
-  cookie value is stored. GitHub tokens are sealed with AES-256-GCM under the
+  cookie value is stored. Over https the cookie is `Secure` and named
+  `__Host-hexagon_session`, a prefix the browser enforces so no sibling
+  subdomain can overwrite it over plaintext. GitHub tokens are sealed with AES-256-GCM under the
   server key.
 - The `repo` scope grants full read/write over your repositories, and that token
   is handed to a container running an autonomous agent. That is the deliberate

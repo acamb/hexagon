@@ -1,6 +1,7 @@
 {
   "addr": "127.0.0.1:8080",
   "publicUrl": "http://localhost:5173",
+  "insecureHttp": false,
   "dataDir": "~/.local/share/hexagon",
   "workspaceRoot": "",
   "secretKey": "",

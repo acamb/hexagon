@@ -25,11 +25,18 @@ import (
 )
 
 const (
-	// SessionCookie holds the browser login session.
-	SessionCookie = "hexagon_session"
-	// StateCookie holds the OAuth state parameter between the redirect to
-	// GitHub and the callback.
-	StateCookie = "hexagon_oauth_state"
+	// sessionCookie holds the browser login session. It is served under the
+	// name CookieName returns, which over https is this one prefixed.
+	sessionCookie = "hexagon_session"
+	// stateCookie holds the OAuth state parameter between the redirect to
+	// GitHub and the callback. It keeps its plain name in both modes: __Host-
+	// forbids a Path, and this cookie's is /api/auth.
+	stateCookie = "hexagon_oauth_state"
+	// hostPrefix is enforced by the browser, which refuses a cookie carrying it
+	// unless it is Secure, Path=/ and has no Domain. That is what makes the
+	// session cookie impossible to overwrite from a sibling subdomain over
+	// plaintext, which is a thing no server-side check can prevent.
+	hostPrefix = "__Host-"
 
 	sessionTTL    = 30 * 24 * time.Hour
 	stateTTL      = 10 * time.Minute
@@ -47,14 +54,27 @@ type Service struct {
 	secure bool
 }
 
-// NewService builds the session service. secureCookies should be true whenever
-// the public URL is https, so the cookie is not sent over plaintext.
+// NewService builds the session service. The cookie is Secure whenever the
+// public URL is https, which config.Load's transport check makes a statement
+// about the deployment rather than a guess: an instance reachable from the
+// network cannot be configured with an http public URL.
 func NewService(st *store.Store, cipher *Cipher, publicURL string) *Service {
 	return &Service{
 		store:  st,
 		cipher: cipher,
 		secure: strings.HasPrefix(publicURL, "https://"),
 	}
+}
+
+// CookieName is the name the session cookie is served under. The __Host-
+// prefix requires Secure, so the name depends on the deployment and cannot be a
+// constant; Issue, Authenticate and Logout all ask here so the three cannot
+// disagree about what to set, read and clear.
+func (s *Service) CookieName() string {
+	if s.secure {
+		return hostPrefix + sessionCookie
+	}
+	return sessionCookie
 }
 
 // Issue creates a session for user and sets the cookie on w.
@@ -71,7 +91,7 @@ func (s *Service) Issue(ctx context.Context, w http.ResponseWriter, user *store.
 	}
 
 	http.SetCookie(w, &http.Cookie{
-		Name:     SessionCookie,
+		Name:     s.CookieName(),
 		Value:    token,
 		Path:     "/",
 		Expires:  expires,
@@ -85,7 +105,7 @@ func (s *Service) Issue(ctx context.Context, w http.ResponseWriter, user *store.
 
 // Authenticate resolves the session cookie on r to a user.
 func (s *Service) Authenticate(ctx context.Context, r *http.Request) (*store.User, error) {
-	cookie, err := r.Cookie(SessionCookie)
+	cookie, err := r.Cookie(s.CookieName())
 	if err != nil || cookie.Value == "" {
 		return nil, ErrNoSession
 	}
@@ -98,19 +118,19 @@ func (s *Service) Authenticate(ctx context.Context, r *http.Request) (*store.Use
 
 // Logout deletes the session behind r and clears the cookie.
 func (s *Service) Logout(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
-	if cookie, err := r.Cookie(SessionCookie); err == nil && cookie.Value != "" {
+	if cookie, err := r.Cookie(s.CookieName()); err == nil && cookie.Value != "" {
 		if err := s.store.DeleteUserSession(ctx, hashToken(cookie.Value)); err != nil {
 			return err
 		}
 	}
-	s.clearCookie(w, SessionCookie, "/")
+	s.clearCookie(w, s.CookieName(), "/")
 	return nil
 }
 
 // SetState stores the OAuth state parameter in a short lived cookie.
 func (s *Service) SetState(w http.ResponseWriter, state string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     StateCookie,
+		Name:     stateCookie,
 		Value:    state,
 		Path:     cookiePathAPI,
 		MaxAge:   int(stateTTL.Seconds()),
@@ -123,8 +143,8 @@ func (s *Service) SetState(w http.ResponseWriter, state string) {
 // State returns the stored OAuth state and clears the cookie: one redirect,
 // one usable state value.
 func (s *Service) State(w http.ResponseWriter, r *http.Request) string {
-	s.clearCookie(w, StateCookie, cookiePathAPI)
-	cookie, err := r.Cookie(StateCookie)
+	s.clearCookie(w, stateCookie, cookiePathAPI)
+	cookie, err := r.Cookie(stateCookie)
 	if err != nil {
 		return ""
 	}
