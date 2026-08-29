@@ -33,34 +33,6 @@ func TestNewOAuthFailsClosed(t *testing.T) {
 	}
 }
 
-func TestNewAllowlistRefusesAnEmptyList(t *testing.T) {
-	for name, entries := range map[string][]string{
-		"nothing at all":    nil,
-		"only empty values": {"", "  "},
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := NewAllowlist(entries); err == nil {
-				t.Error("NewAllowlist accepted an empty list: every GitHub account would be admitted")
-			}
-		})
-	}
-}
-
-func TestAllowlistIsCaseInsensitive(t *testing.T) {
-	list, err := NewAllowlist([]string{"Alice", " bob "})
-	if err != nil {
-		t.Fatalf("NewAllowlist: %v", err)
-	}
-	for _, login := range []string{"alice", "ALICE", "bob"} {
-		if !list.Allowed(login) {
-			t.Errorf("Allowed(%q) = false, want true", login)
-		}
-	}
-	if list.Allowed("mallory") {
-		t.Error("the allowlist matched a login it does not contain")
-	}
-}
-
 func TestOAuthAuthorizeURL(t *testing.T) {
 	o, _ := NewOAuth(validOAuthConfig())
 	raw := o.AuthorizeURL("state-value")

@@ -182,7 +182,7 @@ and has a default that suits a single user on a developer machine.
 | `HEXAGON_WORKSPACE_ROOT` | `workspaceRoot` | `<data dir>/workspaces` | One directory per session, holding its workspace |
 | `HEXAGON_GITHUB_CLIENT_ID` | `github.clientId` | — | Required |
 | `HEXAGON_GITHUB_CLIENT_SECRET` | `github.clientSecret` | — | Required |
-| `HEXAGON_ALLOWED_USERS` | `github.allowedUsers` | — | Required. GitHub logins allowed to sign in: comma-separated in the environment, a JSON array in the file |
+| `HEXAGON_ALLOWED_USERS` | `github.allowedUsers` | — | Required. Who may sign in: comma-separated in the environment, a JSON array in the file. An entry that is a number is a GitHub account id, anything else a login — prefer ids, since a login is released when an account is renamed and can then be claimed by somebody else |
 | `HEXAGON_GITHUB_API_URL` | `github.apiUrl` | `https://api.github.com` | Override for GitHub Enterprise, or a stub in development |
 | `HEXAGON_BITBUCKET_API_URL` | `bitbucket.apiUrl` | `https://api.bitbucket.org/2.0` | Override, or a stub in development |
 | `HEXAGON_SECRET_KEY` | `secretKey` | `<data dir>/secret.key` | 32 bytes, base64. Generated on first run |
@@ -252,6 +252,10 @@ Sign out from the header and you land back on `/login`; reloading `/` keeps you
 there. Sessions last 7 days and are extended whenever a browser uses one that is
 more than halfway through its life, so an instance in daily use never signs you
 out on the clock.
+
+Your account id is the `id` in `curl https://api.github.com/users/<login>`. A
+login on the list still works, and is refused only if this instance has already
+seen a different account under it.
 
 Removing a login from `allowedUsers` and restarting ends that account's sessions:
 admission is re-checked on every request, and the sessions of anyone no longer on

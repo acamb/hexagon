@@ -212,7 +212,7 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		deps.Editor = runner.WithModel(cfg.ClaudeModel)
 	}
 
-	allowlist, err := auth.NewAllowlist(cfg.AllowedUsers)
+	allowlist, err := auth.NewAllowlist(cfg.AllowedUsers, st, log)
 	if err != nil {
 		return httpapi.Deps{}, err
 	}
@@ -240,7 +240,11 @@ func pruneRevokedSessions(ctx context.Context, st *store.Store, allowlist *auth.
 		return
 	}
 	for _, user := range users {
-		if allowlist.Allowed(user.GitHubLogin) {
+		switch allowed, err := allowlist.Allowed(ctx, user.GitHubLogin, user.GitHubID); {
+		case err != nil:
+			log.Warn("check the allowlist", "login", user.GitHubLogin, "err", err)
+			continue
+		case allowed:
 			continue
 		}
 		n, err := st.DeleteUserSessionsForUser(ctx, user.ID)

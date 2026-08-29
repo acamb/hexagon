@@ -166,7 +166,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	if err != nil {
 		t.Fatalf("new oauth: %v", err)
 	}
-	allowlist, err := auth.NewAllowlist(allowedUsers)
+	allowlist, err := auth.NewAllowlist(allowedUsers, st, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("new allowlist: %v", err)
 	}

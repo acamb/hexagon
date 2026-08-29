@@ -63,6 +63,13 @@ func (s *Store) UserByGitHubID(ctx context.Context, githubID int64) (*User, erro
 	return s.userWhere(ctx, "github_id = ?", githubID)
 }
 
+// UserByGitHubLogin returns the user known under a login, or ErrNotFound. The
+// comparison ignores case, because GitHub's does: "Alice" and "alice" are one
+// account, and a check that missed that would be no check at all.
+func (s *Store) UserByGitHubLogin(ctx context.Context, login string) (*User, error) {
+	return s.userWhere(ctx, "github_login = ? COLLATE NOCASE", login)
+}
+
 // userColumns is the select list every user query shares, in the order scanUser
 // reads them.
 const userColumns = "id, github_login, github_id, avatar_url, created_at, last_login_at"

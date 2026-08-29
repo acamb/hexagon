@@ -38,7 +38,7 @@ func TestPruneRevokedSessionsSignsOutOnlyUsersNoLongerAllowed(t *testing.T) {
 		}
 	}
 
-	allowlist, err := auth.NewAllowlist([]string{"alice"})
+	allowlist, err := auth.NewAllowlist([]string{"alice"}, st, slog.New(slog.DiscardHandler))
 	if err != nil {
 		t.Fatalf("new allowlist: %v", err)
 	}
