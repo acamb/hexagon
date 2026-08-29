@@ -291,10 +291,12 @@ Constants beside `TmuxSession`:
 // OAuth flow that is half done.
 const ClaudeLoginTmux = "login"
 
-// ClaudeLoginCommand is what that tmux session runs. The shell fallback is not
+// ClaudeLoginCommand is what that tmux session runs. `claude auth login` goes
+// straight to the sign-in flow rather than the full interactive assistant —
+// see the amendment in 10-claude-login-from-ui.md. The shell fallback is not
 // decoration: if the command a tmux session was created with exits, the session
 // goes with it, and the user is left looking at a socket that closed.
-const ClaudeLoginCommand = `claude; exec "${SHELL:-sh}"`
+const ClaudeLoginCommand = `claude auth login; exec "${SHELL:-sh}"`
 
 const claudeLoginRole = "claude-login"
 ```

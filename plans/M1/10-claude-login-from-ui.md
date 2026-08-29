@@ -183,7 +183,7 @@ would be theatre performed on a credential the user is trying to replace.
 **It is attached with one exec, not a bootstrap and then a terminal:**
 
 ```sh
-tmux new-session -A -D -s login -c /home/agent 'claude; exec "${SHELL:-sh}"'
+tmux new-session -A -D -s login -c /home/agent 'claude auth login; exec "${SHELL:-sh}"'
 ```
 
 `-A` is what makes a browser reload rejoin the login in progress rather than
@@ -298,8 +298,26 @@ Claude credential, and the `CHECK` refuses a third kind.
 
 By hand, which is the only thing that proves the terminal really carries a
 login: with no credentials file on the host, open the card, press **Log in**,
-complete `/login` in the browser, and watch `~/.claude/.credentials.json`
-appear. Then start a session and confirm `claude` comes up signed in. Then stop
-and start a session that was already running from before the login, and confirm
-it picks the file up — the claim about when a login takes effect is the one most
-likely to be wrong.
+complete the sign-in flow `claude auth login` opens in the browser, and watch
+`~/.claude/.credentials.json` appear. Then start a session and confirm `claude`
+comes up signed in. Then stop and start a session that was already running from
+before the login, and confirm it picks the file up — the claim about when a
+login takes effect is the one most likely to be wrong.
+
+## Amendment: `claude auth login`, not the bare REPL
+
+The login container originally ran `claude`, expecting the user to know that
+`/login` inside the interactive assistant is what starts a sign-in. Trying it
+made the problem obvious: the dialog opens on a full Claude Code session with
+no indication that anything needs signing in, which is not a login screen — it
+is the ordinary assistant, and a user who does not already know the `/login`
+command sees nothing asking them to use it.
+
+`claude auth login` is the CLI's own subcommand for exactly this: it goes
+straight to the sign-in flow — a URL to open and a wait for the callback —
+subscription by default, `--console` for an API-billed login, `--sso` to force
+SSO. It writes the same `~/.claude/.credentials.json` the interactive `/login`
+does, so nothing about the mechanism this design rests on changes. The command
+the login tmux session runs is now `claude auth login; exec "${SHELL:-sh}"`:
+the shell fallback is still there for the same reason as before, and now it is
+also where the user reads the command's own confirmation once it exits.

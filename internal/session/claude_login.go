@@ -14,10 +14,13 @@ import (
 // of an OAuth flow that is half done.
 const ClaudeLoginTmux = "login"
 
-// ClaudeLoginCommand is what that tmux session runs. The shell fallback is not
+// ClaudeLoginCommand is what that tmux session runs. `claude auth login` goes
+// straight to the sign-in flow — a URL to open and a wait for the callback —
+// rather than opening the full interactive assistant and leaving the user to
+// know that `/login` is the thing to type there. The shell fallback is not
 // decoration: if the command a tmux session was created with exits, the
 // session goes with it, and the user is left looking at a socket that closed.
-const ClaudeLoginCommand = `claude; exec "${SHELL:-sh}"`
+const ClaudeLoginCommand = `claude auth login; exec "${SHELL:-sh}"`
 
 // claudeLoginRole is the dockerx.LabelRole value for a browser login container.
 const claudeLoginRole = "claude-login"

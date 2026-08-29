@@ -131,8 +131,9 @@ session starts. When Claude Code exits you get a shell rather than a terminal th
 **Configuring the Claude login** — the Claude card on the Accounts page is where a session's
 Claude Code account is set, without a shell on the host. Paste an API key from the Console or
 the token `claude setup-token` prints, checked against the CLI before it is stored; or press
-**Log in** to open a real terminal running `claude` in a container whose `$HOME/.claude` is
-this machine's own, so `/login` there writes the same file every session mounts. A pasted
+**Log in** to open a real terminal running `claude auth login` in a container whose
+`$HOME/.claude` is this machine's own, so signing in there writes the same file every
+session mounts. A pasted
 credential reaches sessions created after it was stored — it is an environment variable, fixed
 when the container is created — and outranks the server's configured key; a browser login
 reaches an existing session the next time it starts, since the mount is a path resolved at
