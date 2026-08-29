@@ -165,7 +165,11 @@ onUnmounted(() => window.clearTimeout(timer))
         </div>
       </div>
 
-      <TerminalPane v-if="session.status === 'running'" :session-id="session.id" class="terminal" />
+      <TerminalPane
+        v-if="session.status === 'running'"
+        :url="`/api/sessions/${session.id}/terminal`"
+        class="terminal"
+      />
 
       <div v-else class="notice">
         <p class="lead">{{ sessionLabel(session.status) }}</p>

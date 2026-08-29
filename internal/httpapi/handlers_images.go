@@ -150,12 +150,19 @@ func (s *Server) handleEditDockerfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	cred, err := s.auth.ClaudeCredential(r.Context(), s.user(r).ID)
+	if err != nil {
+		s.log.Error("read claude credential", "err", err)
+		writeError(w, http.StatusInternalServerError, "cannot read the stored claude credential")
+		return
+	}
+
 	// Tied to the request: a browser that has gone away is not going to read
 	// the answer, and this call costs money for as long as it runs.
 	ctx, cancel := context.WithTimeout(r.Context(), dockerfileEditTimeout)
 	defer cancel()
 
-	edit, err := s.editor.EditDockerfile(ctx, req.Dockerfile, instruction)
+	edit, err := s.editor.EditDockerfile(ctx, cred, req.Dockerfile, instruction)
 	if err != nil {
 		s.log.Error("edit dockerfile", "login", s.user(r).GitHubLogin, "err", err)
 		// 502: the thing that failed is something this server called out to.

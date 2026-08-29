@@ -443,11 +443,13 @@ func TestImageTemplateIsTheBaseDockerfile(t *testing.T) {
 type fakeEditor struct {
 	mu          sync.Mutex
 	err         error
+	checkErr    error
 	dockerfile  string
 	instruction string
+	checked     []claudex.Credential
 }
 
-func (f *fakeEditor) EditDockerfile(_ context.Context, dockerfile, instruction string) (claudex.DockerfileEdit, error) {
+func (f *fakeEditor) EditDockerfile(_ context.Context, _ claudex.Credential, dockerfile, instruction string) (claudex.DockerfileEdit, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.dockerfile, f.instruction = dockerfile, instruction
@@ -455,6 +457,13 @@ func (f *fakeEditor) EditDockerfile(_ context.Context, dockerfile, instruction s
 		return claudex.DockerfileEdit{}, f.err
 	}
 	return claudex.DockerfileEdit{Dockerfile: dockerfile + "RUN apt-get install -y ripgrep\n", Summary: "Added ripgrep"}, nil
+}
+
+func (f *fakeEditor) Check(_ context.Context, cred claudex.Credential) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.checked = append(f.checked, cred)
+	return f.checkErr
 }
 
 func (f *fakeEditor) asked() (dockerfile, instruction string) {

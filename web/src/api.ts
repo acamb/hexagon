@@ -178,6 +178,31 @@ export interface Account {
   removable: boolean
 }
 
+export type ClaudeCredentialKind = 'api_key' | 'oauth_token'
+// What a new session will actually authenticate with: the credential pasted
+// here, the server's own configured key, the file a browser login wrote, or
+// none of the above.
+export type ClaudeSource = 'credential' | 'apiKey' | 'file' | 'none'
+
+export interface ClaudeCredential {
+  kind: ClaudeCredentialKind
+  updatedAt: string
+}
+
+export interface ClaudeFile {
+  path: string
+  present: boolean
+  updatedAt?: string
+}
+
+export interface ClaudeStatus {
+  credential: ClaudeCredential | null
+  file: ClaudeFile
+  effective: ClaudeSource
+  canLogin: boolean
+  canVerify: boolean
+}
+
 export const api = {
   health: () => request<Health>('/health'),
   me: () => request<CurrentUser>('/auth/me'),
@@ -208,6 +233,17 @@ export const api = {
       }),
     disconnect: (provider: ProviderKind) =>
       request<null>(`/accounts/${provider}`, { method: 'DELETE' }),
+  },
+
+  claude: {
+    status: () => request<ClaudeStatus>('/claude'),
+    setCredential: (kind: ClaudeCredentialKind, secret: string) =>
+      request<ClaudeStatus>('/claude/credential', { method: 'PUT', body: JSON.stringify({ kind, secret }) }),
+    forgetCredential: () => request<null>('/claude/credential', { method: 'DELETE' }),
+    stopLogin: () => request<null>('/claude/login', { method: 'DELETE' }),
+    // The terminal is a WebSocket, so it is a path for TerminalPane rather than
+    // a fetch.
+    loginTerminal: (imageId: string) => `/api/claude/login/terminal?image=${encodeURIComponent(imageId)}`,
   },
 
   images: {

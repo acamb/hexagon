@@ -18,6 +18,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrea/hexagon/internal/claudex"
 	"github.com/andrea/hexagon/internal/github"
 	"github.com/andrea/hexagon/internal/provider"
 	"github.com/andrea/hexagon/internal/store"
@@ -212,6 +213,44 @@ func (s *Service) Connected(ctx context.Context, userID string) (map[provider.Ki
 	return out, nil
 }
 
+// SetClaudeCredential stores the Anthropic credential this user configured,
+// sealed. It has been checked against the CLI by the time it gets here.
+func (s *Service) SetClaudeCredential(ctx context.Context, userID string, cred claudex.Credential) error {
+	sealed, err := s.cipher.Seal([]byte(cred.Secret))
+	if err != nil {
+		return err
+	}
+	_, err = s.store.UpsertClaudeCredential(ctx, &store.ClaudeCredential{
+		UserID:    userID,
+		Kind:      cred.Kind,
+		SecretEnc: sealed,
+	})
+	return err
+}
+
+// ClaudeCredential returns what to run Claude Code as for this user, or the
+// zero value when there is none. "None" is not an error: it is the ordinary
+// state of a Hexagon configured from a file.
+func (s *Service) ClaudeCredential(ctx context.Context, userID string) (claudex.Credential, error) {
+	stored, err := s.store.ClaudeCredential(ctx, userID)
+	if errors.Is(err, store.ErrNotFound) {
+		return claudex.Credential{}, nil
+	}
+	if err != nil {
+		return claudex.Credential{}, err
+	}
+	secret, err := s.cipher.Open(stored.SecretEnc)
+	if err != nil {
+		return claudex.Credential{}, err
+	}
+	return claudex.Credential{Kind: stored.Kind, Secret: string(secret)}, nil
+}
+
+// ForgetClaudeCredential removes it, or reports store.ErrNotFound.
+func (s *Service) ForgetClaudeCredential(ctx context.Context, userID string) error {
+	return s.store.DeleteClaudeCredential(ctx, userID)
+}
+
 // GitCredentialSource pairs a user's sealed credentials with the provider that
 // knows what git wants for them. The session orchestrator holds one of these
 // rather than a cipher and a registry.
@@ -236,6 +275,12 @@ func (g *GitCredentialSource) GitCredentials(ctx context.Context, userID string,
 		return provider.GitAuth{}, err
 	}
 	return p.GitCredentials(credentials), nil
+}
+
+// ClaudeCredential delegates to the service, so the session orchestrator holds
+// one collaborator for every credential it needs rather than one per kind.
+func (g *GitCredentialSource) ClaudeCredential(ctx context.Context, userID string) (claudex.Credential, error) {
+	return g.service.ClaudeCredential(ctx, userID)
 }
 
 func (s *Service) credentials(account *store.ProviderAccount) (provider.Credentials, error) {

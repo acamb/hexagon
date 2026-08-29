@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -173,6 +174,7 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		WorkspaceRoot:     cfg.WorkspaceRoot,
 		ClaudeCredentials: cfg.ClaudeCredentials,
 		AnthropicAPIKey:   cfg.AnthropicAPIKey,
+		ClaudeLoginDir:    filepath.Join(cfg.DataDir, "claude-login"),
 		GitUserName:       cfg.GitUserName,
 		GitUserEmail:      cfg.GitUserEmail,
 		ContainerUser:     fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),

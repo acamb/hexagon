@@ -94,9 +94,10 @@ point and is the reference for what a session needs.
 ("add the Go toolchain") and Hexagon runs `claude -p` on the host to rewrite it, showing
 what changed with an undo. The call has every built-in tool removed (`--tools ""`), so it
 is a text transformation with no shell, no file access and no fetch of its own, and it
-ignores your own Claude Code configuration (`--safe-mode`). It uses the host's Claude Code
-credentials and therefore its quota. Without a `claude` binary on the server the control
-is not shown and the box is edited by hand, as before.
+ignores your own Claude Code configuration (`--safe-mode`). It authenticates with the Claude
+login configured on the Accounts page, falling back to the host's own login when none is
+stored. Without a `claude` binary on the server the control is not shown and the box is
+edited by hand, as before.
 
 **Accounts** — repositories come from the accounts you connect on the Accounts page. GitHub is
 there already: it is how you signed in. Bitbucket is added with an Atlassian account email and an
@@ -127,13 +128,23 @@ by default, and a switch in the session page afterwards; because it is the comma
 session is created with, changing it on a running session takes effect the next time that
 session starts. When Claude Code exits you get a shell rather than a terminal that closes.
 
+**Configuring the Claude login** — the Claude card on the Accounts page is where a session's
+Claude Code account is set, without a shell on the host. Paste an API key from the Console or
+the token `claude setup-token` prints, checked against the CLI before it is stored; or press
+**Log in** to open a real terminal running `claude` in a container whose `$HOME/.claude` is
+this machine's own, so `/login` there writes the same file every session mounts. A pasted
+credential reaches sessions created after it was stored — it is an environment variable, fixed
+when the container is created — and outranks the server's configured key; a browser login
+reaches an existing session the next time it starts, since the mount is a path resolved at
+start time. The card says which of the two a new session will actually use.
+
 **Claude Code in a session** — the host's `~/.claude/.credentials.json` is bind mounted
 read-only, and each session gets its own `$HOME/.claude.json` seeded with
 `hasCompletedOnboarding` and trust for `/workspace`, so `claude` opens straight into the
 repository. Without that file Claude Code sees a machine it has never run on and starts
 its first-run onboarding, which reads as being asked to sign in again. Because the
 credentials are mounted read-only a session cannot refresh an expired OAuth token: when
-that happens, sign in again on the host, or set `ANTHROPIC_API_KEY`.
+that happens, log in again from the Accounts page (or on the host), or set `ANTHROPIC_API_KEY`.
 
 **The terminal** — the session page attaches to the container's tmux session. Closing the
 tab only detaches: Claude Code keeps working, and reopening the page finds the session
@@ -176,7 +187,7 @@ and has a default that suits a single user on a developer machine.
 | `HEXAGON_DEV_USER` | `dev.user` | — | Development bypass, see below |
 | `HEXAGON_GITHUB_TOKEN` | `dev.githubToken` | — | Personal access token used by the bypass |
 | `HEXAGON_DEBUG` | `debug` | — | Set to anything for debug logging |
-| `HEXAGON_CLAUDE_CREDENTIALS` | `claude.credentials` | `~/.claude/.credentials.json` | Mounted read-only into session containers (from M4). Empty disables the mount |
+| `HEXAGON_CLAUDE_CREDENTIALS` | `claude.credentials` | `~/.claude/.credentials.json` | Mounted read-only into session containers (from M4). Empty disables the mount. Also the file a browser login from the Accounts page writes |
 | `ANTHROPIC_API_KEY` | `claude.anthropicApiKey` | — | Injected into session containers instead of the credentials mount (from M4) |
 | `HEXAGON_CLAUDE_BINARY` | `claude.binary` | `claude` on `PATH`, then `~/.local/bin/claude` | Runs `claude -p` to edit a Dockerfile from the Images page |
 | `HEXAGON_CLAUDE_MODEL` | `claude.model` | — | Model for that call; empty leaves the choice to the CLI |

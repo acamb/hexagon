@@ -128,7 +128,15 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	}))
 	t.Cleanup(tokenStub.Close)
 
-	cfg := &config.Config{Addr: "127.0.0.1:0", PublicURL: "http://127.0.0.1:8080"}
+	workspaces := filepath.Join(t.TempDir(), "workspaces")
+	// A path under the test's own temp dir: it need not exist for a browser
+	// login to start (the login container only needs somewhere to write), and
+	// its absence keeps the mount out of every session that does not exercise
+	// it on purpose. Both the httpapi and the session config need it: one
+	// reports canLogin, the other actually starts the container.
+	claudeCredentials := filepath.Join(workspaces, "claude", ".credentials.json")
+
+	cfg := &config.Config{Addr: "127.0.0.1:0", PublicURL: "http://127.0.0.1:8080", ClaudeCredentials: claudeCredentials}
 	logins := auth.NewService(st, cipher, cfg.PublicURL)
 	gh := &fakeGitHub{user: &github.User{Login: "alice", ID: 42, AvatarURL: "https://example.test/a.png"}}
 	docker := newFakeDocker()
@@ -139,13 +147,14 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	cloner := &fakeCloner{}
 	editor := &fakeEditor{}
 	vscode := &fakeVSCode{dir: "/vscode-release"}
-	workspaces := filepath.Join(t.TempDir(), "workspaces")
 
 	sessions := session.NewManager(st, docker, cloner, auth.NewGitCredentialSource(logins, providers), vscode, session.Config{
-		WorkspaceRoot: workspaces,
-		GitUserName:   "Hexagon User",
-		GitUserEmail:  "user@example.test",
-		ContainerUser: "1000:1000",
+		WorkspaceRoot:     workspaces,
+		ClaudeCredentials: claudeCredentials,
+		ClaudeLoginDir:    filepath.Join(workspaces, "claude-login"),
+		GitUserName:       "Hexagon User",
+		GitUserEmail:      "user@example.test",
+		ContainerUser:     "1000:1000",
 	}, slog.New(slog.DiscardHandler))
 
 	oauth, err := auth.NewOAuth(auth.OAuthConfig{

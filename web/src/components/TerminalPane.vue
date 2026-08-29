@@ -4,7 +4,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
 
-const props = defineProps<{ sessionId: string }>()
+const props = defineProps<{ url: string }>()
 
 type Connection = 'connecting' | 'open' | 'closed'
 
@@ -36,8 +36,10 @@ function theme() {
 function socketURL(): string {
   const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws'
   const size = fit.value?.proposeDimensions()
-  const query = size ? `?cols=${size.cols}&rows=${size.rows}` : ''
-  return `${scheme}://${window.location.host}/api/sessions/${props.sessionId}/terminal${query}`
+  // The login terminal already carries a query, the session one does not.
+  const sep = props.url.includes('?') ? '&' : '?'
+  const query = size ? `${sep}cols=${size.cols}&rows=${size.rows}` : ''
+  return `${scheme}://${window.location.host}${props.url}${query}`
 }
 
 function connect() {

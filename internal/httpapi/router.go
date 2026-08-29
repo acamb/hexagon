@@ -21,11 +21,13 @@ import (
 	"github.com/andrea/hexagon/internal/store"
 )
 
-// DockerfileEditor rewrites a Dockerfile from an instruction in English. It is
-// nil when the server has no Claude Code binary to run, which is a state the UI
-// is told about rather than a startup failure.
+// DockerfileEditor rewrites a Dockerfile from an instruction in English, and
+// checks whether a Claude Code credential works. It is nil when the server has
+// no Claude Code binary to run, which is a state the UI is told about rather
+// than a startup failure.
 type DockerfileEditor interface {
-	EditDockerfile(ctx context.Context, dockerfile, instruction string) (claudex.DockerfileEdit, error)
+	EditDockerfile(ctx context.Context, cred claudex.Credential, dockerfile, instruction string) (claudex.DockerfileEdit, error)
+	Check(ctx context.Context, cred claudex.Credential) error
 }
 
 // Deps are the collaborators the handlers need.
@@ -114,6 +116,12 @@ func New(deps Deps) http.Handler {
 		"GET /api/accounts":               s.handleListAccounts,
 		"PUT /api/accounts/{provider}":    s.handleConnectAccount,
 		"DELETE /api/accounts/{provider}": s.handleDisconnectAccount,
+
+		"GET /api/claude":                s.handleClaudeStatus,
+		"PUT /api/claude/credential":     s.handleSetClaudeCredential,
+		"DELETE /api/claude/credential":  s.handleForgetClaudeCredential,
+		"GET /api/claude/login/terminal": s.handleClaudeLoginTerminal,
+		"DELETE /api/claude/login":       s.handleStopClaudeLogin,
 
 		"GET /api/sessions":               s.handleListSessions,
 		"POST /api/sessions":              s.handleCreateSession,

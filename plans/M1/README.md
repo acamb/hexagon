@@ -15,7 +15,7 @@ as described in [AGENTS.md](../../AGENTS.md).
 | 7 | Switch to propagate the provider token | [07-token-propagation-switch.md](07-token-propagation-switch.md) | done |
 | 8 | Sessions without a repository | [08-sessions-without-repo.md](08-sessions-without-repo.md) | done |
 | 9 | VS Code integration | [09-vscode-integration.md](09-vscode-integration.md) | done |
-| 10 | Claude login from the UI | `10-claude-login-from-ui.md` | not started |
+| 10 | Claude login from the UI | [10-claude-login-from-ui.md](10-claude-login-from-ui.md) | done |
 
 Points 6 to 8 overlap: how a repository is chosen, which provider it comes from,
 and whether a session has a repository at all are the same part of the create

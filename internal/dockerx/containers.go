@@ -26,6 +26,11 @@ const AgentHome = "/home/agent"
 const (
 	LabelManaged   = "hexagon.managed"
 	LabelSessionID = "hexagon.session.id"
+	// LabelRole marks a container Hexagon created for something that is not a
+	// session. ListManagedContainers and the reconciler compare managed
+	// containers against session rows, and a container with no row would be
+	// reported as an orphan at every startup.
+	LabelRole = "hexagon.role"
 )
 
 // ErrContainerNotFound reports a container the daemon does not know about.

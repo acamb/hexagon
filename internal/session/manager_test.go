@@ -6,10 +6,13 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/andrea/hexagon/internal/claudex"
 	"github.com/andrea/hexagon/internal/dockerx"
+	"github.com/andrea/hexagon/internal/provider"
 	"github.com/andrea/hexagon/internal/store"
 )
 
@@ -222,5 +225,53 @@ func TestCreateRejectsVSCodeWithNoSource(t *testing.T) {
 	_, err = manager.Create(ctx, user, CreateRequest{ImageID: image.ID, VSCode: true})
 	if !errors.Is(err, ErrVSCodeUnavailable) {
 		t.Errorf("error = %v, want ErrVSCodeUnavailable", err)
+	}
+}
+
+// A credential configured in the UI outranks the one the process was started
+// with: it is the one the user can see, change and be told about.
+func TestContainerSpecPrefersTheStoredClaudeCredentialOverTheConfiguredKey(t *testing.T) {
+	manager, _, _ := testManager(t, nil)
+	manager.cfg.AnthropicAPIKey = "configured-key"
+
+	session := &store.Session{ID: "s-1", RepoDir: "/repo", ImageRef: "ref"}
+
+	withCredential := manager.containerSpec(session, "/home", "", provider.GitAuth{},
+		claudex.Credential{Kind: claudex.KindAPIKey, Secret: "stored-key"})
+	if !slices.Contains(withCredential.Env, "ANTHROPIC_API_KEY=stored-key") {
+		t.Errorf("env = %v, want the stored credential", withCredential.Env)
+	}
+	if slices.Contains(withCredential.Env, "ANTHROPIC_API_KEY=configured-key") {
+		t.Errorf("env = %v, the configured key shadowed the stored credential", withCredential.Env)
+	}
+
+	withoutCredential := manager.containerSpec(session, "/home", "", provider.GitAuth{}, claudex.Credential{})
+	if !slices.Contains(withoutCredential.Env, "ANTHROPIC_API_KEY=configured-key") {
+		t.Errorf("env = %v, want a fallback to the configured key", withoutCredential.Env)
+	}
+}
+
+// The credentials mount is a different mechanism from the environment variable
+// and must survive untouched whichever way a container was authenticated.
+func TestContainerSpecKeepsTheCredentialsMountRegardless(t *testing.T) {
+	manager, _, _ := testManager(t, nil)
+	credentialsPath := filepath.Join(t.TempDir(), ".credentials.json")
+	if err := os.WriteFile(credentialsPath, []byte("{}"), 0o600); err != nil {
+		t.Fatalf("write credentials file: %v", err)
+	}
+	manager.cfg.ClaudeCredentials = credentialsPath
+
+	session := &store.Session{ID: "s-1", RepoDir: "/repo", ImageRef: "ref"}
+	wantMount := credentialsPath + ":" + dockerx.AgentHome + "/.claude/.credentials.json:ro"
+
+	withCredential := manager.containerSpec(session, "/home", "", provider.GitAuth{},
+		claudex.Credential{Kind: claudex.KindAPIKey, Secret: "stored-key"})
+	if !slices.Contains(withCredential.Binds, wantMount) {
+		t.Errorf("binds = %v, want the credentials mount", withCredential.Binds)
+	}
+
+	withoutCredential := manager.containerSpec(session, "/home", "", provider.GitAuth{}, claudex.Credential{})
+	if !slices.Contains(withoutCredential.Binds, wantMount) {
+		t.Errorf("binds = %v, want the credentials mount", withoutCredential.Binds)
 	}
 }

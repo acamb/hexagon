@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/andrea/hexagon/internal/claudex"
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/gitops"
 	"github.com/andrea/hexagon/internal/provider"
@@ -53,13 +54,20 @@ var (
 	// ErrVSCodeNotReady reports a session whose container is not yet publishing
 	// code-server: not running, or started before the port binding exists.
 	ErrVSCodeNotReady = errors.New("vscode is not ready in this session yet")
+	// ErrClaudeLoginUnavailable reports that no credentials path is configured,
+	// so a browser login would have nowhere to write.
+	ErrClaudeLoginUnavailable = errors.New("no claude credentials path is configured")
 )
 
 // CredentialSource hands over the git credentials for one of a user's connected
-// accounts. It is an interface so the orchestrator never sees the cipher, and
-// so tests do not need one.
+// accounts, and the Claude Code credential a user configured from the UI. It is
+// an interface so the orchestrator never sees the cipher, and so tests do not
+// need one.
 type CredentialSource interface {
 	GitCredentials(ctx context.Context, userID string, kind provider.Kind) (provider.GitAuth, error)
+	// ClaudeCredential is what Claude Code inside the container authenticates
+	// with, or the zero value when the user configured none.
+	ClaudeCredential(ctx context.Context, userID string) (claudex.Credential, error)
 }
 
 // Cloner checks a repository out on the host. The indirection exists so the
@@ -89,8 +97,11 @@ type Config struct {
 	// container. Empty disables the mount.
 	ClaudeCredentials string
 	AnthropicAPIKey   string
-	GitUserName       string
-	GitUserEmail      string
+	// ClaudeLoginDir holds the throwaway HOME of the container the browser login
+	// runs in, one directory per user.
+	ClaudeLoginDir string
+	GitUserName    string
+	GitUserEmail   string
 	// ContainerUser is the uid:gid session containers run as.
 	ContainerUser string
 }
@@ -167,6 +178,10 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 			return nil, fmt.Errorf("read the stored %s credentials: %w", req.Provider, err)
 		}
 	}
+	claude, err := m.credentials.ClaudeCredential(ctx, user.ID)
+	if err != nil {
+		return nil, fmt.Errorf("read the stored claude credential: %w", err)
+	}
 
 	// The workspace path is derived from the id, so it has to exist first.
 	id := uuid.NewString()
@@ -204,18 +219,18 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 		return nil, err
 	}
 
-	go m.provision(session, credentials)
+	go m.provision(session, credentials, claude)
 	return session, nil
 }
 
 // provision walks the session from an empty directory to a running container
 // with tmux in it. It runs on its own context: a browser navigating away must
 // not cancel a clone half way through.
-func (m *Manager) provision(session *store.Session, credentials provider.GitAuth) {
+func (m *Manager) provision(session *store.Session, credentials provider.GitAuth, claude claudex.Credential) {
 	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
 	defer cancel()
 
-	if err := m.provisionSteps(ctx, session, credentials); err != nil {
+	if err := m.provisionSteps(ctx, session, credentials, claude); err != nil {
 		m.log.Error("provision session", "session", session.ID, "err", err)
 		m.cleanUpFailure(session)
 		m.setStatus(session.ID, store.SessionStatusFailed, err.Error())
@@ -225,7 +240,7 @@ func (m *Manager) provision(session *store.Session, credentials provider.GitAuth
 	m.log.Info("session running", "session", session.ID, "repo", session.RepoFullName)
 }
 
-func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, credentials provider.GitAuth) error {
+func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, credentials provider.GitAuth, claude claudex.Credential) error {
 	homeDir := filepath.Join(session.WorkspaceDir, "home")
 	// The container runs as the host user with HOME here, and Claude Code wants
 	// somewhere to keep its own state.
@@ -268,7 +283,7 @@ func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, cr
 	}
 
 	m.setStatus(session.ID, store.SessionStatusCreating, "")
-	containerID, err := m.docker.CreateContainer(ctx, m.containerSpec(session, homeDir, vscodeDir, credentials))
+	containerID, err := m.docker.CreateContainer(ctx, m.containerSpec(session, homeDir, vscodeDir, credentials, claude))
 	if err != nil {
 		return err
 	}
@@ -324,7 +339,7 @@ func seedClaudeConfig(homeDir string) error {
 }
 
 // containerSpec is the whole contract between Hexagon and a session container.
-func (m *Manager) containerSpec(session *store.Session, homeDir, vscodeDir string, credentials provider.GitAuth) dockerx.ContainerSpec {
+func (m *Manager) containerSpec(session *store.Session, homeDir, vscodeDir string, credentials provider.GitAuth, claude claudex.Credential) dockerx.ContainerSpec {
 	env := []string{
 		"HOME=" + dockerx.AgentHome,
 		"TERM=xterm-256color",
@@ -353,7 +368,12 @@ func (m *Manager) containerSpec(session *store.Session, homeDir, vscodeDir strin
 	if m.cfg.GitUserEmail != "" {
 		env = append(env, "GIT_AUTHOR_EMAIL="+m.cfg.GitUserEmail, "GIT_COMMITTER_EMAIL="+m.cfg.GitUserEmail)
 	}
-	if m.cfg.AnthropicAPIKey != "" {
+	// A credential configured in the UI outranks the one the process was started
+	// with: it is the one the user can see, change and be told about.
+	switch {
+	case claude.Secret != "":
+		env = append(env, claude.Env()...)
+	case m.cfg.AnthropicAPIKey != "":
 		env = append(env, "ANTHROPIC_API_KEY="+m.cfg.AnthropicAPIKey)
 	}
 
