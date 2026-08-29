@@ -2,7 +2,6 @@ package httpapi
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -110,7 +109,7 @@ func (s *Server) handleSetClaudeCredential(w http.ResponseWriter, r *http.Reques
 	user := s.user(r)
 
 	var req setClaudeCredentialRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxClaudeRequestBody)).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, maxClaudeRequestBody, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}

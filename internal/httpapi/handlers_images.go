@@ -3,7 +3,6 @@ package httpapi
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -133,7 +132,7 @@ func (s *Server) handleEditDockerfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req editDockerfileRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxImageRequestBody)).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, maxImageRequestBody, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -185,7 +184,7 @@ type createImageRequest struct {
 // image's status and log.
 func (s *Server) handleCreateImage(w http.ResponseWriter, r *http.Request) {
 	var req createImageRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxImageRequestBody)).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, maxImageRequestBody, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}

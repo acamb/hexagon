@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -122,7 +121,7 @@ type createSessionRequest struct {
 // the work happens in the background and shows up as the session's status.
 func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	var req createSessionRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSessionRequestBody)).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, maxSessionRequestBody, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
@@ -274,7 +273,7 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req updateSessionRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxSessionRequestBody)).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, maxSessionRequestBody, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}

@@ -1,7 +1,6 @@
 package httpapi
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -85,7 +84,7 @@ func (s *Server) handleConnectAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req connectAccountRequest
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxAccountRequestBody)).Decode(&req); err != nil {
+	if err := decodeJSON(w, r, maxAccountRequestBody, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}

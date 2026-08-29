@@ -118,8 +118,14 @@ func run(configPath string) error {
 		Addr:              cfg.Addr,
 		Handler:           httpapi.New(deps),
 		ReadHeaderTimeout: 10 * time.Second,
-		// No write timeout: the terminal endpoint streams for as long as the
-		// browser stays attached.
+		// An idle connection is one between requests, so this is safe for
+		// everything: a hijacked WebSocket is no longer an idle HTTP connection
+		// and the server stops managing it.
+		IdleTimeout: 120 * time.Second,
+		// No read or write timeout, deliberately. Both set a deadline on the
+		// underlying connection, which the terminal and the VS Code proxy hijack
+		// and keep for as long as the browser stays attached. Request bodies get
+		// their deadline per route instead, in httpapi.decodeJSON.
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
