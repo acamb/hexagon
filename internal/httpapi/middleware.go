@@ -28,6 +28,28 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 			writeError(w, http.StatusInternalServerError, "authentication failed")
 			return
 		}
+
+		// Admission is re-checked here rather than only at the login, because a
+		// session outlives the decision that created it. 401 and not 403: the
+		// SPA turns 401 into a redirect to /login, where signing in fails with
+		// not_allowed and says so. A 403 would leave them on a page that cannot
+		// recover.
+		if !s.allowlist.Allowed(user.GitHubLogin) {
+			s.log.Warn("session for a user no longer in the allowlist", "login", user.GitHubLogin)
+			if err := s.auth.Logout(r.Context(), w, r); err != nil {
+				s.log.Error("end the session of a user no longer allowed", "login", user.GitHubLogin, "err", err)
+			}
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+
+		// The session is good for another full lifetime once it is halfway
+		// through this one. A failure here costs the user an earlier sign-in,
+		// not this request.
+		if err := s.auth.Renew(r.Context(), w, r); err != nil {
+			s.log.Warn("renew session", "login", user.GitHubLogin, "err", err)
+		}
+
 		next.ServeHTTP(w, r.WithContext(auth.WithUser(r.Context(), user)))
 	})
 }

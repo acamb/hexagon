@@ -196,10 +196,20 @@ func TestClaudeLoginTerminalRefusesAnImageThatIsNotReady(t *testing.T) {
 	env := newTestEnv(t, "alice")
 	env.signIn()
 
-	var img imageResponse
-	env.decode(env.postJSON("/api/images", `{"name":"building","sourceType":"registry","registryRef":"busybox"}`), &img)
+	// The row is inserted rather than created through the API: the fake pull
+	// finishes as soon as it starts, so posting an image and dialling before it
+	// goes ready is a race, and the race would decide the test rather than the
+	// handler's check.
+	_, err := env.store.DB().Exec(`
+		INSERT INTO images (id, user_id, name, source_type, dockerfile, registry_ref, image_ref,
+			status, build_log, error, created_at)
+		VALUES ('img-building', ?, 'building', 'registry', '', 'busybox', '', 'building', '', '',
+			'2026-01-01 00:00:00.000')`, env.userID())
+	if err != nil {
+		t.Fatalf("insert image: %v", err)
+	}
 
-	_, resp, err := env.dialClaudeLogin(img.ID, testOrigin)
+	_, resp, err := env.dialClaudeLogin("img-building", testOrigin)
 	if err == nil {
 		t.Fatal("the handshake succeeded against a non-ready image")
 	}

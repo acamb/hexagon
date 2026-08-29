@@ -103,6 +103,9 @@ func run(configPath string) error {
 		return err
 	}
 
+	// After buildDeps, which is where the allowlist is built.
+	pruneRevokedSessions(context.Background(), st, deps.Allowlist, log)
+
 	// Line the database up with what the daemon actually has, before serving
 	// anyone a stale view of it.
 	reconcileCtx, reconcileCancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -209,18 +212,46 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		deps.Editor = runner.WithModel(cfg.ClaudeModel)
 	}
 
+	allowlist, err := auth.NewAllowlist(cfg.AllowedUsers)
+	if err != nil {
+		return httpapi.Deps{}, err
+	}
 	oauth, err := auth.NewOAuth(auth.OAuthConfig{
 		ClientID:     cfg.GitHubClientID,
 		ClientSecret: cfg.GitHubClientSecret,
 		PublicURL:    cfg.PublicURL,
-		AllowedUsers: cfg.AllowedUsers,
 	})
 	if err != nil {
 		return httpapi.Deps{}, err
 	}
 	log.Info("github login enabled", "callback", oauth.RedirectURI(), "allowed_users", cfg.AllowedUsers)
 	deps.OAuth = oauth
+	deps.Allowlist = allowlist
 	return deps, nil
+}
+
+// pruneRevokedSessions signs out anyone the allowlist no longer admits. The
+// per-request check already refuses them, but only when they come back: this is
+// what makes a removal take effect on a browser that never does.
+func pruneRevokedSessions(ctx context.Context, st *store.Store, allowlist *auth.Allowlist, log *slog.Logger) {
+	users, err := st.ListUsers(ctx)
+	if err != nil {
+		log.Warn("look for sessions to revoke", "err", err)
+		return
+	}
+	for _, user := range users {
+		if allowlist.Allowed(user.GitHubLogin) {
+			continue
+		}
+		n, err := st.DeleteUserSessionsForUser(ctx, user.ID)
+		switch {
+		case err != nil:
+			log.Warn("revoke sessions", "login", user.GitHubLogin, "err", err)
+		case n > 0:
+			log.Info("revoked the sessions of a user no longer in the allowlist",
+				"login", user.GitHubLogin, "count", n)
+		}
+	}
 }
 
 // newLogger returns a text logger, at debug level when debug logging is on.

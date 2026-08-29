@@ -249,8 +249,13 @@ rm ~/.local/share/hexagon/hexagon.db*
 ```
 
 Sign out from the header and you land back on `/login`; reloading `/` keeps you
-there. Sessions last 30 days, so closing and reopening the browser keeps you
-signed in.
+there. Sessions last 7 days and are extended whenever a browser uses one that is
+more than halfway through its life, so an instance in daily use never signs you
+out on the clock.
+
+Removing a login from `allowedUsers` and restarting ends that account's sessions:
+admission is re-checked on every request, and the sessions of anyone no longer on
+the list are deleted at startup.
 
 Calling the API by hand takes one more header: a mutating request has to show
 that it came from our own pages, and `curl` says nothing about where it is from.

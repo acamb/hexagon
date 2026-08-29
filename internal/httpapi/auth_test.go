@@ -161,11 +161,14 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		ClientID:     "client",
 		ClientSecret: "secret",
 		PublicURL:    cfg.PublicURL,
-		AllowedUsers: allowedUsers,
 		TokenURL:     tokenStub.URL,
 	})
 	if err != nil {
 		t.Fatalf("new oauth: %v", err)
+	}
+	allowlist, err := auth.NewAllowlist(allowedUsers)
+	if err != nil {
+		t.Fatalf("new allowlist: %v", err)
 	}
 
 	handler := New(Deps{
@@ -173,6 +176,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		Store:          st,
 		Auth:           logins,
 		OAuth:          oauth,
+		Allowlist:      allowlist,
 		GitHub:         gh,
 		Providers:      providers,
 		Repos:          repos,
@@ -486,5 +490,51 @@ func TestUnknownAPIRouteDoesNotFallThroughToTheSPA(t *testing.T) {
 	}
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("unknown API route content type = %q, want JSON", ct)
+	}
+}
+
+// A session outlives the decision that admitted it, so admission is re-checked
+// on every request. The user is created directly here because the allowlist is
+// fixed when the server is built: a session for someone not on it is the state
+// that matters, however it came about.
+func TestRequestsFromAUserNoLongerAllowedAre401(t *testing.T) {
+	env := newTestEnv(t, "alice")
+
+	bob, err := env.store.UpsertUser(context.Background(), &store.User{GitHubLogin: "bob", GitHubID: 7})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	issued := httptest.NewRecorder()
+	if err := env.auth.Issue(context.Background(), issued, bob); err != nil {
+		t.Fatalf("issue session: %v", err)
+	}
+	cookie := issued.Result().Cookies()[0]
+
+	req, err := http.NewRequest(http.MethodGet, env.server.URL+"/api/auth/me", nil)
+	if err != nil {
+		t.Fatalf("build request: %v", err)
+	}
+	req.AddCookie(cookie)
+	resp, err := env.client.Do(req)
+	if err != nil {
+		t.Fatalf("get /api/auth/me: %v", err)
+	}
+	defer resp.Body.Close()
+
+	// 401 and not 403, so the SPA's existing redirect to /login keeps working
+	// and the login itself explains why with not_allowed.
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Errorf("status = %d, want 401", resp.StatusCode)
+	}
+
+	// The row is gone too: the check does not have to run again for this
+	// browser, and a stolen cookie is worth nothing either.
+	var live int
+	if err := env.store.DB().QueryRow(
+		`SELECT count(*) FROM user_sessions WHERE user_id = ?`, bob.ID).Scan(&live); err != nil {
+		t.Fatalf("count sessions: %v", err)
+	}
+	if live != 0 {
+		t.Errorf("sessions left for a user no longer allowed = %d, want 0", live)
 	}
 }

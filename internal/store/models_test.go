@@ -111,3 +111,101 @@ func TestUserSessionsLifecycle(t *testing.T) {
 		t.Errorf("deleted session still resolves: err = %v", err)
 	}
 }
+
+// The renewal boundary: a session in the first half of its life costs no write
+// at all, and one past it is extended.
+func TestTouchUserSessionRenewsOnlyPastHalfLife(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	user, err := s.UpsertUser(ctx, &User{GitHubLogin: "alice", GitHubID: 1})
+	if err != nil {
+		t.Fatalf("UpsertUser: %v", err)
+	}
+	token := []byte("token-hash")
+	expires := time.Now().Add(time.Hour)
+	if err := s.CreateUserSession(ctx, token, user.ID, expires); err != nil {
+		t.Fatalf("CreateUserSession: %v", err)
+	}
+
+	renewed, err := s.TouchUserSession(ctx, token, time.Now().Add(30*time.Minute), time.Now().Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("TouchUserSession: %v", err)
+	}
+	if renewed {
+		t.Error("a session in the first half of its life was extended")
+	}
+
+	want := time.Now().Add(2 * time.Hour)
+	renewed, err = s.TouchUserSession(ctx, token, time.Now().Add(90*time.Minute), want)
+	if err != nil {
+		t.Fatalf("TouchUserSession: %v", err)
+	}
+	if !renewed {
+		t.Fatal("a session past its half life was not extended")
+	}
+
+	var got string
+	if err := s.DB().QueryRow(`SELECT expires_at FROM user_sessions WHERE token_hash = ?`, token).Scan(&got); err != nil {
+		t.Fatalf("read expires_at: %v", err)
+	}
+	if got != formatTime(want) {
+		t.Errorf("expires_at = %q, want %q", got, formatTime(want))
+	}
+
+	// An unknown token renews nothing, which is what keeps a stale cookie from
+	// resurrecting a session that was signed out.
+	renewed, err = s.TouchUserSession(ctx, []byte("nobody"), time.Now().Add(time.Hour), time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("TouchUserSession: %v", err)
+	}
+	if renewed {
+		t.Error("an unknown token was renewed")
+	}
+}
+
+// The startup sweep needs both halves: who exists, and how to sign one of them
+// out everywhere.
+func TestDeleteUserSessionsForUserLeavesOtherUsersAlone(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	alice, err := s.UpsertUser(ctx, &User{GitHubLogin: "alice", GitHubID: 1})
+	if err != nil {
+		t.Fatalf("UpsertUser: %v", err)
+	}
+	bob, err := s.UpsertUser(ctx, &User{GitHubLogin: "bob", GitHubID: 2})
+	if err != nil {
+		t.Fatalf("UpsertUser: %v", err)
+	}
+	for i, session := range []struct {
+		token []byte
+		user  string
+	}{{[]byte("a1"), alice.ID}, {[]byte("a2"), alice.ID}, {[]byte("b1"), bob.ID}} {
+		if err := s.CreateUserSession(ctx, session.token, session.user, time.Now().Add(time.Hour)); err != nil {
+			t.Fatalf("CreateUserSession %d: %v", i, err)
+		}
+	}
+
+	users, err := s.ListUsers(ctx)
+	if err != nil {
+		t.Fatalf("ListUsers: %v", err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("ListUsers returned %d users, want 2", len(users))
+	}
+
+	n, err := s.DeleteUserSessionsForUser(ctx, alice.ID)
+	if err != nil {
+		t.Fatalf("DeleteUserSessionsForUser: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("deleted %d sessions, want 2", n)
+	}
+	if _, err := s.UserBySessionToken(ctx, []byte("a1")); !errors.Is(err, ErrNotFound) {
+		t.Errorf("alice's session survived: err = %v", err)
+	}
+	if _, err := s.UserBySessionToken(ctx, []byte("b1")); err != nil {
+		t.Errorf("bob's session was deleted too: %v", err)
+	}
+}

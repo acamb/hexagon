@@ -38,7 +38,11 @@ const (
 	// plaintext, which is a thing no server-side check can prevent.
 	hostPrefix = "__Host-"
 
-	sessionTTL    = 30 * 24 * time.Hour
+	// sessionTTL is short because a session cookie is the whole credential:
+	// whoever holds one drives the Docker socket. It stays a constant rather
+	// than a setting — a session lifetime is a property of the security model,
+	// not of the machine — and Renew keeps it from being a weekly annoyance.
+	sessionTTL    = 7 * 24 * time.Hour
 	stateTTL      = 10 * time.Minute
 	tokenBytes    = 32
 	cookiePathAPI = "/api/auth"
@@ -90,6 +94,35 @@ func (s *Service) Issue(ctx context.Context, w http.ResponseWriter, user *store.
 		return err
 	}
 
+	s.setSessionCookie(w, token, expires)
+	return nil
+}
+
+// Renew extends a session that is more than halfway through its life and
+// re-sets the cookie, so a browser in daily use is never signed out by the
+// clock. A session younger than that is left alone: at most one write per
+// browser per half life, whatever the request rate.
+//
+// It is separate from Authenticate because failing to extend a session is not a
+// reason to refuse a request that carries a valid one — the caller decides what
+// to do with the error, and has a logger to say it with.
+func (s *Service) Renew(ctx context.Context, w http.ResponseWriter, r *http.Request) error {
+	cookie, err := r.Cookie(s.CookieName())
+	if err != nil || cookie.Value == "" {
+		return nil
+	}
+	expires := time.Now().Add(sessionTTL)
+	renewed, err := s.store.TouchUserSession(ctx, hashToken(cookie.Value), time.Now().Add(sessionTTL/2), expires)
+	if err != nil || !renewed {
+		return err
+	}
+	s.setSessionCookie(w, cookie.Value, expires)
+	return nil
+}
+
+// setSessionCookie is the one place the session cookie's attributes are
+// written, so Issue and Renew cannot disagree about them.
+func (s *Service) setSessionCookie(w http.ResponseWriter, token string, expires time.Time) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     s.CookieName(),
 		Value:    token,
@@ -100,7 +133,6 @@ func (s *Service) Issue(ctx context.Context, w http.ResponseWriter, user *store.
 		Secure:   s.secure,
 		SameSite: http.SameSiteLaxMode,
 	})
-	return nil
 }
 
 // Authenticate resolves the session cookie on r to a user.

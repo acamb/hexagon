@@ -55,7 +55,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !s.oauth.Allowed(ghUser.Login) {
+	if !s.allowlist.Allowed(ghUser.Login) {
 		s.log.Warn("login refused, user not in allowlist", "login", ghUser.Login)
 		s.failLogin(w, r, "not_allowed")
 		return

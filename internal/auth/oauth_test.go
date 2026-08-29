@@ -14,7 +14,6 @@ func validOAuthConfig() OAuthConfig {
 		ClientID:     "client",
 		ClientSecret: "secret",
 		PublicURL:    "http://127.0.0.1:8080",
-		AllowedUsers: []string{"Alice"},
 	}
 }
 
@@ -22,7 +21,6 @@ func TestNewOAuthFailsClosed(t *testing.T) {
 	tests := map[string]func(*OAuthConfig){
 		"no client id":     func(c *OAuthConfig) { c.ClientID = "" },
 		"no client secret": func(c *OAuthConfig) { c.ClientSecret = "" },
-		"empty allowlist":  func(c *OAuthConfig) { c.AllowedUsers = nil },
 	}
 	for name, mangle := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -35,16 +33,31 @@ func TestNewOAuthFailsClosed(t *testing.T) {
 	}
 }
 
-func TestOAuthAllowedIsCaseInsensitive(t *testing.T) {
-	o, err := NewOAuth(validOAuthConfig())
+func TestNewAllowlistRefusesAnEmptyList(t *testing.T) {
+	for name, entries := range map[string][]string{
+		"nothing at all":    nil,
+		"only empty values": {"", "  "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewAllowlist(entries); err == nil {
+				t.Error("NewAllowlist accepted an empty list: every GitHub account would be admitted")
+			}
+		})
+	}
+}
+
+func TestAllowlistIsCaseInsensitive(t *testing.T) {
+	list, err := NewAllowlist([]string{"Alice", " bob "})
 	if err != nil {
-		t.Fatalf("NewOAuth: %v", err)
+		t.Fatalf("NewAllowlist: %v", err)
 	}
-	if !o.Allowed("alice") || !o.Allowed("ALICE") {
-		t.Error("allowlist should match regardless of case")
+	for _, login := range []string{"alice", "ALICE", "bob"} {
+		if !list.Allowed(login) {
+			t.Errorf("Allowed(%q) = false, want true", login)
+		}
 	}
-	if o.Allowed("mallory") {
-		t.Error("allowlist matched a login it does not contain")
+	if list.Allowed("mallory") {
+		t.Error("the allowlist matched a login it does not contain")
 	}
 }
 

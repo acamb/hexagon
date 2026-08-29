@@ -36,8 +36,11 @@ type Deps struct {
 	Store  *store.Store
 	Auth   *auth.Service
 	// OAuth drives the GitHub login.
-	OAuth  *auth.OAuth
-	GitHub auth.UserFetcher
+	OAuth *auth.OAuth
+	// Allowlist says who may use this instance. It is consulted on every
+	// request, not only at the login.
+	Allowlist *auth.Allowlist
+	GitHub    auth.UserFetcher
 	// Providers are the sources of repositories this build knows about, and
 	// Repos merges the listings of the accounts a user has connected to them.
 	Providers provider.Registry
@@ -58,6 +61,7 @@ type Server struct {
 	store          *store.Store
 	auth           *auth.Service
 	oauth          *auth.OAuth
+	allowlist      *auth.Allowlist
 	github         auth.UserFetcher
 	providers      provider.Registry
 	repos          *provider.Lister
@@ -77,6 +81,7 @@ func New(deps Deps) http.Handler {
 		store:          deps.Store,
 		auth:           deps.Auth,
 		oauth:          deps.OAuth,
+		allowlist:      deps.Allowlist,
 		github:         deps.GitHub,
 		providers:      deps.Providers,
 		repos:          deps.Repos,

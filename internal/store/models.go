@@ -63,14 +63,42 @@ func (s *Store) UserByGitHubID(ctx context.Context, githubID int64) (*User, erro
 	return s.userWhere(ctx, "github_id = ?", githubID)
 }
 
+// userColumns is the select list every user query shares, in the order scanUser
+// reads them.
+const userColumns = "id, github_login, github_id, avatar_url, created_at, last_login_at"
+
 func (s *Store) userWhere(ctx context.Context, where string, args ...any) (*User, error) {
-	row := s.db.QueryRowContext(ctx, `
-		SELECT id, github_login, github_id, avatar_url, created_at, last_login_at
-		FROM users WHERE `+where, args...)
+	row := s.db.QueryRowContext(ctx, `SELECT `+userColumns+` FROM users WHERE `+where, args...)
 	return scanUser(row)
 }
 
-func scanUser(row *sql.Row) (*User, error) {
+// ListUsers returns every account that has ever signed in, oldest first. It is
+// what the startup sweep walks to find sessions the allowlist no longer admits.
+func (s *Store) ListUsers(ctx context.Context) ([]*User, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+userColumns+` FROM users ORDER BY created_at`)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []*User
+	for rows.Next() {
+		user, err := scanUser(rows)
+		if err != nil {
+			return nil, err
+		}
+		users = append(users, user)
+	}
+	return users, rows.Err()
+}
+
+// rowScanner is what *sql.Row and *sql.Rows have in common, so one user is
+// scanned the same way whether it came from a lookup or a listing.
+type rowScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanUser(row rowScanner) (*User, error) {
 	var (
 		u                      User
 		createdAt, lastLoginAt string
@@ -123,6 +151,35 @@ func (s *Store) DeleteUserSession(ctx context.Context, tokenHash []byte) error {
 		return fmt.Errorf("delete user session: %w", err)
 	}
 	return nil
+}
+
+// TouchUserSession extends one session's life, but only when it is already
+// closer to expiry than renewBefore. The condition is in the statement so a
+// request costs one write at most, and usually none: a browser that calls every
+// second still renews once per half life.
+//
+// It reports whether the row was actually extended, which is what tells the
+// caller to re-set the cookie.
+func (s *Store) TouchUserSession(ctx context.Context, tokenHash []byte, renewBefore, expiresAt time.Time) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE user_sessions SET expires_at = ?
+		WHERE token_hash = ? AND expires_at <= ?`,
+		formatTime(expiresAt), tokenHash, formatTime(renewBefore))
+	if err != nil {
+		return false, fmt.Errorf("touch user session: %w", err)
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
+// DeleteUserSessionsForUser signs one account out of every browser it is
+// signed in on.
+func (s *Store) DeleteUserSessionsForUser(ctx context.Context, userID string) (int64, error) {
+	res, err := s.db.ExecContext(ctx, `DELETE FROM user_sessions WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, fmt.Errorf("delete sessions of user %s: %w", userID, err)
+	}
+	return res.RowsAffected()
 }
 
 // DeleteExpiredUserSessions clears out sessions nobody can use any more.

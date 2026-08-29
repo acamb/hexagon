@@ -21,12 +21,11 @@ const (
 	scopeRepo = "repo"
 )
 
-// OAuth drives the GitHub OAuth App login and decides who is allowed in.
+// OAuth drives the GitHub OAuth App login.
 type OAuth struct {
 	clientID     string
 	clientSecret string
 	redirectURI  string
-	allowed      map[string]bool
 
 	authorizeURL string
 	tokenURL     string
@@ -38,7 +37,6 @@ type OAuthConfig struct {
 	ClientID     string
 	ClientSecret string
 	PublicURL    string
-	AllowedUsers []string
 
 	// AuthorizeURL and TokenURL default to github.com. They exist so tests can
 	// point at a stub, and so a GitHub Enterprise host could be used one day.
@@ -46,31 +44,21 @@ type OAuthConfig struct {
 	TokenURL     string
 }
 
-// NewOAuth validates the OAuth configuration and builds the provider.
-//
-// It fails closed: without an allowlist any GitHub account on the planet could
-// log in and get a shell on this machine, so an empty list is a startup error
-// rather than a permissive default.
+// NewOAuth validates the OAuth configuration and builds the provider. Who may
+// sign in is not decided here: that is the Allowlist, which every request
+// consults and not only this handshake.
 func NewOAuth(cfg OAuthConfig) (*OAuth, error) {
 	switch {
 	case cfg.ClientID == "":
 		return nil, errors.New("HEXAGON_GITHUB_CLIENT_ID is required")
 	case cfg.ClientSecret == "":
 		return nil, errors.New("HEXAGON_GITHUB_CLIENT_SECRET is required")
-	case len(cfg.AllowedUsers) == 0:
-		return nil, errors.New("HEXAGON_ALLOWED_USERS is required: list the GitHub logins allowed to sign in")
-	}
-
-	allowed := make(map[string]bool, len(cfg.AllowedUsers))
-	for _, login := range cfg.AllowedUsers {
-		allowed[strings.ToLower(login)] = true
 	}
 
 	return &OAuth{
 		clientID:     cfg.ClientID,
 		clientSecret: cfg.ClientSecret,
 		redirectURI:  strings.TrimRight(cfg.PublicURL, "/") + "/api/auth/callback",
-		allowed:      allowed,
 		authorizeURL: orDefault(cfg.AuthorizeURL, defaultAuthorizeURL),
 		tokenURL:     orDefault(cfg.TokenURL, defaultTokenURL),
 		http:         &http.Client{Timeout: 15 * time.Second},
@@ -86,9 +74,6 @@ func orDefault(value, fallback string) string {
 
 // RedirectURI is the callback GitHub must be configured to call.
 func (o *OAuth) RedirectURI() string { return o.redirectURI }
-
-// Allowed reports whether a GitHub login may sign in.
-func (o *OAuth) Allowed(login string) bool { return o.allowed[strings.ToLower(login)] }
 
 // AuthorizeURL is where the browser is sent to start the login.
 func (o *OAuth) AuthorizeURL(state string) string {
