@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -32,7 +33,7 @@ func testManager(t *testing.T, docker dockerx.API) (*Manager, *store.Store, stri
 	t.Cleanup(func() { st.Close() })
 
 	root := filepath.Join(t.TempDir(), "workspaces")
-	manager := NewManager(st, docker, nil, nil, Config{WorkspaceRoot: root}, slog.New(slog.DiscardHandler))
+	manager := NewManager(st, docker, nil, nil, nil, Config{WorkspaceRoot: root}, slog.New(slog.DiscardHandler))
 	return manager, st, root
 }
 
@@ -167,7 +168,7 @@ func TestIsSettled(t *testing.T) {
 // The bootstrap is the only place that teaches git inside the container how to
 // authenticate, and it has to work with images Hexagon did not build.
 func TestBootstrapScriptInstallsTheCredentialHelper(t *testing.T) {
-	script := bootstrapScript(false, true)
+	script := bootstrapScript(false, true, false)
 
 	if !strings.Contains(script, "credential.helper") {
 		t.Errorf("no credential helper in the bootstrap:\n%s", script)
@@ -181,7 +182,45 @@ func TestBootstrapScriptInstallsTheCredentialHelper(t *testing.T) {
 	}
 
 	// A session with no repository has nothing to authenticate to.
-	if script := bootstrapScript(false, false); strings.Contains(script, "credential.helper") {
+	if script := bootstrapScript(false, false, false); strings.Contains(script, "credential.helper") {
 		t.Errorf("a session with no credentials got a helper anyway:\n%s", script)
+	}
+}
+
+// The launch is only appended when the session asked for it, and it names the
+// release's fixed mount point and port.
+func TestBootstrapScriptStartsCodeServerWhenAsked(t *testing.T) {
+	script := bootstrapScript(false, false, true)
+	if !strings.Contains(script, dockerx.VSCodeMount+"/bin/code-server") {
+		t.Errorf("code-server is not started from its mount:\n%s", script)
+	}
+	if !strings.Contains(script, "--bind-addr 0.0.0.0:8443") {
+		t.Errorf("code-server does not bind the published port on every interface:\n%s", script)
+	}
+
+	if script := bootstrapScript(false, false, false); strings.Contains(script, "code-server") {
+		t.Errorf("a session without the integration got code-server anyway:\n%s", script)
+	}
+}
+
+// A server with no VSCodeSource at all must refuse the request rather than
+// provision a container that will never publish an editor.
+func TestCreateRejectsVSCodeWithNoSource(t *testing.T) {
+	ctx := context.Background()
+	manager, st, _ := testManager(t, stubDocker{})
+
+	user, err := st.UpsertUser(ctx, &store.User{GitHubLogin: "alice", GitHubID: 1})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	image, err := st.CreateImage(ctx, &store.Image{UserID: user.ID, Name: "base",
+		SourceType: store.ImageSourceDockerfile, ImageRef: "ref", Status: store.ImageStatusReady})
+	if err != nil {
+		t.Fatalf("create image: %v", err)
+	}
+
+	_, err = manager.Create(ctx, user, CreateRequest{ImageID: image.ID, VSCode: true})
+	if !errors.Is(err, ErrVSCodeUnavailable) {
+		t.Errorf("error = %v, want ErrVSCodeUnavailable", err)
 	}
 }

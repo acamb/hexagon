@@ -145,6 +145,16 @@ with how to scroll back through the output.
 brings it back with a fresh tmux, so the previous scrollback is gone. Deleting always
 removes the container, and removes the clone on disk only if you tick the box.
 
+**VS Code in the browser** — ticking the box when a session is created gives its container a
+published port and a **VS Code** button on the session page, opening `code-server` on
+`/workspace` in a new tab. It is a creation-time choice because the mount and the port are
+the container: there is no way to add them to one that already exists. The code-server
+release itself is not part of any image; it is downloaded once into the data directory the
+first time a session asks for it, and upgrading it is deleting that directory so the next
+session downloads again. Honestly: code-server answers on the host's loopback interface with
+no password of its own — Hexagon's session cookie is what stands in front of it — so any other
+process on the machine can reach a running session's editor while it is up.
+
 ## Configuration
 
 Every setting can come from a JSON configuration file or from the environment,
@@ -172,6 +182,8 @@ and has a default that suits a single user on a developer machine.
 | `HEXAGON_CLAUDE_MODEL` | `claude.model` | — | Model for that call; empty leaves the choice to the CLI |
 | `HEXAGON_GIT_USER_NAME` | `git.userName` | — | Git identity for clones and container commits (from M3) |
 | `HEXAGON_GIT_USER_EMAIL` | `git.userEmail` | — | |
+| `HEXAGON_VSCODE_DIR` | `vscode.dir` | `<data dir>/code-server` | Where the code-server release is kept, downloaded once for the machine |
+| `HEXAGON_VSCODE_VERSION` | `vscode.version` | the version Hexagon is pinned to | Release fetched when `vscode.dir` is empty |
 | `DOCKER_HOST` | `docker.host` | SDK default | Docker Engine endpoint (from M2) |
 
 ### The configuration file
@@ -193,8 +205,8 @@ Four things are worth knowing:
   refuses to start on anything looser than `chmod 600`.
 - **An unknown key is an error.** A misspelled `allowedUsers` that was quietly
   ignored would be an empty allowlist, which is to say an authentication bypass.
-- **A leading `~` is expanded** in `dataDir`, `workspaceRoot` and
-  `claude.credentials`.
+- **A leading `~` is expanded** in `dataDir`, `workspaceRoot`, `claude.credentials`
+  and `vscode.dir`.
 
 Values that are `""` or absent fall through to the layer below, with one
 exception: `claude.credentials` set to `""` means *no credentials mount*, which

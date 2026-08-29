@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -12,6 +13,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/docker/go-connections/nat"
 )
 
 // AgentHome is the writable home directory a session container runs with. It is
@@ -44,6 +46,9 @@ type ContainerSpec struct {
 	Binds []string
 	// AutoRestart brings the container back after a Docker or machine restart.
 	AutoRestart bool
+	// Ports are container ports published on the host's loopback interface,
+	// with the host port left to Docker to choose.
+	Ports []int
 }
 
 // ContainerState is what Hexagon needs to know about a container's real state.
@@ -53,6 +58,11 @@ type ContainerState struct {
 	// Status is the daemon's own word: created, running, paused, restarting,
 	// removing, exited or dead.
 	Status string
+	// Ports maps a published container port to the host port Docker chose for
+	// it. Docker picks a new host port every time the container starts, so this
+	// is never stored — only looked up. Nil when the container publishes
+	// nothing.
+	Ports map[int]int
 }
 
 // ManagedContainer is one of Hexagon's containers as the daemon sees it.
@@ -77,6 +87,17 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (strin
 	hostConfig := &container.HostConfig{Binds: spec.Binds}
 	if spec.AutoRestart {
 		hostConfig.RestartPolicy = container.RestartPolicy{Name: container.RestartPolicyUnlessStopped}
+	}
+	if len(spec.Ports) > 0 {
+		config.ExposedPorts = nat.PortSet{}
+		hostConfig.PortBindings = nat.PortMap{}
+		for _, p := range spec.Ports {
+			port := nat.Port(strconv.Itoa(p) + "/tcp")
+			config.ExposedPorts[port] = struct{}{}
+			// Loopback, and a port Docker picks: whoever reaches it gets an editor
+			// inside the session without being asked for anything.
+			hostConfig.PortBindings[port] = []nat.PortBinding{{HostIP: "127.0.0.1"}}
+		}
 	}
 
 	created, err := c.cli.ContainerCreate(ctx, config, hostConfig, nil, nil, spec.Name)
@@ -123,6 +144,21 @@ func (c *Client) InspectContainer(ctx context.Context, id string) (ContainerStat
 	if inspected.State != nil {
 		state.Running = inspected.State.Running
 		state.Status = string(inspected.State.Status)
+	}
+	if inspected.NetworkSettings != nil {
+		for port, bindings := range inspected.NetworkSettings.Ports {
+			if len(bindings) == 0 {
+				continue
+			}
+			hostPort, err := strconv.Atoi(bindings[0].HostPort)
+			if err != nil {
+				continue
+			}
+			if state.Ports == nil {
+				state.Ports = map[int]int{}
+			}
+			state.Ports[port.Int()] = hostPort
+		}
 	}
 	return state, nil
 }

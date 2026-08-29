@@ -20,6 +20,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/andrea/hexagon/internal/codeserver"
 )
 
 // Config holds the resolved configuration for one server process.
@@ -68,6 +70,11 @@ type Config struct {
 	GitUserName  string // HEXAGON_GIT_USER_NAME, git.userName
 	GitUserEmail string // HEXAGON_GIT_USER_EMAIL, git.userEmail
 
+	// VS Code integration: one code-server release kept on the host and bind
+	// mounted into every session created with it.
+	VSCodeDir     string // HEXAGON_VSCODE_DIR, vscode.dir
+	VSCodeVersion string // HEXAGON_VSCODE_VERSION, vscode.version: release fetched when VSCodeDir is empty
+
 	// Docker
 	DockerHost string // DOCKER_HOST, docker.host: empty means the SDK default
 
@@ -111,6 +118,11 @@ type file struct {
 		UserName  string `json:"userName"`
 		UserEmail string `json:"userEmail"`
 	} `json:"git"`
+
+	VSCode struct {
+		Dir     string `json:"dir"`
+		Version string `json:"version"`
+	} `json:"vscode"`
 
 	Docker struct {
 		Host string `json:"host"`
@@ -167,6 +179,9 @@ func Load(path string) (*Config, error) {
 
 		GitUserName:  pick("HEXAGON_GIT_USER_NAME", f.Git.UserName, ""),
 		GitUserEmail: pick("HEXAGON_GIT_USER_EMAIL", f.Git.UserEmail, ""),
+
+		VSCodeDir:     expandHome(home, pick("HEXAGON_VSCODE_DIR", f.VSCode.Dir, filepath.Join(dataDir, "code-server"))),
+		VSCodeVersion: pick("HEXAGON_VSCODE_VERSION", f.VSCode.Version, codeserver.DefaultVersion),
 
 		DockerHost: pick("DOCKER_HOST", f.Docker.Host, ""),
 

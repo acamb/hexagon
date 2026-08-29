@@ -65,12 +65,27 @@ func (s *Server) guardStateChanges(next http.Handler) http.Handler {
 			writeError(w, http.StatusForbidden, "cross-origin request rejected")
 			return
 		}
-		if ct := r.Header.Get("Content-Type"); !strings.HasPrefix(ct, "application/json") {
+		// The VS Code proxy carries a whole other application's traffic, which is
+		// not JSON and cannot be made to be. It stays behind requireAuth and the
+		// same-origin check like every other endpoint; only the content type rule
+		// is lifted.
+		if ct := r.Header.Get("Content-Type"); !isVSCodeProxyPath(r.URL.Path) && !strings.HasPrefix(ct, "application/json") {
 			writeError(w, http.StatusUnsupportedMediaType, "expected Content-Type: application/json")
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// isVSCodeProxyPath reports whether p is the VS Code proxy for some session,
+// with or without the trailing path code-server itself is asked for.
+func isVSCodeProxyPath(p string) bool {
+	rest, ok := strings.CutPrefix(p, "/api/sessions/")
+	if !ok {
+		return false
+	}
+	_, after, ok := strings.Cut(rest, "/")
+	return ok && (after == "vscode" || strings.HasPrefix(after, "vscode/"))
 }
 
 func isSafeMethod(method string) bool {

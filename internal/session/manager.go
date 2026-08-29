@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -43,6 +44,15 @@ const TmuxSession = "main"
 var (
 	ErrImageNotFound = errors.New("image not found")
 	ErrImageNotReady = errors.New("image is not ready")
+	// ErrVSCodeUnavailable reports a session asking for the VS Code integration
+	// when the server has no way to provide a code-server release.
+	ErrVSCodeUnavailable = errors.New("vscode integration is not available")
+	// ErrVSCodeDisabled reports a session that was not created with the VS Code
+	// integration.
+	ErrVSCodeDisabled = errors.New("session was not created with vscode")
+	// ErrVSCodeNotReady reports a session whose container is not yet publishing
+	// code-server: not running, or started before the port binding exists.
+	ErrVSCodeNotReady = errors.New("vscode is not ready in this session yet")
 )
 
 // CredentialSource hands over the git credentials for one of a user's connected
@@ -65,6 +75,13 @@ func (GitCloner) Clone(ctx context.Context, opts gitops.Options) error {
 	return gitops.Clone(ctx, opts)
 }
 
+// VSCodeSource provides the code-server release to bind mount into a session
+// created with the integration. It is nil when the server has no way to get
+// one, which a session is told about rather than being failed silently.
+type VSCodeSource interface {
+	Ensure(ctx context.Context) (string, error)
+}
+
 // Config is what the manager needs from the process configuration.
 type Config struct {
 	WorkspaceRoot string
@@ -84,13 +101,16 @@ type Manager struct {
 	docker      dockerx.API
 	cloner      Cloner
 	credentials CredentialSource
-	cfg         Config
-	log         *slog.Logger
+	// vscode provides the code-server release for sessions created with the
+	// integration. Nil is legal: it means the server has none to offer.
+	vscode VSCodeSource
+	cfg    Config
+	log    *slog.Logger
 }
 
 // NewManager wires the orchestrator.
-func NewManager(st *store.Store, docker dockerx.API, cloner Cloner, credentials CredentialSource, cfg Config, log *slog.Logger) *Manager {
-	return &Manager{store: st, docker: docker, cloner: cloner, credentials: credentials, cfg: cfg, log: log}
+func NewManager(st *store.Store, docker dockerx.API, cloner Cloner, credentials CredentialSource, vscode VSCodeSource, cfg Config, log *slog.Logger) *Manager {
+	return &Manager{store: st, docker: docker, cloner: cloner, credentials: credentials, vscode: vscode, cfg: cfg, log: log}
 }
 
 // CreateRequest describes the session to set up. The repository is named by the
@@ -116,6 +136,10 @@ type CreateRequest struct {
 	// using them for the clone. Off means the session can read the repository
 	// it was created with and authenticate to nothing.
 	PropagateToken bool
+	// VSCode asks for the container to publish code-server and have the
+	// release bind mounted. Decided here because the mount and the port
+	// binding are properties of the container, fixed when it is created.
+	VSCode bool
 }
 
 // Create records the session and provisions it in the background. It returns as
@@ -129,6 +153,9 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 		return nil, err
 	case image.Status != store.ImageStatusReady:
 		return nil, fmt.Errorf("%w: %s is %s", ErrImageNotReady, image.Name, image.Status)
+	}
+	if req.VSCode && m.vscode == nil {
+		return nil, ErrVSCodeUnavailable
 	}
 
 	// A session attached to no account has nothing to unseal: no clone to
@@ -170,6 +197,7 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 		RepoDir:        filepath.Join(workspace, "repo"),
 		AutoClaude:     req.AutoClaude,
 		PropagateToken: req.PropagateToken,
+		VSCode:         req.VSCode,
 		Status:         store.SessionStatusCreating,
 	})
 	if err != nil {
@@ -230,8 +258,17 @@ func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, cr
 		return fmt.Errorf("create workspace: %w", err)
 	}
 
+	var vscodeDir string
+	if session.VSCode {
+		dir, err := m.vscode.Ensure(ctx)
+		if err != nil {
+			return fmt.Errorf("prepare vscode: %w", err)
+		}
+		vscodeDir = dir
+	}
+
 	m.setStatus(session.ID, store.SessionStatusCreating, "")
-	containerID, err := m.docker.CreateContainer(ctx, m.containerSpec(session, homeDir, credentials))
+	containerID, err := m.docker.CreateContainer(ctx, m.containerSpec(session, homeDir, vscodeDir, credentials))
 	if err != nil {
 		return err
 	}
@@ -287,7 +324,7 @@ func seedClaudeConfig(homeDir string) error {
 }
 
 // containerSpec is the whole contract between Hexagon and a session container.
-func (m *Manager) containerSpec(session *store.Session, homeDir string, credentials provider.GitAuth) dockerx.ContainerSpec {
+func (m *Manager) containerSpec(session *store.Session, homeDir, vscodeDir string, credentials provider.GitAuth) dockerx.ContainerSpec {
 	env := []string{
 		"HOME=" + dockerx.AgentHome,
 		"TERM=xterm-256color",
@@ -333,6 +370,15 @@ func (m *Manager) containerSpec(session *store.Session, homeDir string, credenti
 				"path", path, "err", err)
 		}
 	}
+	var ports []int
+	if vscodeDir != "" {
+		// Read-only: the container gets to run the editor, not to modify it.
+		// Everything code-server writes goes under $HOME, which is already a
+		// bind mount of the session's own directory, so its settings and
+		// extensions survive a restart.
+		binds = append(binds, vscodeDir+":"+dockerx.VSCodeMount+":ro")
+		ports = []int{dockerx.VSCodePort}
+	}
 
 	return dockerx.ContainerSpec{
 		Name:  containerNamePrefix + session.ID,
@@ -349,6 +395,7 @@ func (m *Manager) containerSpec(session *store.Session, homeDir string, credenti
 		},
 		Binds:       binds,
 		AutoRestart: true,
+		Ports:       ports,
 	}
 }
 
@@ -394,7 +441,7 @@ const containerCredentialHelper = `!f(){ echo "username=$` + gitUserEnv + `"; ec
 // Whether Claude Code starts by itself is decided here, once, because it is the
 // command the tmux session is created with — which is why flipping the switch
 // on a running session only shows up the next time it starts.
-func bootstrapScript(autoClaude, credentials bool) string {
+func bootstrapScript(autoClaude, credentials, vscode bool) string {
 	newSession := "tmux new-session -d -s " + TmuxSession + " -c " + dockerx.WorkspaceMount
 	if autoClaude {
 		newSession += " '" + claudeCommand + "'"
@@ -405,8 +452,34 @@ func bootstrapScript(autoClaude, credentials bool) string {
 	if credentials {
 		script += "git config --global credential.helper '" + containerCredentialHelper + "'\n"
 	}
-	return script + "tmux has-session -t " + TmuxSession + " 2>/dev/null || " + newSession
+	script += "tmux has-session -t " + TmuxSession + " 2>/dev/null || " + newSession + "\n"
+	if vscode {
+		script += vscodeCommand + "\n"
+	}
+	return strings.TrimSuffix(script, "\n")
 }
+
+// vscodeCommand starts code-server detached, when the session asks for it.
+//
+// It is started with its output redirected to a file rather than left attached:
+// RunExec only returns once nothing holds its stdout open, so a background
+// process that inherited the pipe would hold provisioning open for as long as
+// the editor ran.
+//
+// It binds 0.0.0.0 and not loopback: a published port is forwarded to the
+// container's own interface, and a server on the container's loopback would
+// never see a packet — a failure that looks exactly like a server that did not
+// start.
+//
+// The guard is a pid file rather than pgrep because the bootstrap runs as
+// `sh -c "<script>"`, so its own command line contains the code-server path and
+// `pgrep -f` would match it every time and never start anything.
+var vscodeCommand = `if ! kill -0 "$(cat /tmp/hexagon-code-server.pid 2>/dev/null)" 2>/dev/null; then
+  nohup ` + dockerx.VSCodeMount + `/bin/code-server --bind-addr 0.0.0.0:` + strconv.Itoa(dockerx.VSCodePort) + ` --auth none \
+    --disable-telemetry --disable-update-check --disable-workspace-trust \
+    ` + dockerx.WorkspaceMount + ` >/tmp/hexagon-code-server.log 2>&1 &
+  echo $! >/tmp/hexagon-code-server.pid
+fi`
 
 func (m *Manager) bootstrap(ctx context.Context, session *store.Session) error {
 	containerID := session.ContainerID
@@ -418,7 +491,7 @@ func (m *Manager) bootstrap(ctx context.Context, session *store.Session) error {
 	//
 	// The provider, not the clone URL, is what says the environment has them: a
 	// session created without a repository can still have asked for a token.
-	script := bootstrapScript(session.AutoClaude, session.PropagateToken && session.Provider != "")
+	script := bootstrapScript(session.AutoClaude, session.PropagateToken && session.Provider != "", session.VSCode)
 	output, code, err := m.docker.RunExec(ctx, containerID, []string{"sh", "-c", script})
 	if err != nil {
 		return fmt.Errorf("bootstrap: %w", err)

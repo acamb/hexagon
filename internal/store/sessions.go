@@ -53,12 +53,16 @@ type Session struct {
 	// It is read when the container is created, and a container's environment
 	// cannot be changed afterwards, so it is decided once and never edited.
 	PropagateToken bool
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	// VSCode is whether this session's container publishes code-server and has
+	// the release bind mounted. Set at creation only: a container keeps the
+	// mounts and the port bindings it was created with, so there is no setter.
+	VSCode    bool
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 const sessionColumns = `id, user_id, title, provider, repo_full_name, repo_clone_url, branch, image_id, image_ref,
-	workspace_dir, repo_dir, container_id, status, error, auto_claude, propagate_token, created_at, updated_at`
+	workspace_dir, repo_dir, container_id, status, error, auto_claude, propagate_token, vscode, created_at, updated_at`
 
 // SessionByID returns one of the user's sessions, or ErrNotFound.
 func (s *Store) SessionByID(ctx context.Context, userID, id string) (*Session, error) {
@@ -80,7 +84,7 @@ func scanSession(row scanner) (*Session, error) {
 	err := row.Scan(&session.ID, &session.UserID, &session.Title, &session.Provider, &session.RepoFullName,
 		&session.RepoCloneURL, &session.Branch, &session.ImageID, &session.ImageRef,
 		&session.WorkspaceDir, &session.RepoDir, &session.ContainerID, &session.Status,
-		&session.Error, &session.AutoClaude, &session.PropagateToken, &createdAt, &updatedAt)
+		&session.Error, &session.AutoClaude, &session.PropagateToken, &session.VSCode, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -103,10 +107,10 @@ func (s *Store) CreateSession(ctx context.Context, session *Session) (*Session, 
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (`+sessionColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.UserID, session.Title, session.Provider, session.RepoFullName, session.RepoCloneURL,
 		session.Branch, session.ImageID, session.ImageRef, session.WorkspaceDir, session.RepoDir,
-		session.ContainerID, session.Status, session.Error, session.AutoClaude, session.PropagateToken,
+		session.ContainerID, session.Status, session.Error, session.AutoClaude, session.PropagateToken, session.VSCode,
 		formatTime(now), formatTime(now))
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)

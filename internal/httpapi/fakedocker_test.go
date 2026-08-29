@@ -14,6 +14,9 @@ import (
 type fakeContainer struct {
 	spec    dockerx.ContainerSpec
 	running bool
+	// ports is the host binding InspectContainer reports for each of the
+	// container's published ports, set by a test through setContainerPort.
+	ports map[int]int
 }
 
 func (f *fakeDocker) CreateContainer(_ context.Context, spec dockerx.ContainerSpec) (string, error) {
@@ -75,7 +78,7 @@ func (f *fakeDocker) InspectContainer(_ context.Context, id string) (dockerx.Con
 	if container.running {
 		status = "running"
 	}
-	return dockerx.ContainerState{ID: id, Running: container.running, Status: status}, nil
+	return dockerx.ContainerState{ID: id, Running: container.running, Status: status, Ports: container.ports}, nil
 }
 
 func (f *fakeDocker) ListManagedContainers(context.Context) ([]dockerx.ManagedContainer, error) {
@@ -114,6 +117,22 @@ func (f *fakeDocker) addContainer(id string, running bool) {
 		f.containers = map[string]*fakeContainer{}
 	}
 	f.containers[id] = &fakeContainer{running: running}
+}
+
+// setContainerPort makes InspectContainer report a host binding for one of a
+// container's published ports, the way a running container would once Docker
+// has picked one.
+func (f *fakeDocker) setContainerPort(id string, containerPort, hostPort int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	container, ok := f.containers[id]
+	if !ok {
+		return
+	}
+	if container.ports == nil {
+		container.ports = map[int]int{}
+	}
+	container.ports[containerPort] = hostPort
 }
 
 // containerSpecs returns what was asked of CreateContainer, by container id.

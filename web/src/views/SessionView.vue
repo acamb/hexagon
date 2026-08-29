@@ -151,6 +151,15 @@ onUnmounted(() => window.clearTimeout(timer))
           >
             <Spinner v-if="running === 'start'" />Start
           </button>
+          <a
+            v-if="session.vscode && session.status === 'running'"
+            class="button"
+            :href="`/api/sessions/${session.id}/vscode/`"
+            target="_blank"
+            rel="noopener"
+          >
+            VS Code
+          </a>
           <button type="button" @click="cheatsheetOpen = true">tmux keys</button>
           <button type="button" @click="router.push({ name: 'sessions' })">All sessions</button>
         </div>
@@ -252,6 +261,20 @@ button:hover:not(:disabled) {
 button:disabled {
   opacity: 0.45;
   cursor: default;
+}
+
+a.button {
+  padding: 0.35rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  text-decoration: none;
+}
+
+a.button:hover {
+  border-color: var(--accent);
 }
 
 .terminal {

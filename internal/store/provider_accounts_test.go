@@ -136,6 +136,11 @@ func TestMigrationMovesTheGitHubTokenOutOfUsers(t *testing.T) {
 	if !session.PropagateToken {
 		t.Error("propagateToken = false, want the token an existing container already carries")
 	}
+	// And with the integration off: its container has neither the mount nor the
+	// published port, and any other value would be a lie about what is inside it.
+	if session.VSCode {
+		t.Error("vscode = true, want off for a session whose container predates the integration")
+	}
 
 	// And the column it was copied from is gone: two places holding one secret
 	// is what this migration exists to prevent.

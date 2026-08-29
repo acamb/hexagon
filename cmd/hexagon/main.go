@@ -18,6 +18,7 @@ import (
 	"github.com/andrea/hexagon/internal/auth"
 	"github.com/andrea/hexagon/internal/bitbucket"
 	"github.com/andrea/hexagon/internal/claudex"
+	"github.com/andrea/hexagon/internal/codeserver"
 	"github.com/andrea/hexagon/internal/config"
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/github"
@@ -164,9 +165,11 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 	repos := provider.NewLister(providers, logins, provider.DefaultRepoTTL)
 	credentials := auth.NewGitCredentialSource(logins, providers)
 
+	vscode := codeserver.New(codeserver.Config{Dir: cfg.VSCodeDir, Version: cfg.VSCodeVersion})
+
 	// Containers run as the user running the server, so files written into the
 	// bind mounted clone stay owned by them rather than by root.
-	sessions := session.NewManager(st, docker, session.GitCloner{}, credentials, session.Config{
+	sessions := session.NewManager(st, docker, session.GitCloner{}, credentials, vscode, session.Config{
 		WorkspaceRoot:     cfg.WorkspaceRoot,
 		ClaudeCredentials: cfg.ClaudeCredentials,
 		AnthropicAPIKey:   cfg.AnthropicAPIKey,

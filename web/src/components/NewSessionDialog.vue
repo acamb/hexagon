@@ -40,6 +40,10 @@ const autoClaude = ref(true)
 // session the clone and nothing to authenticate with, and unlike the switch
 // above it cannot be changed later.
 const propagateToken = ref(true)
+// Off by default, unlike the two switches above: it costs a mount and a
+// published port, and a session that never opens the editor should carry
+// neither. It has to be chosen now because the container is built for it.
+const vscode = ref(false)
 // A session with no repository at all: an empty /workspace, and whatever the
 // user does in it.
 const withoutRepo = ref(false)
@@ -117,6 +121,7 @@ async function submit() {
             title: title.value.trim() || undefined,
             autoClaude: autoClaude.value,
             propagateToken: tokenProvider.value !== '',
+            vscode: vscode.value,
           }
         : {
             provider: selected.value!.provider,
@@ -126,6 +131,7 @@ async function submit() {
             title: title.value.trim() || undefined,
             autoClaude: autoClaude.value,
             propagateToken: propagateToken.value,
+            vscode: vscode.value,
           },
     )
     emit('created', session)
@@ -274,6 +280,17 @@ onMounted(() => load())
               <em>
                 The repository is cloned either way. Without the token nothing inside the session
                 can fetch or push, and this cannot be changed afterwards.
+              </em>
+            </span>
+          </label>
+
+          <label class="toggle">
+            <input type="checkbox" v-model="vscode" />
+            <span>
+              VS Code in the browser
+              <em>
+                Adds a button on the session page that opens VS Code on the workspace. It has to
+                be chosen now: the container is built for it.
               </em>
             </span>
           </label>

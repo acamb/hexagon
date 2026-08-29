@@ -54,8 +54,29 @@ type testEnv struct {
 	docker  *fakeDocker
 	cloner  *fakeCloner
 	editor  *fakeEditor
+	vscode  *fakeVSCode
 	// workspaces is the root the session manager provisions into.
 	workspaces string
+}
+
+// fakeVSCode stands in for a code-server release: Ensure just reports a fixed
+// directory, and records how many times it was asked, which is what the "an
+// existing install is never touched again" rule is about at this level.
+type fakeVSCode struct {
+	mu      sync.Mutex
+	dir     string
+	err     error
+	ensured int
+}
+
+func (f *fakeVSCode) Ensure(context.Context) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.ensured++
+	if f.err != nil {
+		return "", f.err
+	}
+	return f.dir, nil
 }
 
 // fakeCloner stands in for git. It records what it was asked to clone and
@@ -117,9 +138,10 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	repos := provider.NewLister(providers, logins, time.Minute)
 	cloner := &fakeCloner{}
 	editor := &fakeEditor{}
+	vscode := &fakeVSCode{dir: "/vscode-release"}
 	workspaces := filepath.Join(t.TempDir(), "workspaces")
 
-	sessions := session.NewManager(st, docker, cloner, auth.NewGitCredentialSource(logins, providers), session.Config{
+	sessions := session.NewManager(st, docker, cloner, auth.NewGitCredentialSource(logins, providers), vscode, session.Config{
 		WorkspaceRoot: workspaces,
 		GitUserName:   "Hexagon User",
 		GitUserEmail:  "user@example.test",
@@ -172,6 +194,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		docker:  docker,
 		cloner:  cloner,
 		editor:  editor,
+		vscode:  vscode,
 
 		workspaces: workspaces,
 		client: &http.Client{

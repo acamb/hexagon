@@ -534,6 +534,108 @@ func TestSessionCanBeCreatedWithoutTheProviderToken(t *testing.T) {
 	}
 }
 
+// vscode: true is what makes the difference: a published port, the release
+// bind mounted read-only, and a bootstrap that starts code-server.
+func TestSessionCanBeCreatedWithVSCode(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"repoFullName":"acme/widgets","imageId":%q,"vscode":true}`, image.ID)), &created)
+	if !created.VSCode {
+		t.Error("vscode = false, want the value the request asked for")
+	}
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	specs := env.docker.containerSpecs()
+	if len(specs) != 1 {
+		t.Fatalf("created %d containers, want 1", len(specs))
+	}
+	var spec dockerx.ContainerSpec
+	for _, s := range specs {
+		spec = s
+	}
+	if len(spec.Ports) != 1 || spec.Ports[0] != dockerx.VSCodePort {
+		t.Errorf("ports = %v, want [%d]", spec.Ports, dockerx.VSCodePort)
+	}
+	if !contains(spec.Binds, "/vscode-release:"+dockerx.VSCodeMount+":ro") {
+		t.Errorf("missing the read-only code-server bind in %v", spec.Binds)
+	}
+	if env.vscode.ensured != 1 {
+		t.Errorf("code-server was prepared %d times, want 1", env.vscode.ensured)
+	}
+
+	if script := env.bootstrapScript(0); !strings.Contains(script, "code-server") {
+		t.Errorf("the bootstrap does not start code-server: %s", script)
+	}
+
+	// And the choice survives a round trip, because the session page reports it.
+	var reloaded sessionResponse
+	env.decode(env.do(http.MethodGet, "/api/sessions/"+created.ID, nil), &reloaded)
+	if !reloaded.VSCode {
+		t.Error("the session does not report itself as having the integration")
+	}
+}
+
+// The default has to keep looking exactly as it did before this milestone: no
+// port, no mount, no code-server in the bootstrap.
+func TestSessionDefaultsToNoVSCode(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"repoFullName":"acme/widgets","imageId":%q}`, image.ID)), &created)
+	if created.VSCode {
+		t.Error("vscode = true, want off by default")
+	}
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	specs := env.docker.containerSpecs()
+	var spec dockerx.ContainerSpec
+	for _, s := range specs {
+		spec = s
+	}
+	if len(spec.Ports) != 0 {
+		t.Errorf("ports = %v, want none for a session created without the integration", spec.Ports)
+	}
+	for _, bind := range spec.Binds {
+		if strings.Contains(bind, dockerx.VSCodeMount) {
+			t.Errorf("code-server is bind mounted anyway: %v", spec.Binds)
+		}
+	}
+	if env.vscode.ensured != 0 {
+		t.Errorf("code-server was prepared %d times, want 0", env.vscode.ensured)
+	}
+	if script := env.bootstrapScript(0); strings.Contains(script, "code-server") {
+		t.Errorf("the bootstrap starts code-server anyway: %s", script)
+	}
+}
+
+// A release that cannot be prepared fails provisioning with the reason, the
+// same as a clone that cannot be made.
+func TestSessionFailsWhenVSCodeCannotBePrepared(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+	env.vscode.err = fmt.Errorf("no route to github.test")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"repoFullName":"acme/widgets","imageId":%q,"vscode":true}`, image.ID)), &created)
+
+	failed := env.waitForSessionStatus(created.ID, store.SessionStatusFailed)
+	if !strings.Contains(failed.Error, "no route to github.test") {
+		t.Errorf("error = %q, want the reason the release could not be prepared", failed.Error)
+	}
+}
+
 // The switch is only worth anything if it reaches the bootstrap, so this walks
 // the whole way: flip it, read it back, restart, and look at what tmux was
 // asked to run.

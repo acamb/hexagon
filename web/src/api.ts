@@ -112,6 +112,10 @@ export interface Session {
   // Decided when the session was created and never afterwards: a container
   // keeps the environment it was created with.
   propagateToken: boolean
+  // Whether the container publishes code-server and has the release bind
+  // mounted. Decided at creation, like propagateToken above: the mount and the
+  // port binding are the container.
+  vscode: boolean
   createdAt: string
 }
 
@@ -126,6 +130,9 @@ export interface NewSession {
   title?: string
   autoClaude?: boolean
   propagateToken?: boolean
+  // Off by default, unlike the two above: it costs a mount and a published
+  // port, and a session that never opens the editor should carry neither.
+  vscode?: boolean
 }
 
 // What a session's settings can be changed to after it exists. Omitted fields

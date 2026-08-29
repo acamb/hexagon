@@ -29,6 +29,11 @@
     "userEmail": ""
   },
 
+  "vscode": {
+    "dir": "",
+    "version": ""
+  },
+
   "docker": {
     "host": ""
   },

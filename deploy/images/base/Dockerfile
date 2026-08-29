@@ -3,7 +3,9 @@
 # A session image must provide git, tmux and claude on the PATH; everything else
 # is up to the image. The repository is not baked in: it arrives as a bind mount
 # on /workspace, and the container runs as the host user so the files it writes
-# stay owned by you.
+# stay owned by you. Likewise, code-server for the VS Code integration is never
+# part of this image: Hexagon bind mounts one release for every session that
+# asks for it, so it does not belong here either.
 
 FROM node:22-bookworm-slim
 

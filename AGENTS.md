@@ -125,8 +125,9 @@ name alone does not carry the intent.
 - Every query is scoped to the authenticated user (`s.user(r).ID`). Multi-user is
   not a goal, but the `WHERE user_id = ?` costs nothing and is not optional.
 - Work that takes longer than a request returns `202 Accepted` with the row in a
-  provisioning status; the UI polls. There is no SSE and no WebSocket other than
-  the terminal.
+  provisioning status; the UI polls. There is no SSE, and the only WebSockets
+  are the terminal and the VS Code proxy — the latter forwards a whole other
+  application's socket rather than speaking it.
 
 ## Store
 

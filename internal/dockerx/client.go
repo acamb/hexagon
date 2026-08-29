@@ -17,6 +17,13 @@ import (
 // container. The image does not define it: the clone is bind mounted here.
 const WorkspaceMount = "/workspace"
 
+// VSCodeMount is where the host's code-server release appears inside a session
+// container, and VSCodePort the port it listens on there. 8443 rather than
+// code-server's own 8080, which is the port a project under /workspace is
+// likeliest to want for itself.
+const VSCodeMount = "/opt/code-server"
+const VSCodePort = 8443
+
 // API is the slice of the Docker Engine API Hexagon needs. It grows with each
 // milestone; today it covers base images.
 type API interface {

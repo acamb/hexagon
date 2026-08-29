@@ -123,6 +123,11 @@ func New(deps Deps) http.Handler {
 		"POST /api/sessions/{id}/stop":    s.handleStopSession,
 		"DELETE /api/sessions/{id}":       s.handleDeleteSession,
 		"GET /api/sessions/{id}/terminal": s.handleTerminal,
+
+		// No method: every verb has to reach the proxy, including the WebSocket
+		// upgrade code-server's own terminal uses.
+		"/api/sessions/{id}/vscode":           s.handleVSCode,
+		"/api/sessions/{id}/vscode/{path...}": s.handleVSCode,
 	}
 	for pattern, handler := range protected {
 		mux.Handle(pattern, s.requireAuth(handler))

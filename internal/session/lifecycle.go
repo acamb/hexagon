@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/andrea/hexagon/internal/dockerx"
@@ -14,6 +15,30 @@ import (
 
 // ErrNoContainer reports a session that never got as far as having one.
 var ErrNoContainer = errors.New("session has no container")
+
+// VSCodeEndpoint returns the base URL of the code-server this session's
+// container publishes. It is looked up rather than stored: Docker picks a new
+// host port every time the container starts.
+func (m *Manager) VSCodeEndpoint(ctx context.Context, s *store.Session) (string, error) {
+	if !s.VSCode {
+		return "", ErrVSCodeDisabled
+	}
+	if s.ContainerID == "" {
+		return "", ErrNoContainer
+	}
+	state, err := m.docker.InspectContainer(ctx, s.ContainerID)
+	if err != nil {
+		return "", err
+	}
+	if !state.Running {
+		return "", ErrVSCodeNotReady
+	}
+	port, ok := state.Ports[dockerx.VSCodePort]
+	if !ok {
+		return "", ErrVSCodeNotReady
+	}
+	return "http://127.0.0.1:" + strconv.Itoa(port), nil
+}
 
 // Start brings a stopped session back up and makes sure tmux is running in it.
 // A container that has been restarted has an empty tmux server, so the

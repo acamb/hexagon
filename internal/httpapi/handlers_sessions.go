@@ -35,8 +35,11 @@ type sessionResponse struct {
 	AutoClaude bool   `json:"autoClaude"`
 	// PropagateToken is reported but never updated: the container carries the
 	// environment it was created with.
-	PropagateToken bool      `json:"propagateToken"`
-	CreatedAt      time.Time `json:"createdAt"`
+	PropagateToken bool `json:"propagateToken"`
+	// VSCode is reported but never updated: the mount and the port binding are
+	// the container, and there is no way to add them to one that exists.
+	VSCode    bool      `json:"vscode"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 func newSessionResponse(s *store.Session) sessionResponse {
@@ -53,6 +56,7 @@ func newSessionResponse(s *store.Session) sessionResponse {
 		Error:          s.Error,
 		AutoClaude:     s.AutoClaude,
 		PropagateToken: s.PropagateToken,
+		VSCode:         s.VSCode,
 		CreatedAt:      s.CreatedAt,
 	}
 }
@@ -106,6 +110,12 @@ type createSessionRequest struct {
 	// an agent that commits and pushes, and the switch is for the session where
 	// that is not wanted. It is only settable here — see handleUpdateSession.
 	PropagateToken *bool `json:"propagateToken"`
+	// VSCode asks for the container to publish code-server and have the
+	// release bind mounted. Unlike the two flags above it defaults to off: it
+	// costs a mount and a published port, and a session that never opens the
+	// editor should carry neither. Only settable here — the mount and the port
+	// binding are the container, and there is no way to add them afterwards.
+	VSCode *bool `json:"vscode"`
 }
 
 // handleCreateSession starts provisioning a session and returns straight away;
@@ -132,6 +142,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		ImageID:        req.ImageID,
 		AutoClaude:     req.AutoClaude == nil || *req.AutoClaude,
 		PropagateToken: req.PropagateToken == nil || *req.PropagateToken,
+		VSCode:         req.VSCode != nil && *req.VSCode,
 	}
 	if fullName := strings.TrimSpace(req.RepoFullName); fullName != "" {
 		// The clone URL is never taken from the request: it is looked up in the
@@ -168,6 +179,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, session.ErrImageNotReady):
 		writeError(w, http.StatusConflict, err.Error())
+		return
+	case errors.Is(err, session.ErrVSCodeUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "the VS Code integration is not available on this server")
 		return
 	case err != nil:
 		s.log.Error("create session", "repo", create.RepoFullName, "err", err)
