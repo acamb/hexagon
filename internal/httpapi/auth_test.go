@@ -51,6 +51,7 @@ type testEnv struct {
 	ghRepos *fakeProvider
 	bbRepos *fakeProvider
 	repos   *provider.Lister
+	cfg     *config.Config
 	docker  *fakeDocker
 	cloner  *fakeCloner
 	editor  *fakeEditor
@@ -136,7 +137,12 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	// reports canLogin, the other actually starts the container.
 	claudeCredentials := filepath.Join(workspaces, "claude", ".credentials.json")
 
-	cfg := &config.Config{Addr: "127.0.0.1:0", PublicURL: "http://127.0.0.1:8080", ClaudeCredentials: claudeCredentials}
+	cfg := &config.Config{
+		Addr: "127.0.0.1:0", PublicURL: "http://127.0.0.1:8080", ClaudeCredentials: claudeCredentials,
+		// The production defaults, so a test that is not about the limits does
+		// not have to know they exist.
+		MaxSessionsPerUser: 20, MaxConcurrentBuilds: 2, PublicRatePerMinute: 60,
+	}
 	logins := auth.NewService(st, cipher, cfg.PublicURL)
 	gh := &fakeGitHub{user: &github.User{Login: "alice", ID: 42, AvatarURL: "https://example.test/a.png"}}
 	docker := newFakeDocker()
@@ -204,6 +210,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		ghRepos: ghRepos,
 		bbRepos: bbRepos,
 		repos:   repos,
+		cfg:     cfg,
 		docker:  docker,
 		cloner:  cloner,
 		editor:  editor,

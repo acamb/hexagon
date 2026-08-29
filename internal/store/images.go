@@ -179,3 +179,17 @@ func scanImage(row scanner) (*Image, error) {
 	}
 	return &img, nil
 }
+
+// CountBuildingImages reports how many of a user's builds are in flight. A
+// build runs for as long as its Dockerfile takes and pulls whatever that
+// Dockerfile names, so the number of them at once is worth bounding.
+func (s *Store) CountBuildingImages(ctx context.Context, userID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM images WHERE user_id = ? AND status IN (?, ?)`,
+		userID, ImageStatusPending, ImageStatusBuilding).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count building images: %w", err)
+	}
+	return n, nil
+}

@@ -72,6 +72,9 @@ type Server struct {
 	log            *slog.Logger
 	frontend       fs.FS
 	started        time.Time
+	// limiter bounds what one address can ask of the routes that answer without
+	// a session.
+	limiter *ipLimiter
 }
 
 // New builds the router.
@@ -92,14 +95,18 @@ func New(deps Deps) http.Handler {
 		log:            deps.Log,
 		frontend:       deps.Frontend,
 		started:        time.Now(),
+		limiter:        newIPLimiter(deps.Config.PublicRatePerMinute),
 	}
 
 	mux := http.NewServeMux()
 
-	// Public: the health check and the login handshake itself.
-	mux.HandleFunc("GET /api/health", s.handleHealth)
-	mux.HandleFunc("GET /api/auth/login", s.handleAuthLogin)
-	mux.HandleFunc("GET /api/auth/callback", s.handleAuthCallback)
+	// Public: the health check and the login handshake itself. These are the
+	// only routes an unauthenticated caller reaches, so they are the only ones
+	// that need a limit of their own; everything else is bounded by having to
+	// hold a session first.
+	mux.HandleFunc("GET /api/health", s.limitPublic(s.handleHealth))
+	mux.HandleFunc("GET /api/auth/login", s.limitPublic(s.handleAuthLogin))
+	mux.HandleFunc("GET /api/auth/callback", s.limitPublic(s.handleAuthCallback))
 
 	// Authenticated.
 	protected := map[string]http.HandlerFunc{
@@ -152,9 +159,19 @@ func New(deps Deps) http.Handler {
 	return requestLogger(s.log, s.securityHeaders(s.guardStateChanges(mux)))
 }
 
-// handleHealth reports whether the process can serve traffic. It touches the
-// database so a broken data directory shows up here rather than on first use.
+// handleHealth reports whether the process can serve traffic.
+//
+// Without a session the answer is that and nothing more. Whether the Docker
+// daemon is reachable, how long this process has been up and whether its
+// database is answering are facts about the machine, and this route is open to
+// anyone who can reach the port. With a session it touches the database, so a
+// broken data directory shows up here rather than on first use.
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
+	if _, err := s.auth.Authenticate(r.Context(), r); err != nil {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+		return
+	}
+
 	body := map[string]any{
 		"status": "ok",
 		"uptime": time.Since(s.started).Round(time.Second).String(),

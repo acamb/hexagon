@@ -196,6 +196,9 @@ and has a default that suits a single user on a developer machine.
 | `HEXAGON_VSCODE_DIR` | `vscode.dir` | `<data dir>/code-server` | Where the code-server release is kept, downloaded once for the machine |
 | `HEXAGON_VSCODE_VERSION` | `vscode.version` | the version Hexagon is pinned to | Release fetched when `vscode.dir` is empty |
 | `DOCKER_HOST` | `docker.host` | SDK default | Docker Engine endpoint (from M2) |
+| `HEXAGON_MAX_SESSIONS_PER_USER` | `limits.maxSessionsPerUser` | `20` | Sessions one account may have at once; creating another answers 429 |
+| `HEXAGON_MAX_CONCURRENT_BUILDS` | `limits.maxConcurrentBuilds` | `2` | Image builds one account may have in flight |
+| `HEXAGON_PUBLIC_RATE_PER_MINUTE` | `limits.publicRatePerMinute` | `60` | Requests a minute, per client address, to the routes that answer without a session |
 
 ### The configuration file
 
@@ -310,6 +313,11 @@ deploy/images/      base image definitions for session containers (from M2)
   put a TLS reverse proxy in front and leave the bind where it is: the server
   refuses to start on a listen address the network can reach unless
   `publicUrl` is https, or `insecureHttp` says the plaintext is deliberate.
+- The routes that answer without a session — the health check and the login
+  handshake — are rate limited per client address, and the health check tells an
+  unauthenticated caller only that the server is up. Behind the proxy the
+  address comes from `X-Forwarded-For`, which is believed only because the peer
+  is loopback; exposed directly, the header is ignored.
 - A mutating API call is refused unless it shows a same-origin signal — a
   matching `Origin`, or `Sec-Fetch-Site: same-origin` — and a JSON content type.
   `SameSite=Lax` is a browser default, not something this server enforces.

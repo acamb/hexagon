@@ -22,6 +22,7 @@ func isolate(t *testing.T) string {
 		"HEXAGON_DATA_DIR", "HEXAGON_WORKSPACE_ROOT", "HEXAGON_SECRET_KEY",
 		"HEXAGON_DEBUG", "HEXAGON_GITHUB_CLIENT_ID", "HEXAGON_GITHUB_CLIENT_SECRET",
 		"HEXAGON_INSECURE_HTTP", "HEXAGON_ALLOWED_USERS", "HEXAGON_GITHUB_API_URL",
+		"HEXAGON_MAX_SESSIONS_PER_USER", "HEXAGON_MAX_CONCURRENT_BUILDS", "HEXAGON_PUBLIC_RATE_PER_MINUTE",
 		"HEXAGON_CLAUDE_CREDENTIALS", "ANTHROPIC_API_KEY",
 		"HEXAGON_GIT_USER_NAME", "HEXAGON_GIT_USER_EMAIL", "DOCKER_HOST",
 	} {
@@ -133,7 +134,8 @@ func TestLoadReadsEverySettingFromTheFile(t *testing.T) {
 		},
 		"claude": {"credentials": "/etc/creds.json", "anthropicApiKey": "sk-ant"},
 		"git": {"userName": "Andrea", "userEmail": "andrea@example.com"},
-		"docker": {"host": "tcp://127.0.0.1:2375"}
+		"docker": {"host": "tcp://127.0.0.1:2375"},
+		"limits": {"maxSessionsPerUser": 5, "maxConcurrentBuilds": 1, "publicRatePerMinute": 10}
 	}`)
 
 	cfg, err := Load(path)
@@ -173,6 +175,19 @@ func TestLoadReadsEverySettingFromTheFile(t *testing.T) {
 	}
 	if !cfg.InsecureHTTP {
 		t.Error("InsecureHTTP = false, want the file's true")
+	}
+	for _, c := range []struct {
+		field string
+		got   int
+		want  int
+	}{
+		{"MaxSessionsPerUser", cfg.MaxSessionsPerUser, 5},
+		{"MaxConcurrentBuilds", cfg.MaxConcurrentBuilds, 1},
+		{"PublicRatePerMinute", cfg.PublicRatePerMinute, 10},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s = %d, want %d", c.field, c.got, c.want)
+		}
 	}
 	if base64.StdEncoding.EncodeToString(cfg.SecretKey) != key {
 		t.Error("SecretKey is not the one the file supplied")
@@ -391,6 +406,48 @@ func TestIsLoopbackAddr(t *testing.T) {
 	for _, addr := range exposed {
 		if isLoopbackAddr(addr) {
 			t.Errorf("isLoopbackAddr(%q) = true, want false", addr)
+		}
+	}
+}
+
+// Each limit bounds something, so an unusable value has to stop the server
+// rather than quietly become the default.
+func TestLoadRejectsAnUnusableLimit(t *testing.T) {
+	for name, value := range map[string]string{
+		"not a number": "many",
+		"negative":     "-1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			isolate(t)
+			t.Setenv("HEXAGON_DATA_DIR", t.TempDir())
+			t.Setenv("HEXAGON_MAX_SESSIONS_PER_USER", value)
+
+			if _, err := Load(""); err == nil {
+				t.Errorf("Load accepted HEXAGON_MAX_SESSIONS_PER_USER=%q", value)
+			}
+		})
+	}
+}
+
+func TestLoadDefaultsTheLimits(t *testing.T) {
+	isolate(t)
+	t.Setenv("HEXAGON_DATA_DIR", t.TempDir())
+
+	cfg, err := Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, c := range []struct {
+		field string
+		got   int
+		want  int
+	}{
+		{"MaxSessionsPerUser", cfg.MaxSessionsPerUser, 20},
+		{"MaxConcurrentBuilds", cfg.MaxConcurrentBuilds, 2},
+		{"PublicRatePerMinute", cfg.PublicRatePerMinute, 60},
+	} {
+		if c.got != c.want {
+			t.Errorf("%s = %d, want the default %d", c.field, c.got, c.want)
 		}
 	}
 }

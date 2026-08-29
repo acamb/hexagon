@@ -20,6 +20,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/andrea/hexagon/internal/codeserver"
@@ -78,6 +79,13 @@ type Config struct {
 	// Docker
 	DockerHost string // DOCKER_HOST, docker.host: empty means the SDK default
 
+	// Limits. They are settings rather than constants because the right numbers
+	// depend on the machine: an operator with room to spare will want different
+	// ones.
+	MaxSessionsPerUser  int // HEXAGON_MAX_SESSIONS_PER_USER, limits.maxSessionsPerUser
+	MaxConcurrentBuilds int // HEXAGON_MAX_CONCURRENT_BUILDS, limits.maxConcurrentBuilds
+	PublicRatePerMinute int // HEXAGON_PUBLIC_RATE_PER_MINUTE, limits.publicRatePerMinute
+
 	// Debug turns on debug level logging.
 	Debug bool // HEXAGON_DEBUG, debug
 }
@@ -128,6 +136,12 @@ type file struct {
 	Docker struct {
 		Host string `json:"host"`
 	} `json:"docker"`
+
+	Limits struct {
+		MaxSessionsPerUser  int `json:"maxSessionsPerUser"`
+		MaxConcurrentBuilds int `json:"maxConcurrentBuilds"`
+		PublicRatePerMinute int `json:"publicRatePerMinute"`
+	} `json:"limits"`
 }
 
 // Load resolves the configuration, creates the data directories and resolves
@@ -143,6 +157,19 @@ func Load(path string) (*Config, error) {
 	}
 
 	f, from, err := loadFile(path)
+	if err != nil {
+		return nil, err
+	}
+
+	maxSessions, err := pickInt("HEXAGON_MAX_SESSIONS_PER_USER", f.Limits.MaxSessionsPerUser, 20)
+	if err != nil {
+		return nil, err
+	}
+	maxBuilds, err := pickInt("HEXAGON_MAX_CONCURRENT_BUILDS", f.Limits.MaxConcurrentBuilds, 2)
+	if err != nil {
+		return nil, err
+	}
+	publicRate, err := pickInt("HEXAGON_PUBLIC_RATE_PER_MINUTE", f.Limits.PublicRatePerMinute, 60)
 	if err != nil {
 		return nil, err
 	}
@@ -178,6 +205,10 @@ func Load(path string) (*Config, error) {
 		VSCodeVersion: pick("HEXAGON_VSCODE_VERSION", f.VSCode.Version, codeserver.DefaultVersion),
 
 		DockerHost: pick("DOCKER_HOST", f.Docker.Host, ""),
+
+		MaxSessionsPerUser:  maxSessions,
+		MaxConcurrentBuilds: maxBuilds,
+		PublicRatePerMinute: publicRate,
 
 		Debug: pickBool("HEXAGON_DEBUG", f.Debug),
 	}
@@ -355,6 +386,28 @@ func pick(key, fromFile, def string) string {
 // also the layer an operator reads back later.
 func pickBool(key string, fromFile bool) bool {
 	return os.Getenv(key) != "" || fromFile
+}
+
+// pickInt resolves a numeric setting. A value that is not a positive number is
+// an error rather than a silent fall back to the default: every one of these
+// bounds something, and a zero or a typo would either refuse all work or, worse,
+// read as "no limit".
+func pickInt(key string, fromFile, def int) (int, error) {
+	value := fromFile
+	if raw := os.Getenv(key); raw != "" {
+		n, err := strconv.Atoi(strings.TrimSpace(raw))
+		if err != nil {
+			return 0, fmt.Errorf("%s: %q is not a number", key, raw)
+		}
+		value = n
+	}
+	switch {
+	case value == 0:
+		return def, nil
+	case value < 0:
+		return 0, fmt.Errorf("%s: %d is not a usable limit", key, value)
+	}
+	return value, nil
 }
 
 // allowedUsers reads the allowlist from whichever layer supplies one. The

@@ -197,6 +197,19 @@ func (s *Server) handleCreateImage(w http.ResponseWriter, r *http.Request) {
 	}
 	img.UserID = s.user(r).ID
 
+	// A build runs for as long as its Dockerfile takes and pulls whatever that
+	// Dockerfile names, so only so many run at once.
+	switch building, err := s.store.CountBuildingImages(r.Context(), img.UserID); {
+	case err != nil:
+		s.log.Error("count builds in flight", "err", err)
+		writeError(w, http.StatusInternalServerError, "cannot create image")
+		return
+	case building >= s.cfg.MaxConcurrentBuilds:
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf(
+			"at most %d builds at a time: wait for one to finish", s.cfg.MaxConcurrentBuilds))
+		return
+	}
+
 	// Fail here rather than leaving a row that mysteriously never builds.
 	if err := s.docker.Ping(r.Context()); err != nil {
 		s.log.Error("docker unreachable", "err", err)

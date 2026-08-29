@@ -131,6 +131,20 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Before anything is provisioned: a session is a container, a clone on disk
+	// and a workspace directory, and refusing after any of that exists would
+	// leave the mess behind.
+	switch live, err := s.store.CountSessions(r.Context(), s.user(r).ID); {
+	case err != nil:
+		s.log.Error("count sessions", "err", err)
+		writeError(w, http.StatusInternalServerError, "cannot create session")
+		return
+	case live >= s.cfg.MaxSessionsPerUser:
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf(
+			"at most %d sessions at a time: delete one first", s.cfg.MaxSessionsPerUser))
+		return
+	}
+
 	if err := s.docker.Ping(r.Context()); err != nil {
 		s.log.Error("docker unreachable", "err", err)
 		writeError(w, http.StatusServiceUnavailable, "docker is unreachable")

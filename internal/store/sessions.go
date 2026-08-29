@@ -230,3 +230,15 @@ func (s *Store) FailInterruptedSessions(ctx context.Context) (int64, error) {
 	}
 	return res.RowsAffected()
 }
+
+// CountSessions reports how many sessions a user has. Every one of them is a
+// container, a clone on disk and a workspace directory, which is why there is a
+// cap on the number at all.
+func (s *Store) CountSessions(ctx context.Context, userID string) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sessions WHERE user_id = ?`, userID).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("count sessions: %w", err)
+	}
+	return n, nil
+}

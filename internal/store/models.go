@@ -99,13 +99,7 @@ func (s *Store) ListUsers(ctx context.Context) ([]*User, error) {
 	return users, rows.Err()
 }
 
-// rowScanner is what *sql.Row and *sql.Rows have in common, so one user is
-// scanned the same way whether it came from a lookup or a listing.
-type rowScanner interface {
-	Scan(dest ...any) error
-}
-
-func scanUser(row rowScanner) (*User, error) {
+func scanUser(row scanner) (*User, error) {
 	var (
 		u                      User
 		createdAt, lastLoginAt string

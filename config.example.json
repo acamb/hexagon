@@ -37,5 +37,11 @@
 
   "docker": {
     "host": ""
+  },
+
+  "limits": {
+    "maxSessionsPerUser": 20,
+    "maxConcurrentBuilds": 2,
+    "publicRatePerMinute": 60
   }
 }
