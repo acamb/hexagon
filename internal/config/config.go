@@ -62,6 +62,11 @@ type Config struct {
 
 	// SecretKey seals GitHub tokens at rest. 32 bytes.
 	SecretKey []byte // HEXAGON_SECRET_KEY, secretKey, else <DataDir>/secret.key
+	// SecretKeySource names where that key came from — the variable, the
+	// configuration file, or the generated file under DataDir. It is what the
+	// settings page shows in place of a key it must never display, and it is a
+	// string rather than an enum because the third case is a path.
+	SecretKeySource string
 
 	// Claude Code credentials handed to session containers.
 	ClaudeCredentials string // HEXAGON_CLAUDE_CREDENTIALS, claude.credentials: empty disables the mount
@@ -155,15 +160,33 @@ type file struct {
 // looked for at HEXAGON_CONFIG and then at the default location, and running
 // without one is fine.
 func Load(path string) (*Config, error) {
+	path, explicit, err := resolvePath(path)
+	if err != nil {
+		return nil, err
+	}
+	return load(path, explicit)
+}
+
+// Resolve is Load for a file that is allowed not to be there yet: it reports
+// what the configuration file at path would produce, and on a machine that has
+// never had one the answer is the defaults and the environment rather than an
+// error.
+//
+// Load goes on refusing a path that was named on the command line and is not
+// there, because ignoring a path someone asked for starts a server configured by
+// accident. The difference is that here the path is not being asked for, it is
+// being reported on: this is what the settings page compares the running process
+// against.
+func Resolve(path string) (*Config, error) {
+	return load(path, false)
+}
+
+func load(path string, explicit bool) (*Config, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, fmt.Errorf("resolve home directory: %w", err)
 	}
 
-	path, explicit, err := resolvePath(path)
-	if err != nil {
-		return nil, err
-	}
 	f, found, err := loadFile(path, explicit)
 	if err != nil {
 		return nil, err
@@ -236,11 +259,19 @@ func Load(path string) (*Config, error) {
 		}
 	}
 
-	cfg.SecretKey, err = loadSecretKey(filepath.Join(cfg.DataDir, "secret.key"),
-		pick("HEXAGON_SECRET_KEY", f.SecretKey, ""))
+	keyFile := filepath.Join(cfg.DataDir, "secret.key")
+	configured, source := os.Getenv("HEXAGON_SECRET_KEY"), "HEXAGON_SECRET_KEY"
+	if configured == "" {
+		configured, source = f.SecretKey, "the configuration file"
+	}
+	if configured == "" {
+		source = keyFile
+	}
+	cfg.SecretKey, err = loadSecretKey(keyFile, configured)
 	if err != nil {
 		return nil, err
 	}
+	cfg.SecretKeySource = source
 	return cfg, nil
 }
 

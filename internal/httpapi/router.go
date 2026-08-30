@@ -121,6 +121,8 @@ func New(deps Deps) http.Handler {
 	protected := map[string]http.HandlerFunc{
 		"GET /api/auth/me":            s.handleAuthMe,
 		"POST /api/auth/logout":       s.handleAuthLogout,
+		"GET /api/settings":           s.handleGetSettings,
+		"PUT /api/settings":           s.handleUpdateSettings,
 		"GET /api/images":             s.handleListImages,
 		"POST /api/images":            s.handleCreateImage,
 		"GET /api/images/template":    s.handleImageTemplate,

@@ -20,17 +20,20 @@ func TestUpdateKeepsEverySettingItDidNotWrite(t *testing.T) {
 	}`)
 
 	users := []string{"1234", "bob"}
-	if err := Update(path, Patch{
+	cfg, err := Update(path, Patch{
 		GitHubClientID:     str("new"),
 		GitHubClientSecret: str("shhh"),
 		AllowedUsers:       &users,
-	}); err != nil {
+	})
+	if err != nil {
 		t.Fatalf("Update: %v", err)
 	}
-
-	cfg, err := Load(path)
-	if err != nil {
+	// What Update returns is what the next start resolves, so the assertions
+	// below are about both at once.
+	if reloaded, err := Load(path); err != nil {
 		t.Fatalf("Load: %v", err)
+	} else if reloaded.GitHubClientSecret != cfg.GitHubClientSecret {
+		t.Error("Update returned a configuration the file does not produce")
 	}
 	if cfg.GitHubClientID != "new" || cfg.GitHubClientSecret != "shhh" {
 		t.Errorf("client id/secret = %q/%q, want new/shhh", cfg.GitHubClientID, cfg.GitHubClientSecret)
@@ -58,7 +61,7 @@ func TestUpdateAddsNoKeyItWasNotAskedFor(t *testing.T) {
 	isolate(t)
 	path := writeConfig(t, `{"addr": "127.0.0.1:9000"}`)
 
-	if err := Update(path, Patch{GitHubClientID: str("new")}); err != nil {
+	if _, err := Update(path, Patch{GitHubClientID: str("new")}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 
@@ -84,7 +87,7 @@ func TestUpdateCreatesTheFileWithRestrictivePermissions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "nested", "hexagon", "config.json")
 
 	users := []string{"alice"}
-	if err := Update(path, Patch{
+	if _, err := Update(path, Patch{
 		GitHubClientID: str("id"), GitHubClientSecret: str("secret"), AllowedUsers: &users,
 	}); err != nil {
 		t.Fatalf("Update: %v", err)
@@ -114,7 +117,7 @@ func TestUpdateRefusesAFileItCannotUnderstand(t *testing.T) {
 	isolate(t)
 	path := writeConfig(t, `{"nonsense": true}`)
 
-	if err := Update(path, Patch{GitHubClientID: str("new")}); err == nil {
+	if _, err := Update(path, Patch{GitHubClientID: str("new")}); err == nil {
 		t.Fatal("Update accepted a file with an unknown key, want a refusal to overwrite it")
 	}
 	data, err := os.ReadFile(path)
@@ -131,7 +134,7 @@ func TestUpdateDoesNotOutrankTheEnvironment(t *testing.T) {
 	path := writeConfig(t, `{}`)
 	t.Setenv("HEXAGON_GITHUB_CLIENT_ID", "from-the-environment")
 
-	if err := Update(path, Patch{GitHubClientID: str("from-the-wizard")}); err != nil {
+	if _, err := Update(path, Patch{GitHubClientID: str("from-the-wizard")}); err != nil {
 		t.Fatalf("Update: %v", err)
 	}
 	cfg, err := Load(path)
@@ -174,4 +177,124 @@ func keys(m map[string]any) []string {
 		out = append(out, k)
 	}
 	return out
+}
+
+func TestUpdateRemovesTheKeyOfASettingItWasAskedToClear(t *testing.T) {
+	isolate(t)
+	path := writeConfig(t, `{
+		"github": {"clientId": "old", "apiUrl": "https://ghe.example.test"},
+		"git": {"userName": "Someone"}
+	}`)
+
+	if _, err := Update(path, Patch{GitHubAPIURL: str(""), GitUserName: str("")}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	doc := readBack(t, path)
+	github, _ := doc["github"].(map[string]any)
+	if _, ok := github["apiUrl"]; ok {
+		t.Error("github.apiUrl is still there, want a cleared setting to lose its key rather than gain an empty one")
+	}
+	if github["clientId"] != "old" {
+		t.Errorf("github.clientId = %v, want its neighbour left alone", github["clientId"])
+	}
+	// git held nothing else, so the group has nothing left to say.
+	if _, ok := doc["git"]; ok {
+		t.Errorf("git = %v, want an emptied group dropped with its last setting", doc["git"])
+	}
+}
+
+func TestUpdateTellsAnEmptyClaudeCredentialFromTheDefault(t *testing.T) {
+	isolate(t)
+	path := writeConfig(t, `{}`)
+
+	// Empty is a choice here — mount nothing — so it is written rather than
+	// removed.
+	if _, err := Update(path, Patch{ClaudeCredentials: str("")}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	claude, _ := readBack(t, path)["claude"].(map[string]any)
+	if value, ok := claude["credentials"]; !ok || value != "" {
+		t.Errorf("claude.credentials = %v, present = %v, want an explicit empty string", value, ok)
+	}
+	if cfg, err := Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	} else if cfg.ClaudeCredentials != "" {
+		t.Errorf("claude credentials = %q, want no mount at all", cfg.ClaudeCredentials)
+	}
+
+	// And removing the key is the other request: back to the default path.
+	if _, err := Update(path, Patch{ClaudeCredentialsDefault: true}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if _, ok := readBack(t, path)["claude"]; ok {
+		t.Error("claude is still there, want the key removed and its emptied group with it")
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !strings.HasSuffix(cfg.ClaudeCredentials, filepath.Join(".claude", ".credentials.json")) {
+		t.Errorf("claude credentials = %q, want the default path back", cfg.ClaudeCredentials)
+	}
+}
+
+func TestUpdateRefusesAChangeTheServerCouldNotStartFrom(t *testing.T) {
+	isolate(t)
+	// An address the network can reach, which is only allowed with an https
+	// public URL. Taking that URL back to http is the shape of mistake that
+	// would leave a server refusing to boot from its own settings page.
+	path := writeConfig(t, `{"addr": "0.0.0.0:8080", "publicUrl": "https://hexagon.example.test"}`)
+
+	if _, err := Update(path, Patch{PublicURL: str("http://hexagon.example.test")}); err == nil {
+		t.Fatal("Update accepted settings Load refuses, want the candidate checked before the rename")
+	}
+
+	if doc := readBack(t, path); doc["publicUrl"] != "https://hexagon.example.test" {
+		t.Errorf("publicUrl = %v, want the file left exactly as it was", doc["publicUrl"])
+	}
+	entries, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("read the directory: %v", err)
+	}
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".config-") {
+			t.Errorf("%s survived a rejected save, want the candidate removed", entry.Name())
+		}
+	}
+}
+
+func TestCheckResolvesWithoutWritingAnything(t *testing.T) {
+	isolate(t)
+	path := writeConfig(t, `{"github": {"clientId": "old"}}`)
+
+	cfg, err := Check(path, Patch{GitHubClientID: str("new")})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if cfg.GitHubClientID != "new" {
+		t.Errorf("client id = %q, want the value the file would have", cfg.GitHubClientID)
+	}
+	if cfg.ConfigPath != path || cfg.ConfigFile != path {
+		t.Errorf("config path/file = %q/%q, want %q: the candidate file is nobody else's business",
+			cfg.ConfigPath, cfg.ConfigFile, path)
+	}
+
+	github, _ := readBack(t, path)["github"].(map[string]any)
+	if github["clientId"] != "old" {
+		t.Errorf("github.clientId = %v, want the file untouched by a Check", github["clientId"])
+	}
+}
+
+func readBack(t *testing.T, path string) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	doc := map[string]any{}
+	if err := json.Unmarshal(data, &doc); err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	return doc
 }

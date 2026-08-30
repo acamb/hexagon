@@ -207,6 +207,21 @@ session downloads again. Honestly: code-server answers on the host's loopback in
 no password of its own — Hexagon's session cookie is what stands in front of it — so any other
 process on the machine can reach a running session's editor while it is up.
 
+**Settings** — the configuration file, edited from the browser. Every key is on the page,
+grouped as the file groups them, each with the environment variable that overrides it.
+Two are shown and cannot be changed there, because a wrong value in either could not be
+corrected from the page that wrote it: the listen address, which is the port the page
+itself is behind, and the secret key, which seals every stored provider token. Everyone
+the allowlist admits can use the page — that list is also the list of administrators, and
+it cannot be saved without you in it.
+
+Only the GitHub client id, client secret and allowlist take effect when they are saved.
+Everything else is read once when the server starts, so the page shows what the process is
+running on beside what the file now says and marks the settings waiting for a restart —
+including ones changed in the file by hand. Nothing is written until the candidate file has
+been loaded successfully, so a save cannot leave behind a configuration the server refuses
+to start from.
+
 ## Configuration
 
 Every setting can come from a JSON configuration file or from the environment,
@@ -261,6 +276,10 @@ Four things are worth knowing:
   ignored would be an empty allowlist, which is to say an authentication bypass.
 - **A leading `~` is expanded** in `dataDir`, `workspaceRoot`, `claude.credentials`
   and `vscode.dir`.
+- **The Settings page writes this file**, every key except `addr` and `secretKey`.
+  It writes only what changed, removes the key of a setting left empty rather than
+  writing an empty one, and re-orders the keys alphabetically — JSON has no comments,
+  so there are none to lose.
 
 Values that are `""` or absent fall through to the layer below, with one
 exception: `claude.credentials` set to `""` means *no credentials mount*, which

@@ -17,6 +17,7 @@ async function signOut() {
       <RouterLink :to="{ name: 'sessions' }">Sessions</RouterLink>
       <RouterLink :to="{ name: 'images' }">Images</RouterLink>
       <RouterLink :to="{ name: 'accounts' }">Accounts</RouterLink>
+      <RouterLink :to="{ name: 'settings' }">Settings</RouterLink>
     </nav>
 
     <div class="account" v-if="currentUser">

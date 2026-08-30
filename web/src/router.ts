@@ -4,6 +4,7 @@ import ImagesView from './views/ImagesView.vue'
 import LoginView from './views/LoginView.vue'
 import SessionView from './views/SessionView.vue'
 import SessionsView from './views/SessionsView.vue'
+import SettingsView from './views/SettingsView.vue'
 import SetupView from './views/SetupView.vue'
 import { load } from './session'
 
@@ -13,6 +14,7 @@ export const router = createRouter({
     { path: '/', name: 'sessions', component: SessionsView },
     { path: '/images', name: 'images', component: ImagesView },
     { path: '/accounts', name: 'accounts', component: AccountsView },
+    { path: '/settings', name: 'settings', component: SettingsView },
     { path: '/sessions/:id', name: 'session', component: SessionView },
     { path: '/login', name: 'login', component: LoginView, meta: { public: true } },
     { path: '/setup', name: 'setup', component: SetupView, meta: { public: true } },

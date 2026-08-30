@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"strings"
@@ -102,21 +103,23 @@ func (s *Server) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Written only once it is known to be usable: a configuration file that
-	// cannot build a login is worse than no configuration file, because the
-	// wizard would then be writing over its own way out.
-	if err := config.Update(s.cfg.ConfigPath, config.Patch{
+	// The wizard is a settings save for a server nobody can sign in to yet, so
+	// it goes through the same apply: written only once it is known to be
+	// usable, because a configuration file that cannot build a login is worse
+	// than no configuration file — the wizard would be writing over its own way
+	// out. There is no caller to lock out of an allowlist here, which is what
+	// the nil user says.
+	if err := s.applySettings(r.Context(), nil, config.Patch{
 		GitHubClientID:     &clientID,
 		GitHubClientSecret: &clientSecret,
 		AllowedUsers:       &allowedUsers,
 	}); err != nil {
+		var rejected settingsError
+		if errors.As(err, &rejected) {
+			writeError(w, http.StatusBadRequest, rejected.Error())
+			return
+		}
 		s.log.Error("write the configuration file", "path", s.cfg.ConfigPath, "err", err)
-		writeError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-
-	if err := s.reconfigure(); err != nil {
-		s.log.Error("apply the configuration written by the first-time wizard", "err", err)
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -172,43 +175,6 @@ func (s *Server) setupStatus() setupStatusResponse {
 		}
 	}
 	return status
-}
-
-// reconfigure rebuilds the login from the configuration file on disk and hands
-// it to the gate, so the wizard finishes with a server that can be signed in to
-// rather than one that has to be restarted.
-//
-// It goes back through config.Load rather than using the values in hand. That
-// is the point of it: the file the wizard just wrote is read by the same
-// function that will read it at the next start, so a file this server would
-// refuse to boot from fails here, while the operator is still looking at the
-// form. Only the login is taken from the result — an address or a data
-// directory changed on disk in the meantime belongs to a process that has not
-// started yet.
-//
-// Load resolves the whole configuration again, directories and secret key
-// included. That is harmless because they are the ones this process is already
-// using: the environment has not changed, and creating a directory that exists
-// and reading a key that is already there are both no-ops.
-func (s *Server) reconfigure() error {
-	cfg, err := config.Load(s.cfg.ConfigPath)
-	if err != nil {
-		return err
-	}
-	allowlist, err := auth.NewAllowlist(cfg.AllowedUsers, s.store, s.log)
-	if err != nil {
-		return err
-	}
-	oauth, err := auth.NewOAuth(auth.OAuthConfig{
-		ClientID:     cfg.GitHubClientID,
-		ClientSecret: cfg.GitHubClientSecret,
-		PublicURL:    cfg.PublicURL,
-	})
-	if err != nil {
-		return err
-	}
-	s.gate.Set(oauth, allowlist)
-	return nil
 }
 
 func trimAll(values []string) []string {

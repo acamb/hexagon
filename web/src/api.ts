@@ -30,6 +30,64 @@ export interface SetupStatus {
   fromEnvironment?: string[]
 }
 
+// The settings page's whole view of the server: what the process is running on,
+// what its configuration file now says, and whether the two have drifted apart.
+// Most settings are captured when the server starts, so saving one is not the
+// same as applying it — restartRequired is that difference.
+export interface Settings {
+  configPath: string
+  writable: boolean
+  restartRequired: boolean
+  // Settings an environment variable is supplying, by their configuration file
+  // key. The variable outranks the file, so writing those here has no effect
+  // until it goes away.
+  fromEnvironment?: string[]
+  // The two secrets in the file are reported as present or absent, never sent.
+  clientSecretSet: boolean
+  anthropicApiKeySet: boolean
+  running: SettingsValues
+  saved: SettingsValues
+}
+
+export interface SettingsValues {
+  // addr and secretKeySource are shown and cannot be changed from here: a wrong
+  // value in either could not be corrected from this page afterwards.
+  addr: string
+  secretKeySource: string
+  publicUrl: string
+  insecureHttp: boolean
+  dataDir: string
+  workspaceRoot: string
+  debug: boolean
+  github: { clientId: string; allowedUsers: string[]; apiUrl: string }
+  bitbucket: { apiUrl: string }
+  claude: { credentials: string; binary: string; model: string }
+  git: { userName: string; userEmail: string }
+  vscode: { dir: string; version: string }
+  docker: { host: string }
+  limits: { maxSessionsPerUser: number; maxConcurrentBuilds: number; publicRatePerMinute: number }
+  callbackUrl: string
+}
+
+// Every field is optional: an omitted one is left alone. That is how the two
+// secrets are kept without the browser ever seeing them, and
+// `claude.credentials` uses all three states — omitted leaves it, null puts it
+// back to the default path, and "" mounts nothing.
+export interface SettingsUpdate {
+  publicUrl?: string
+  insecureHttp?: boolean
+  dataDir?: string
+  workspaceRoot?: string
+  debug?: boolean
+  github?: { clientId?: string; clientSecret?: string; allowedUsers?: string[]; apiUrl?: string }
+  bitbucket?: { apiUrl?: string }
+  claude?: { credentials?: string | null; anthropicApiKey?: string; binary?: string; model?: string }
+  git?: { userName?: string; userEmail?: string }
+  vscode?: { dir?: string; version?: string }
+  docker?: { host?: string }
+  limits?: { maxSessionsPerUser?: number; maxConcurrentBuilds?: number; publicRatePerMinute?: number }
+}
+
 export interface SetupRequest {
   password: string
   clientId: string
@@ -236,6 +294,12 @@ export const api = {
     status: () => request<SetupStatus>('/setup'),
     save: (setup: SetupRequest) =>
       request<SetupStatus>('/setup', { method: 'POST', body: JSON.stringify(setup) }),
+  },
+
+  settings: {
+    get: () => request<Settings>('/settings'),
+    save: (settings: SettingsUpdate) =>
+      request<Settings>('/settings', { method: 'PUT', body: JSON.stringify(settings) }),
   },
 
   sessions: {
