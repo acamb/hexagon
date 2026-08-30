@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,6 +29,19 @@ func (e *testEnv) readyImage(name string) imageResponse {
 // offerRepo makes a repository visible in the caller's GitHub listing.
 func (e *testEnv) offerRepo(fullName, defaultBranch string) {
 	e.ghRepos.offer(fullName, defaultBranch)
+}
+
+// containerOf finds the container the fake daemon was asked to create for a
+// session, by the label every session container carries.
+func (e *testEnv) containerOf(sessionID string) (string, dockerx.ContainerSpec) {
+	e.t.Helper()
+	for id, spec := range e.docker.containerSpecs() {
+		if spec.Labels[dockerx.LabelSessionID] == sessionID {
+			return id, spec
+		}
+	}
+	e.t.Fatalf("no container was created for session %s", sessionID)
+	return "", dockerx.ContainerSpec{}
 }
 
 func (e *testEnv) waitForSessionStatus(id, want string) sessionResponse {
@@ -846,5 +860,133 @@ func TestSessionWithoutARepositoryRefusingTheTokenDropsTheAccount(t *testing.T) 
 
 	if containerEnv := env.containerEnv(); containerEnv["GITHUB_TOKEN"] != "" {
 		t.Errorf("GITHUB_TOKEN reached a session that refused it: %v", containerEnv)
+	}
+}
+
+// A published port is a property of the container, so it is chosen when the
+// session is created and reported live afterwards: Docker picks a new host port
+// every time the container starts, so there is nothing to store.
+func TestSessionPublishesThePortsItAskedFor(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions",
+		fmt.Sprintf(`{"imageId":%q,"ports":[3000,5173]}`, image.ID)), &created)
+	if len(created.Ports) != 2 || created.Ports[0].Container != 3000 || created.Ports[1].Container != 5173 {
+		t.Fatalf("ports = %+v, want the two container ports", created.Ports)
+	}
+	// Nothing is up yet, so there is no binding to report — and saying so is the
+	// truth rather than a gap.
+	for _, p := range created.Ports {
+		if p.Host != 0 {
+			t.Errorf("port %d reported host %d before the container was running", p.Container, p.Host)
+		}
+	}
+
+	running := env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+	containerID, spec := env.containerOf(running.ID)
+	if !slices.Contains(spec.Ports, 3000) || !slices.Contains(spec.Ports, 5173) {
+		t.Errorf("container ports = %v, want both published", spec.Ports)
+	}
+
+	// Once Docker has picked the host side, the session reports the pair.
+	env.docker.setContainerPort(containerID, 3000, 49154)
+	var refreshed sessionResponse
+	env.decode(env.do(http.MethodGet, "/api/sessions/"+running.ID, nil), &refreshed)
+	found := false
+	for _, p := range refreshed.Ports {
+		if p.Container == 3000 {
+			found = p.Host == 49154
+		}
+		if p.Container == 5173 && p.Host != 0 {
+			t.Errorf("port 5173 reported host %d, want none: Docker has not bound it", p.Host)
+		}
+	}
+	if !found {
+		t.Errorf("ports = %+v, want 3000 mapped to 49154", refreshed.Ports)
+	}
+}
+
+// The VS Code integration publishes a port of its own. A session that took it
+// for something else would leave the editor's button broken for a reason nobody
+// could find, so the request is refused instead.
+func TestSessionRefusesPortsItCannotHonour(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+
+	for _, body := range []string{
+		fmt.Sprintf(`{"imageId":%q,"ports":[3000,3000]}`, image.ID),
+		fmt.Sprintf(`{"imageId":%q,"ports":[0]}`, image.ID),
+		fmt.Sprintf(`{"imageId":%q,"ports":[%d],"vscode":true}`, image.ID, dockerx.VSCodePort),
+	} {
+		if resp := env.postJSON("/api/sessions", body); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d for %s, want 400", resp.StatusCode, body)
+		}
+	}
+}
+
+// An advanced image starts a compose project, and the agent container is the
+// one the project names: that is what keeps the terminal, the bootstrap and the
+// VS Code proxy working unchanged.
+func TestSessionFromAComposeImageBringsUpTheProject(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	var image imageResponse
+	env.decode(env.postJSON("/api/images", `{"name":"advanced","sourceType":"compose",
+		"dockerfile":"FROM busybox","compose":"services:\n  db:\n    image: postgres:16\n"}`), &image)
+	env.waitForImageStatus(image.ID, store.ImageStatusReady)
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(`{"imageId":%q}`, image.ID)), &created)
+	if !created.Compose {
+		t.Error("a session from a compose image is not marked as a project")
+	}
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	env.compose.mu.Lock()
+	calls := append([]string(nil), env.compose.calls...)
+	env.compose.mu.Unlock()
+	if !slices.Contains(calls, "up") {
+		t.Errorf("compose calls = %v, want the project to have been brought up", calls)
+	}
+	// No container was created directly: the project owns them all.
+	if n := env.docker.createdContainers(); n != 0 {
+		t.Errorf("created %d containers outside the project, want none", n)
+	}
+
+	// The two halves of the project are on disk, and the generated one carries
+	// Hexagon's own service.
+	dir := filepath.Join(env.workspaces, created.ID, "compose")
+	if _, err := os.Stat(filepath.Join(dir, "user.yaml")); err != nil {
+		t.Errorf("the user's compose file was not written: %v", err)
+	}
+	overlay, err := os.ReadFile(filepath.Join(dir, "hexagon.yaml"))
+	if err != nil {
+		t.Fatalf("the generated compose file was not written: %v", err)
+	}
+	if !strings.Contains(string(overlay), "hexagon-"+created.ID) {
+		t.Errorf("the generated file does not name the agent container:\n%s", overlay)
+	}
+}
+
+// Without `docker compose` the request is refused rather than provisioned into
+// a session that could never start.
+func TestSessionFromAComposeImageWithoutCompose(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	var image imageResponse
+	env.decode(env.postJSON("/api/images", `{"name":"advanced","sourceType":"compose",
+		"dockerfile":"FROM busybox","compose":"services:\n  db:\n    image: postgres:16\n"}`), &image)
+	env.waitForImageStatus(image.ID, store.ImageStatusReady)
+
+	env.withoutCompose()
+	resp := env.postJSON("/api/sessions", fmt.Sprintf(`{"imageId":%q}`, image.ID))
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", resp.StatusCode)
 	}
 }

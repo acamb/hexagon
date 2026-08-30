@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"errors"
@@ -75,8 +76,36 @@ type migration struct {
 
 // migrate applies every embedded migration whose version is above the highest
 // one already recorded, each inside its own transaction.
+//
+// All of it happens on one connection with foreign_keys turned off, and every
+// migration is checked with foreign_key_check before it commits. That is the
+// procedure SQLite documents for a schema change, and it is not optional here:
+// a table with a CHECK constraint can only be altered by rebuilding it, and
+// dropping the old images table with enforcement on would trip
+// sessions.image_id on the way past. The pragma cannot be set from inside a
+// transaction — there it is silently a no-op — so it has to be the connection
+// that carries it, which is also why the connection is held for the whole run
+// rather than taken from the pool per statement.
+//
+// foreign_key_check is the stronger guarantee, not the weaker one: it looks at
+// the whole database after the change rather than at the rows one statement
+// happened to touch.
 func (s *Store) migrate() error {
-	if _, err := s.db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (
+	ctx := context.Background()
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("open a connection for migrations: %w", err)
+	}
+	defer conn.Close()
+
+	if _, err := conn.ExecContext(ctx, `PRAGMA foreign_keys = OFF`); err != nil {
+		return fmt.Errorf("disable foreign keys for migrations: %w", err)
+	}
+	// The connection goes back to the pool with enforcement on, whatever
+	// happened above.
+	defer conn.ExecContext(ctx, `PRAGMA foreign_keys = ON`)
+
+	if _, err := conn.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS schema_migrations (
 		version    INTEGER PRIMARY KEY,
 		name       TEXT NOT NULL,
 		applied_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -85,7 +114,7 @@ func (s *Store) migrate() error {
 	}
 
 	var current int
-	if err := s.db.QueryRow(`SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&current); err != nil {
+	if err := conn.QueryRowContext(ctx, `SELECT COALESCE(MAX(version), 0) FROM schema_migrations`).Scan(&current); err != nil {
 		return fmt.Errorf("read schema version: %w", err)
 	}
 
@@ -97,27 +126,53 @@ func (s *Store) migrate() error {
 		if m.version <= current {
 			continue
 		}
-		if err := s.apply(m); err != nil {
+		if err := apply(ctx, conn, m); err != nil {
 			return fmt.Errorf("migration %s: %w", m.name, err)
 		}
 	}
 	return nil
 }
 
-func (s *Store) apply(m migration) error {
-	tx, err := s.db.Begin()
+func apply(ctx context.Context, conn *sql.Conn, m migration) error {
+	tx, err := conn.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
 
-	if _, err := tx.Exec(m.sql); err != nil {
+	if _, err := tx.ExecContext(ctx, m.sql); err != nil {
 		return err
 	}
-	if _, err := tx.Exec(`INSERT INTO schema_migrations (version, name) VALUES (?, ?)`, m.version, m.name); err != nil {
+	if err := checkForeignKeys(ctx, tx); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations (version, name) VALUES (?, ?)`, m.version, m.name); err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// checkForeignKeys reports the first row a migration left pointing at nothing.
+// It stands in for the enforcement migrate turns off, and it names the table so
+// a broken migration is something to read rather than something to bisect.
+func checkForeignKeys(ctx context.Context, tx *sql.Tx) error {
+	rows, err := tx.QueryContext(ctx, `PRAGMA foreign_key_check`)
+	if err != nil {
+		return fmt.Errorf("check foreign keys: %w", err)
+	}
+	defer rows.Close()
+
+	if rows.Next() {
+		var (
+			table, parent string
+			rowid, fkid   sql.NullInt64
+		)
+		if err := rows.Scan(&table, &rowid, &parent, &fkid); err != nil {
+			return fmt.Errorf("check foreign keys: %w", err)
+		}
+		return fmt.Errorf("left a row in %s pointing at no %s", table, parent)
+	}
+	return rows.Err()
 }
 
 // loadMigrations reads the embedded .sql files, ordered by the numeric prefix

@@ -14,6 +14,12 @@ import (
 const (
 	ImageSourceDockerfile = "dockerfile"
 	ImageSourceRegistry   = "registry"
+	// ImageSourceCompose is a Dockerfile and a compose file together: the
+	// Dockerfile still describes the container Claude Code runs in, and the
+	// compose file the services that have to be there beside it. It builds
+	// exactly as ImageSourceDockerfile does — the compose file is a
+	// session-time concern.
+	ImageSourceCompose = "compose"
 )
 
 // Image statuses.
@@ -24,14 +30,19 @@ const (
 	ImageStatusFailed   = "failed"
 )
 
-// Image is a base image sessions can be started from: either built here from a
-// Dockerfile, or pulled from a registry.
+// Image is a base image sessions can be started from: built here from a
+// Dockerfile, pulled from a registry, or a Dockerfile with a compose file
+// naming the services a session from it also needs.
 type Image struct {
 	ID         string
 	UserID     string
 	Name       string
 	SourceType string
 	Dockerfile string
+	// Compose is the user's compose file, for a compose image. It describes the
+	// services beside the agent; the agent's own service is rendered by
+	// internal/session and never stored here.
+	Compose string
 	// RegistryRef is what the user asked to pull, for registry images.
 	RegistryRef string
 	// ImageRef is the local reference sessions run from, known once the image
@@ -43,7 +54,7 @@ type Image struct {
 	CreatedAt time.Time
 }
 
-const imageColumns = `id, user_id, name, source_type, dockerfile, registry_ref, image_ref, status, build_log, error, created_at`
+const imageColumns = `id, user_id, name, source_type, dockerfile, compose, registry_ref, image_ref, status, build_log, error, created_at`
 
 // CreateImage inserts a new image, assigning it an id. It returns ErrConflict
 // if the user already has an image with that name.
@@ -55,8 +66,8 @@ func (s *Store) CreateImage(ctx context.Context, img *Image) (*Image, error) {
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO images (`+imageColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		img.ID, img.UserID, img.Name, img.SourceType, img.Dockerfile, img.RegistryRef,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		img.ID, img.UserID, img.Name, img.SourceType, img.Dockerfile, img.Compose, img.RegistryRef,
 		img.ImageRef, img.Status, img.BuildLog, img.Error, formatTime(img.CreatedAt))
 	switch {
 	case isUniqueViolation(err):
@@ -169,7 +180,7 @@ func scanImage(row scanner) (*Image, error) {
 		img       Image
 		createdAt string
 	)
-	err := row.Scan(&img.ID, &img.UserID, &img.Name, &img.SourceType, &img.Dockerfile,
+	err := row.Scan(&img.ID, &img.UserID, &img.Name, &img.SourceType, &img.Dockerfile, &img.Compose,
 		&img.RegistryRef, &img.ImageRef, &img.Status, &img.BuildLog, &img.Error, &createdAt)
 	if err != nil {
 		return nil, err

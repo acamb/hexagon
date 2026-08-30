@@ -57,7 +57,19 @@ var (
 	// ErrClaudeLoginUnavailable reports that no credentials path is configured,
 	// so a browser login would have nowhere to write.
 	ErrClaudeLoginUnavailable = errors.New("no claude credentials path is configured")
+	// ErrComposeUnavailable reports a session from an advanced image on a
+	// server with no `docker compose` to run the project with.
+	ErrComposeUnavailable = errors.New("docker compose is not available")
+	// ErrInvalidPorts reports a create request whose published ports cannot be
+	// honoured.
+	ErrInvalidPorts = errors.New("invalid published ports")
 )
+
+// maxSessionPorts bounds what one session may publish. Each one is a listening
+// socket on the host's loopback interface with nothing in front of it, so the
+// number of them is worth a limit even though the cost of any single one is
+// small.
+const maxSessionPorts = 10
 
 // CredentialSource hands over the git credentials for one of a user's connected
 // accounts, and the Claude Code credential a user configured from the UI. It is
@@ -115,13 +127,17 @@ type Manager struct {
 	// vscode provides the code-server release for sessions created with the
 	// integration. Nil is legal: it means the server has none to offer.
 	vscode VSCodeSource
-	cfg    Config
-	log    *slog.Logger
+	// compose runs the projects of sessions made from an advanced image. Nil is
+	// legal too, and means such an image cannot start a session here.
+	compose Compose
+	cfg     Config
+	log     *slog.Logger
 }
 
 // NewManager wires the orchestrator.
-func NewManager(st *store.Store, docker dockerx.API, cloner Cloner, credentials CredentialSource, vscode VSCodeSource, cfg Config, log *slog.Logger) *Manager {
-	return &Manager{store: st, docker: docker, cloner: cloner, credentials: credentials, vscode: vscode, cfg: cfg, log: log}
+func NewManager(st *store.Store, docker dockerx.API, cloner Cloner, credentials CredentialSource, vscode VSCodeSource, compose Compose, cfg Config, log *slog.Logger) *Manager {
+	return &Manager{store: st, docker: docker, cloner: cloner, credentials: credentials,
+		vscode: vscode, compose: compose, cfg: cfg, log: log}
 }
 
 // CreateRequest describes the session to set up. The repository is named by the
@@ -151,6 +167,10 @@ type CreateRequest struct {
 	// release bind mounted. Decided here because the mount and the port
 	// binding are properties of the container, fixed when it is created.
 	VSCode bool
+	// Ports are container ports to publish on the host's loopback interface,
+	// with the host side left to Docker. Decided here for the same reason as
+	// VSCode above, and never edited afterwards.
+	Ports []int
 }
 
 // Create records the session and provisions it in the background. It returns as
@@ -167,6 +187,13 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 	}
 	if req.VSCode && m.vscode == nil {
 		return nil, ErrVSCodeUnavailable
+	}
+	compose := image.SourceType == store.ImageSourceCompose
+	if compose && m.compose == nil {
+		return nil, ErrComposeUnavailable
+	}
+	if err := checkPorts(req.Ports, req.VSCode); err != nil {
+		return nil, err
 	}
 
 	// A session attached to no account has nothing to unseal: no clone to
@@ -213,24 +240,51 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 		AutoClaude:     req.AutoClaude,
 		PropagateToken: req.PropagateToken,
 		VSCode:         req.VSCode,
+		Ports:          req.Ports,
+		Compose:        compose,
 		Status:         store.SessionStatusCreating,
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	go m.provision(session, credentials, claude)
+	go m.provision(session, image.Compose, credentials, claude)
 	return session, nil
+}
+
+// checkPorts refuses a set of published ports before anything is provisioned.
+//
+// The collision with the VS Code port is the one worth naming: without this
+// check the editor's own binding is quietly taken by something else and the
+// button stops working for a reason nobody could find.
+func checkPorts(ports []int, vscode bool) error {
+	if len(ports) > maxSessionPorts {
+		return fmt.Errorf("%w: at most %d ports", ErrInvalidPorts, maxSessionPorts)
+	}
+	seen := make(map[int]bool, len(ports))
+	for _, p := range ports {
+		switch {
+		case p < 1 || p > 65535:
+			return fmt.Errorf("%w: %d is not a port", ErrInvalidPorts, p)
+		case seen[p]:
+			return fmt.Errorf("%w: %d is listed twice", ErrInvalidPorts, p)
+		case vscode && p == dockerx.VSCodePort:
+			return fmt.Errorf("%w: %d is the port the VS Code integration publishes",
+				ErrInvalidPorts, dockerx.VSCodePort)
+		}
+		seen[p] = true
+	}
+	return nil
 }
 
 // provision walks the session from an empty directory to a running container
 // with tmux in it. It runs on its own context: a browser navigating away must
 // not cancel a clone half way through.
-func (m *Manager) provision(session *store.Session, credentials provider.GitAuth, claude claudex.Credential) {
+func (m *Manager) provision(session *store.Session, composeFile string, credentials provider.GitAuth, claude claudex.Credential) {
 	ctx, cancel := context.WithTimeout(context.Background(), provisionTimeout)
 	defer cancel()
 
-	if err := m.provisionSteps(ctx, session, credentials, claude); err != nil {
+	if err := m.provisionSteps(ctx, session, composeFile, credentials, claude); err != nil {
 		m.log.Error("provision session", "session", session.ID, "err", err)
 		m.cleanUpFailure(session)
 		m.setStatus(session.ID, store.SessionStatusFailed, err.Error())
@@ -240,7 +294,7 @@ func (m *Manager) provision(session *store.Session, credentials provider.GitAuth
 	m.log.Info("session running", "session", session.ID, "repo", session.RepoFullName)
 }
 
-func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, credentials provider.GitAuth, claude claudex.Credential) error {
+func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, composeFile string, credentials provider.GitAuth, claude claudex.Credential) error {
 	homeDir := filepath.Join(session.WorkspaceDir, "home")
 	// The container runs as the host user with HOME here, and Claude Code wants
 	// somewhere to keep its own state.
@@ -283,7 +337,16 @@ func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, cr
 	}
 
 	m.setStatus(session.ID, store.SessionStatusCreating, "")
-	containerID, err := m.docker.CreateContainer(ctx, m.containerSpec(session, homeDir, vscodeDir, credentials, claude))
+	spec := m.containerSpec(session, homeDir, vscodeDir, credentials, claude)
+
+	if session.Compose {
+		if err := m.createProject(ctx, session, composeFile, spec); err != nil {
+			return err
+		}
+		return m.bootstrap(ctx, session)
+	}
+
+	containerID, err := m.docker.CreateContainer(ctx, spec)
 	if err != nil {
 		return err
 	}
@@ -297,6 +360,37 @@ func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, cr
 		return err
 	}
 	return m.bootstrap(ctx, session)
+}
+
+// createProject brings up the compose project behind a session and records the
+// agent container as the session's own.
+//
+// The user's file is validated again here, even though the image was refused at
+// registration unless it passed: what is checked and what is run must be the
+// same text, and between the two there is a database and a restart.
+func (m *Manager) createProject(ctx context.Context, session *store.Session, composeFile string, spec dockerx.ContainerSpec) error {
+	services, err := m.compose.Validate(ctx, composeFile)
+	if err != nil {
+		return err
+	}
+	project := m.composeProject(session)
+	if err := writeComposeFiles(project.Dir, composeFile, spec, services); err != nil {
+		return err
+	}
+
+	m.setStatus(session.ID, store.SessionStatusStarting, "")
+	if err := m.compose.Up(ctx, project); err != nil {
+		return err
+	}
+
+	// The container id is learned rather than returned: compose names the
+	// container, and Docker takes that name wherever it takes an id.
+	state, err := m.docker.InspectContainer(ctx, spec.Name)
+	if err != nil {
+		return fmt.Errorf("find the agent container of the project: %w", err)
+	}
+	session.ContainerID = state.ID
+	return m.store.SetSessionContainer(ctx, session.ID, state.ID)
 }
 
 // seedClaudeConfig writes the state Claude Code keeps outside its credentials
@@ -390,14 +484,14 @@ func (m *Manager) containerSpec(session *store.Session, homeDir, vscodeDir strin
 				"path", path, "err", err)
 		}
 	}
-	var ports []int
+	ports := append([]int(nil), session.Ports...)
 	if vscodeDir != "" {
 		// Read-only: the container gets to run the editor, not to modify it.
 		// Everything code-server writes goes under $HOME, which is already a
 		// bind mount of the session's own directory, so its settings and
 		// extensions survive a restart.
 		binds = append(binds, vscodeDir+":"+dockerx.VSCodeMount+":ro")
-		ports = []int{dockerx.VSCodePort}
+		ports = append(ports, dockerx.VSCodePort)
 	}
 
 	return dockerx.ContainerSpec{
@@ -522,14 +616,25 @@ func (m *Manager) bootstrap(ctx context.Context, session *store.Session) error {
 	return nil
 }
 
-// cleanUpFailure removes a container left behind by a failed setup. The
-// workspace is deliberately kept: it is the evidence for what went wrong.
+// cleanUpFailure removes what a failed setup left behind. The workspace is
+// deliberately kept: it is the evidence for what went wrong.
+//
+// A compose session is torn down whether or not it got as far as a container
+// id, because `up` can fail with half the project standing; its volumes are
+// kept, for the same reason the workspace is.
 func (m *Manager) cleanUpFailure(session *store.Session) {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if session.Compose {
+		if err := m.compose.Down(ctx, m.composeProject(session), false); err != nil {
+			m.log.Warn("remove the project of a failed session", "session", session.ID, "err", err)
+		}
+		return
+	}
 	if session.ContainerID == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 	if err := m.docker.RemoveContainer(ctx, session.ContainerID, true); err != nil {
 		m.log.Warn("remove the container of a failed session", "session", session.ID, "err", err)
 	}

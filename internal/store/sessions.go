@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -56,13 +58,50 @@ type Session struct {
 	// VSCode is whether this session's container publishes code-server and has
 	// the release bind mounted. Set at creation only: a container keeps the
 	// mounts and the port bindings it was created with, so there is no setter.
-	VSCode    bool
+	VSCode bool
+	// Ports are the container ports this session publishes on the host's
+	// loopback interface. Set at creation only, for the same reason as VSCode
+	// above; the host port Docker picked for each is never stored, because
+	// Docker picks a new one every time the container starts.
+	Ports []int
+	// Compose is whether this session is a compose project rather than a single
+	// container. It comes from the image it was created from and, like the two
+	// above, cannot change afterwards.
+	Compose   bool
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
 
+// formatPorts and parsePorts move Session.Ports across the one TEXT column that
+// holds it. A column per port is not an option and a second table would be one
+// row per integer; a comma-separated list is what the value is.
+func formatPorts(ports []int) string {
+	out := make([]string, 0, len(ports))
+	for _, p := range ports {
+		out = append(out, strconv.Itoa(p))
+	}
+	return strings.Join(out, ",")
+}
+
+func parsePorts(raw string) ([]int, error) {
+	if raw == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	ports := make([]int, 0, len(parts))
+	for _, part := range parts {
+		p, err := strconv.Atoi(part)
+		if err != nil {
+			return nil, fmt.Errorf("parse ports %q: %w", raw, err)
+		}
+		ports = append(ports, p)
+	}
+	return ports, nil
+}
+
 const sessionColumns = `id, user_id, title, provider, repo_full_name, repo_clone_url, branch, image_id, image_ref,
-	workspace_dir, repo_dir, container_id, status, error, auto_claude, propagate_token, vscode, created_at, updated_at`
+	workspace_dir, repo_dir, container_id, status, error, auto_claude, propagate_token, vscode, ports, compose,
+	created_at, updated_at`
 
 // SessionByID returns one of the user's sessions, or ErrNotFound.
 func (s *Store) SessionByID(ctx context.Context, userID, id string) (*Session, error) {
@@ -79,13 +118,18 @@ func (s *Store) SessionByID(ctx context.Context, userID, id string) (*Session, e
 func scanSession(row scanner) (*Session, error) {
 	var (
 		session              Session
+		ports                string
 		createdAt, updatedAt string
 	)
 	err := row.Scan(&session.ID, &session.UserID, &session.Title, &session.Provider, &session.RepoFullName,
 		&session.RepoCloneURL, &session.Branch, &session.ImageID, &session.ImageRef,
 		&session.WorkspaceDir, &session.RepoDir, &session.ContainerID, &session.Status,
-		&session.Error, &session.AutoClaude, &session.PropagateToken, &session.VSCode, &createdAt, &updatedAt)
+		&session.Error, &session.AutoClaude, &session.PropagateToken, &session.VSCode, &ports, &session.Compose,
+		&createdAt, &updatedAt)
 	if err != nil {
+		return nil, err
+	}
+	if session.Ports, err = parsePorts(ports); err != nil {
 		return nil, err
 	}
 	if session.CreatedAt, err = parseTime(createdAt); err != nil {
@@ -107,11 +151,11 @@ func (s *Store) CreateSession(ctx context.Context, session *Session) (*Session, 
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (`+sessionColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.UserID, session.Title, session.Provider, session.RepoFullName, session.RepoCloneURL,
 		session.Branch, session.ImageID, session.ImageRef, session.WorkspaceDir, session.RepoDir,
 		session.ContainerID, session.Status, session.Error, session.AutoClaude, session.PropagateToken, session.VSCode,
-		formatTime(now), formatTime(now))
+		formatPorts(session.Ports), session.Compose, formatTime(now), formatTime(now))
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}

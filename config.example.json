@@ -36,7 +36,8 @@
   },
 
   "docker": {
-    "host": ""
+    "host": "",
+    "cli": ""
   },
 
   "limits": {

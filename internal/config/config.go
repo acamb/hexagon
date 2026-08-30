@@ -87,6 +87,9 @@ type Config struct {
 
 	// Docker
 	DockerHost string // DOCKER_HOST, docker.host: empty means the SDK default
+	// DockerCLI runs `docker compose` for sessions whose image carries one.
+	// Empty means `docker` on the PATH.
+	DockerCLI string // HEXAGON_DOCKER_CLI, docker.cli
 
 	// Limits. They are settings rather than constants because the right numbers
 	// depend on the machine: an operator with room to spare will want different
@@ -144,6 +147,7 @@ type file struct {
 
 	Docker struct {
 		Host string `json:"host"`
+		CLI  string `json:"cli"`
 	} `json:"docker"`
 
 	Limits struct {
@@ -241,6 +245,7 @@ func load(path string, explicit bool) (*Config, error) {
 		VSCodeVersion: pick("HEXAGON_VSCODE_VERSION", f.VSCode.Version, codeserver.DefaultVersion),
 
 		DockerHost: pick("DOCKER_HOST", f.Docker.Host, ""),
+		DockerCLI:  expandHome(home, pick("HEXAGON_DOCKER_CLI", f.Docker.CLI, "")),
 
 		MaxSessionsPerUser:  maxSessions,
 		MaxConcurrentBuilds: maxBuilds,

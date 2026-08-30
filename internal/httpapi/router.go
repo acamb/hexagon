@@ -21,13 +21,21 @@ import (
 	"github.com/andrea/hexagon/internal/store"
 )
 
-// DockerfileEditor rewrites a Dockerfile from an instruction in English, and
-// checks whether a Claude Code credential works. It is nil when the server has
-// no Claude Code binary to run, which is a state the UI is told about rather
-// than a startup failure.
-type DockerfileEditor interface {
-	EditDockerfile(ctx context.Context, cred claudex.Credential, dockerfile, instruction string) (claudex.DockerfileEdit, error)
+// SourceEditor rewrites an image's source — a Dockerfile or a compose file —
+// from an instruction in English, and checks whether a Claude Code credential
+// works. It is nil when the server has no Claude Code binary to run, which is a
+// state the UI is told about rather than a startup failure.
+type SourceEditor interface {
+	Edit(ctx context.Context, cred claudex.Credential, kind, content, instruction string) (claudex.Edit, error)
 	Check(ctx context.Context, cred claudex.Credential) error
+}
+
+// ComposeValidator refuses a compose file that asks for something a session
+// must not be able to have. It is nil when the server has no `docker compose`,
+// and the Images page then does not offer advanced images at all rather than
+// offering ones that fail at the first session.
+type ComposeValidator interface {
+	Validate(ctx context.Context, content string) ([]string, error)
 }
 
 // Deps are the collaborators the handlers need.
@@ -48,10 +56,14 @@ type Deps struct {
 	Repos     *provider.Lister
 	Docker    dockerx.API
 	Sessions  *session.Manager
-	// BaseDockerfile is offered to the UI as the starting point for a new image.
+	// BaseDockerfile and BaseCompose are offered to the UI as the starting
+	// points for a new image.
 	BaseDockerfile string
+	BaseCompose    string
 	// Editor is optional: without it the Images page only edits by hand.
-	Editor   DockerfileEditor
+	Editor SourceEditor
+	// Compose is optional too: without it advanced images are not offered.
+	Compose  ComposeValidator
 	Frontend fs.FS
 	Log      *slog.Logger
 }
@@ -69,7 +81,9 @@ type Server struct {
 	docker         dockerx.API
 	sessions       *session.Manager
 	baseDockerfile string
-	editor         DockerfileEditor
+	baseCompose    string
+	editor         SourceEditor
+	compose        ComposeValidator
 	log            *slog.Logger
 	frontend       fs.FS
 	started        time.Time
@@ -92,7 +106,9 @@ func New(deps Deps) http.Handler {
 		docker:         deps.Docker,
 		sessions:       deps.Sessions,
 		baseDockerfile: deps.BaseDockerfile,
+		baseCompose:    deps.BaseCompose,
 		editor:         deps.Editor,
+		compose:        deps.Compose,
 		log:            deps.Log,
 		frontend:       deps.Frontend,
 		started:        time.Now(),
@@ -119,17 +135,17 @@ func New(deps Deps) http.Handler {
 
 	// Authenticated.
 	protected := map[string]http.HandlerFunc{
-		"GET /api/auth/me":            s.handleAuthMe,
-		"POST /api/auth/logout":       s.handleAuthLogout,
-		"GET /api/settings":           s.handleGetSettings,
-		"PUT /api/settings":           s.handleUpdateSettings,
-		"GET /api/images":             s.handleListImages,
-		"POST /api/images":            s.handleCreateImage,
-		"GET /api/images/template":    s.handleImageTemplate,
-		"POST /api/images/dockerfile": s.handleEditDockerfile,
-		"GET /api/images/{id}":        s.handleGetImage,
-		"GET /api/images/{id}/log":    s.handleImageLog,
-		"DELETE /api/images/{id}":     s.handleDeleteImage,
+		"GET /api/auth/me":         s.handleAuthMe,
+		"POST /api/auth/logout":    s.handleAuthLogout,
+		"GET /api/settings":        s.handleGetSettings,
+		"PUT /api/settings":        s.handleUpdateSettings,
+		"GET /api/images":          s.handleListImages,
+		"POST /api/images":         s.handleCreateImage,
+		"GET /api/images/template": s.handleImageTemplate,
+		"POST /api/images/source":  s.handleEditSource,
+		"GET /api/images/{id}":     s.handleGetImage,
+		"GET /api/images/{id}/log": s.handleImageLog,
+		"DELETE /api/images/{id}":  s.handleDeleteImage,
 
 		"GET /api/repos":                  s.handleListRepos,
 		"GET /api/accounts":               s.handleListAccounts,

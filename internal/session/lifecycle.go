@@ -40,6 +40,36 @@ func (m *Manager) VSCodeEndpoint(ctx context.Context, s *store.Session) (string,
 	return "http://127.0.0.1:" + strconv.Itoa(port), nil
 }
 
+// PublishedPorts reports the host binding of each port a session publishes,
+// keyed by the container port. It is looked up and never stored, the way
+// VSCodeEndpoint is: Docker picks a new host port every time the container
+// starts, so a stored one would be a lie as soon as the session was restarted.
+//
+// A session that is not running has no bindings to report, and that is the
+// truth rather than a gap: there is nothing listening.
+func (m *Manager) PublishedPorts(ctx context.Context, session *store.Session) map[int]int {
+	if len(session.Ports) == 0 || session.ContainerID == "" {
+		return nil
+	}
+	state, err := m.docker.InspectContainer(ctx, session.ContainerID)
+	if err != nil {
+		if !errors.Is(err, dockerx.ErrContainerNotFound) {
+			m.log.Warn("look up published ports", "session", session.ID, "err", err)
+		}
+		return nil
+	}
+	if !state.Running {
+		return nil
+	}
+	out := make(map[int]int, len(session.Ports))
+	for _, container := range session.Ports {
+		if host, ok := state.Ports[container]; ok {
+			out[container] = host
+		}
+	}
+	return out
+}
+
 // Start brings a stopped session back up and makes sure tmux is running in it.
 // A container that has been restarted has an empty tmux server, so the
 // bootstrap runs again; the previous session's scrollback is gone either way.
@@ -47,7 +77,7 @@ func (m *Manager) Start(ctx context.Context, session *store.Session) error {
 	if session.ContainerID == "" {
 		return ErrNoContainer
 	}
-	if err := m.docker.StartContainer(ctx, session.ContainerID); err != nil {
+	if err := m.startContainers(ctx, session); err != nil {
 		if errors.Is(err, dockerx.ErrContainerNotFound) {
 			m.setStatus(session.ID, store.SessionStatusGone, "the container no longer exists")
 		}
@@ -61,12 +91,22 @@ func (m *Manager) Start(ctx context.Context, session *store.Session) error {
 	return nil
 }
 
+// startContainers brings a session's containers back, which for a compose
+// session is the whole project and not only the agent: the services it was
+// created beside are what it was created for.
+func (m *Manager) startContainers(ctx context.Context, session *store.Session) error {
+	if session.Compose {
+		return m.compose.Start(ctx, m.composeProject(session))
+	}
+	return m.docker.StartContainer(ctx, session.ContainerID)
+}
+
 // Stop shuts the container down, keeping the workspace and the container itself.
 func (m *Manager) Stop(ctx context.Context, session *store.Session) error {
 	if session.ContainerID == "" {
 		return ErrNoContainer
 	}
-	if err := m.docker.StopContainer(ctx, session.ContainerID, stopTimeout); err != nil {
+	if err := m.stopContainers(ctx, session); err != nil {
 		if errors.Is(err, dockerx.ErrContainerNotFound) {
 			m.setStatus(session.ID, store.SessionStatusGone, "the container no longer exists")
 		}
@@ -76,11 +116,27 @@ func (m *Manager) Stop(ctx context.Context, session *store.Session) error {
 	return nil
 }
 
+func (m *Manager) stopContainers(ctx context.Context, session *store.Session) error {
+	if session.Compose {
+		return m.compose.Stop(ctx, m.composeProject(session))
+	}
+	return m.docker.StopContainer(ctx, session.ContainerID, stopTimeout)
+}
+
 // Delete removes the session. The container always goes; the workspace only
 // when asked, because it holds the repository clone and any work in it that has
 // not been pushed.
+//
+// A compose project's named volumes follow the workspace rather than the
+// container: purge already means "the work too", and what a database wrote is
+// the work, not the machinery.
 func (m *Manager) Delete(ctx context.Context, session *store.Session, purge bool) error {
-	if session.ContainerID != "" {
+	switch {
+	case session.Compose:
+		if err := m.compose.Down(ctx, m.composeProject(session), purge); err != nil {
+			return err
+		}
+	case session.ContainerID != "":
 		if err := m.docker.RemoveContainer(ctx, session.ContainerID, true); err != nil {
 			return err
 		}
@@ -210,8 +266,18 @@ func (m *Manager) Reconcile(ctx context.Context) error {
 		}
 	}
 
+	known := make(map[string]bool, len(sessions))
+	for _, session := range sessions {
+		known[session.ID] = true
+	}
 	for _, c := range containers {
-		if !claimed[c.ID] {
+		switch {
+		case claimed[c.ID]:
+		case c.Role == serviceRole && known[c.SessionID]:
+			// A service of a compose project: it belongs to a session that is
+			// still here, it is simply not the container the row points at.
+			// This is the problem dockerx.LabelRole exists for.
+		default:
 			// Not removed on our own initiative: it may hold work that was
 			// never pushed, and deleting it is the user's call.
 			m.log.Warn("container with no session left", "container", c.ID, "session", c.SessionID)

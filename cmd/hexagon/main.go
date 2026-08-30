@@ -20,6 +20,7 @@ import (
 	"github.com/andrea/hexagon/internal/bitbucket"
 	"github.com/andrea/hexagon/internal/claudex"
 	"github.com/andrea/hexagon/internal/codeserver"
+	"github.com/andrea/hexagon/internal/composex"
 	"github.com/andrea/hexagon/internal/config"
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/github"
@@ -192,9 +193,29 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 
 	vscode := codeserver.New(codeserver.Config{Dir: cfg.VSCodeDir, Version: cfg.VSCodeVersion})
 
+	// Advanced images need `docker compose`, which is a plugin the machine may
+	// simply not have. It is asked once, here, so a server without it does not
+	// offer advanced mode at all rather than offering one that fails at the
+	// first session. Both interfaces stay nil in that case, which is what the
+	// Images page and the session manager ask about.
+	//
+	// The typed nil matters: assigning an unavailable *composex.Runner to the
+	// interfaces would make them non-nil and both checks useless.
+	var (
+		composeSessions session.Compose
+		composeImages   httpapi.ComposeValidator
+	)
+	composeCtx, composeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	if runner := composex.New(cfg.DockerCLI, cfg.DockerHost); runner.Available(composeCtx) {
+		composeSessions, composeImages = runner, runner
+	} else {
+		log.Info("no docker compose: images with a compose file cannot be created or started")
+	}
+	composeCancel()
+
 	// Containers run as the user running the server, so files written into the
 	// bind mounted clone stay owned by them rather than by root.
-	sessions := session.NewManager(st, docker, session.GitCloner{}, credentials, vscode, session.Config{
+	sessions := session.NewManager(st, docker, session.GitCloner{}, credentials, vscode, composeSessions, session.Config{
 		WorkspaceRoot:     cfg.WorkspaceRoot,
 		ClaudeCredentials: cfg.ClaudeCredentials,
 		AnthropicAPIKey:   cfg.AnthropicAPIKey,
@@ -214,6 +235,8 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		Docker:         docker,
 		Sessions:       sessions,
 		BaseDockerfile: hexagon.BaseDockerfile,
+		BaseCompose:    hexagon.BaseCompose,
+		Compose:        composeImages,
 		Frontend:       frontend,
 		Log:            log,
 	}
@@ -222,7 +245,7 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 	// hand, so a missing one is a note in the log rather than a refusal to run.
 	// The interface is left nil in that case, which is what the UI asks about.
 	if runner, err := claudex.New(cfg.ClaudeBinary); err != nil {
-		log.Info("no claude binary: Dockerfiles can only be edited by hand", "err", err)
+		log.Info("no claude binary: image sources can only be edited by hand", "err", err)
 	} else {
 		deps.Editor = runner.WithModel(cfg.ClaudeModel)
 	}

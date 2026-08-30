@@ -1,10 +1,11 @@
 // Package claudex runs the Claude Code CLI for the one thing Hexagon asks of it
-// outside a session: rewriting a Dockerfile from an instruction in English.
+// outside a session: rewriting an image's source — a Dockerfile or a compose
+// file — from an instruction in English.
 //
 // The call is a pure text transformation. It runs with every built-in tool
 // removed, so the agent has no shell, no file access and no network of its own;
-// the Dockerfile goes in through the prompt and comes back in the answer. That
-// is what makes running it as the server user uninteresting to attack.
+// the file goes in through the prompt and comes back in the answer. That is what
+// makes running it as the server user uninteresting to attack.
 package claudex
 
 import (
@@ -121,24 +122,52 @@ func (r *Runner) WithModel(model string) *Runner {
 	return &Runner{binary: r.binary, model: model}
 }
 
-// DockerfileEdit is what the model came back with.
-type DockerfileEdit struct {
-	Dockerfile string `json:"dockerfile"`
-	Summary    string `json:"summary"`
+// The two things Claude Code can be asked to rewrite. The values are the
+// image source types they belong to, and they are also the field names the
+// answer arrives under, which is why there is one constant rather than three.
+const (
+	SourceDockerfile = "dockerfile"
+	SourceCompose    = "compose"
+)
+
+// Edit is what the model came back with.
+type Edit struct {
+	Content string `json:"content"`
+	Summary string `json:"summary"`
 }
 
-// dockerfileSchema forces the answer into a shape that can be used directly.
-// Without it the reply arrives wrapped in a Markdown fence however plainly the
-// prompt asks for the file alone, and unwrapping that is guesswork.
-const dockerfileSchema = `{
+// editKind is one editable file: the prompt that describes the job and the
+// schema that forces the answer into a shape which can be used directly.
+//
+// Everything that makes this call safe is independent of which file it is —
+// --safe-mode and --strict-mcp-config so the developer's own Claude Code setup
+// cannot change what a Hexagon request does, --tools "" so there is nothing to
+// run, read or fetch, and --json-schema so the answer does not arrive wrapped in
+// a Markdown fence. Only these two are per kind.
+type editKind struct {
+	prompt string
+	schema string
+}
+
+var editKinds = map[string]editKind{
+	SourceDockerfile: {prompt: dockerfilePrompt, schema: schemaFor(SourceDockerfile)},
+	SourceCompose:    {prompt: composePrompt, schema: schemaFor(SourceCompose)},
+}
+
+// schemaFor forces the answer into an object with the file under its own kind's
+// name. Without a schema the reply arrives wrapped in a Markdown fence however
+// plainly the prompt asks for the file alone, and unwrapping that is guesswork.
+func schemaFor(kind string) string {
+	return `{
 	"type": "object",
 	"properties": {
-		"dockerfile": {"type": "string"},
+		"` + kind + `": {"type": "string"},
 		"summary": {"type": "string"}
 	},
-	"required": ["dockerfile", "summary"],
+	"required": ["` + kind + `", "summary"],
 	"additionalProperties": false
 }`
+}
 
 const dockerfilePrompt = `You are editing a Dockerfile for a container that runs Claude Code on a
 repository. The image must keep working for that: git, tmux and claude on the
@@ -156,16 +185,51 @@ Current Dockerfile:
 %s
 `
 
+// composePrompt carries the rules the validator enforces. That is a
+// convenience and not the check: what comes back goes through exactly the same
+// validation as a file typed by hand, and a refusal lands back in the editor for
+// the user to ask again. A prompt is not a security boundary, and this is said
+// here because a reader who finds the rules stated in two places would otherwise
+// have to guess which copy is load-bearing.
+const composePrompt = `You are editing a Docker Compose file that describes the services running
+beside a container in which Claude Code works on a repository. Hexagon supplies
+that container itself, as a service named "hexagon" in a second file, so this
+file describes only the services next to it — a database, a cache, a queue — and
+must not describe the agent.
+
+The file is refused unless every service obeys all of these: no service named
+"hexagon"; no build, so every service comes from a registry image; no bind
+mounts of host paths, though named volumes are fine; no fixed host port in
+ports, since Hexagon publishes what it needs itself; no privileged, cap_add,
+security_opt or devices; no network_mode, pid, ipc or uts set to host; and no
+service running as root.
+
+Apply the requested change and return the complete resulting compose file, not a
+patch. Change nothing the request did not ask for. Summarise what you changed in
+one short sentence.
+
+Requested change:
+%s
+
+Current compose file:
+%s
+`
+
 // result is the envelope --output-format json wraps the answer in.
 type result struct {
 	IsError bool   `json:"is_error"`
 	Result  string `json:"result"`
 }
 
-// EditDockerfile asks for dockerfile with instruction applied to it. cred is
-// the credential to authenticate with, or the zero value to inherit the
-// server's own login.
-func (r *Runner) EditDockerfile(ctx context.Context, cred Credential, dockerfile, instruction string) (DockerfileEdit, error) {
+// Edit asks for content with instruction applied to it. kind is SourceDockerfile
+// or SourceCompose; cred is the credential to authenticate with, or the zero
+// value to inherit the server's own login.
+func (r *Runner) Edit(ctx context.Context, cred Credential, kind, content, instruction string) (Edit, error) {
+	spec, ok := editKinds[kind]
+	if !ok {
+		return Edit{}, fmt.Errorf("claudex: no such editable file: %q", kind)
+	}
+
 	args := []string{
 		"-p",
 		// The developer's own Claude Code setup — CLAUDE.md, skills, plugins,
@@ -175,41 +239,43 @@ func (r *Runner) EditDockerfile(ctx context.Context, cred Credential, dockerfile
 		// No tools at all: there is nothing to run, read or fetch here.
 		"--tools", "",
 		"--output-format", "json",
-		"--json-schema", dockerfileSchema,
+		"--json-schema", spec.schema,
 	}
 	if r.model != "" {
 		args = append(args, "--model", r.model)
 	}
 
 	cmd := exec.CommandContext(ctx, r.binary, args...)
-	cmd.Stdin = strings.NewReader(fmt.Sprintf(dockerfilePrompt, instruction, dockerfile))
+	cmd.Stdin = strings.NewReader(fmt.Sprintf(spec.prompt, instruction, content))
 	cmd.Env = environment(cred)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 
 	if err := cmd.Run(); err != nil {
 		if ctx.Err() != nil {
-			return DockerfileEdit{}, fmt.Errorf("claude code took too long: %w", ctx.Err())
+			return Edit{}, fmt.Errorf("claude code took too long: %w", ctx.Err())
 		}
-		return DockerfileEdit{}, fmt.Errorf("claude code failed: %w: %s", err, firstLine(stderr.String()))
+		return Edit{}, fmt.Errorf("claude code failed: %w: %s", err, firstLine(stderr.String()))
 	}
 
 	var res result
 	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-		return DockerfileEdit{}, fmt.Errorf("claude code returned something unreadable: %w", err)
+		return Edit{}, fmt.Errorf("claude code returned something unreadable: %w", err)
 	}
 	if res.IsError {
-		return DockerfileEdit{}, fmt.Errorf("claude code reported an error: %s", firstLine(res.Result))
+		return Edit{}, fmt.Errorf("claude code reported an error: %s", firstLine(res.Result))
 	}
 
 	// With --json-schema the answer is a JSON document inside the envelope's
-	// result string.
-	var edit DockerfileEdit
-	if err := json.Unmarshal([]byte(res.Result), &edit); err != nil {
-		return DockerfileEdit{}, fmt.Errorf("claude code did not answer with a Dockerfile: %w", err)
+	// result string, with the file under the kind's own name. An answer that
+	// carries a different kind is one for a question that was not asked.
+	answer := map[string]string{}
+	if err := json.Unmarshal([]byte(res.Result), &answer); err != nil {
+		return Edit{}, fmt.Errorf("claude code did not answer with a %s: %w", kind, err)
 	}
-	if strings.TrimSpace(edit.Dockerfile) == "" {
-		return DockerfileEdit{}, errors.New("claude code answered with an empty Dockerfile")
+	edit := Edit{Content: answer[kind], Summary: answer["summary"]}
+	if strings.TrimSpace(edit.Content) == "" {
+		return Edit{}, fmt.Errorf("claude code answered with an empty %s", kind)
 	}
 	return edit, nil
 }

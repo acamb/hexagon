@@ -44,6 +44,21 @@ const propagateToken = ref(true)
 // published port, and a session that never opens the editor should carry
 // neither. It has to be chosen now because the container is built for it.
 const vscode = ref(false)
+// Container ports to publish, typed as a list: "3000, 5173". Empty by default —
+// a session that publishes nothing is the usual one — and, like the switch
+// above, fixed when the container is created.
+const ports = ref('')
+
+// The ports as the API takes them. Anything that is not a number is dropped
+// here and refused by the server if it somehow gets through: this is a
+// convenience, not the check.
+const parsedPorts = computed(() =>
+  ports.value
+    .split(/[\s,]+/)
+    .filter(Boolean)
+    .map(Number)
+    .filter((p) => Number.isInteger(p) && p > 0 && p < 65536),
+)
 // A session with no repository at all: an empty /workspace, and whatever the
 // user does in it.
 const withoutRepo = ref(false)
@@ -122,6 +137,7 @@ async function submit() {
             autoClaude: autoClaude.value,
             propagateToken: tokenProvider.value !== '',
             vscode: vscode.value,
+            ports: parsedPorts.value,
           }
         : {
             provider: selected.value!.provider,
@@ -132,6 +148,7 @@ async function submit() {
             autoClaude: autoClaude.value,
             propagateToken: propagateToken.value,
             vscode: vscode.value,
+            ports: parsedPorts.value,
           },
     )
     emit('created', session)
@@ -295,6 +312,18 @@ onMounted(() => load())
             </span>
           </label>
 
+          <label class="field">
+            <span>Published ports <em>optional</em></span>
+            <input v-model="ports" placeholder="3000, 5173" />
+            <em class="note">
+              Container ports to reach from this machine — a dev server, a preview. Hexagon picks
+              the host port and the session page shows the pair. They answer on
+              <code>127.0.0.1</code> with nothing in front of them, so anything else on this
+              machine can reach them while the session is up, and they cannot be changed
+              afterwards: the container is built with them.
+            </em>
+          </label>
+
           <footer>
             <button type="button" @click="emit('close')">Cancel</button>
             <button type="submit" class="primary" :disabled="!ready || submitting">
@@ -332,6 +361,10 @@ onMounted(() => load())
   color: var(--text-muted);
   font-weight: 400;
   font-style: normal;
+}
+
+.field em.note {
+  font-size: 0.85rem;
 }
 
 .row {

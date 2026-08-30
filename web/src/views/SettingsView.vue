@@ -42,6 +42,7 @@ const form = reactive({
   vscodeDir: '',
   vscodeVersion: '',
   dockerHost: '',
+  dockerCli: '',
   maxSessionsPerUser: 0,
   maxConcurrentBuilds: 0,
   publicRatePerMinute: 0,
@@ -70,6 +71,7 @@ const waiting = computed(() => {
     ['vscode.dir', s.running.vscode.dir, s.saved.vscode.dir],
     ['vscode.version', s.running.vscode.version, s.saved.vscode.version],
     ['docker.host', s.running.docker.host, s.saved.docker.host],
+    ['docker.cli', s.running.docker.cli, s.saved.docker.cli],
     ['limits.maxSessionsPerUser', s.running.limits.maxSessionsPerUser, s.saved.limits.maxSessionsPerUser],
     ['limits.maxConcurrentBuilds', s.running.limits.maxConcurrentBuilds, s.saved.limits.maxConcurrentBuilds],
     ['limits.publicRatePerMinute', s.running.limits.publicRatePerMinute, s.saved.limits.publicRatePerMinute],
@@ -101,6 +103,7 @@ function fill(current: Settings) {
   form.vscodeDir = s.vscode.dir
   form.vscodeVersion = s.vscode.version
   form.dockerHost = s.docker.host
+  form.dockerCli = s.docker.cli
   form.maxSessionsPerUser = s.limits.maxSessionsPerUser
   form.maxConcurrentBuilds = s.limits.maxConcurrentBuilds
   form.publicRatePerMinute = s.limits.publicRatePerMinute
@@ -137,7 +140,7 @@ function update(): SettingsUpdate {
     },
     git: { userName: form.gitUserName, userEmail: form.gitUserEmail },
     vscode: { dir: form.vscodeDir, version: form.vscodeVersion },
-    docker: { host: form.dockerHost },
+    docker: { host: form.dockerHost, cli: form.dockerCli },
     limits: {
       maxSessionsPerUser: form.maxSessionsPerUser,
       maxConcurrentBuilds: form.maxConcurrentBuilds,
@@ -429,6 +432,15 @@ function message(e: unknown): string {
             <input v-model="form.dockerHost" spellcheck="false" placeholder="the SDK default" />
             <span class="hint"><code>DOCKER_HOST</code>, the Docker Engine endpoint.</span>
             <span v-if="waiting.has('docker.host')" class="hint waiting">Waiting for a restart.</span>
+          </label>
+          <label class="field">
+            <span>CLI</span>
+            <input v-model="form.dockerCli" spellcheck="false" placeholder="docker on the PATH" />
+            <span class="hint">
+              <code>HEXAGON_DOCKER_CLI</code>. Runs <code>docker compose</code> for images that
+              carry a compose file; without it those images cannot be created or started.
+            </span>
+            <span v-if="waiting.has('docker.cli')" class="hint waiting">Waiting for a restart.</span>
           </label>
         </section>
 

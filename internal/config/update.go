@@ -53,6 +53,7 @@ type Patch struct {
 	VSCodeVersion *string
 
 	DockerHost *string
+	DockerCLI  *string
 
 	MaxSessionsPerUser  *int
 	MaxConcurrentBuilds *int
@@ -103,6 +104,7 @@ func (p Patch) fields() []patchField {
 		{path: []string{"vscode", "version"}, value: p.VSCodeVersion},
 
 		{path: []string{"docker", "host"}, value: p.DockerHost},
+		{path: []string{"docker", "cli"}, value: p.DockerCLI},
 
 		{path: []string{"limits", "maxSessionsPerUser"}, value: p.MaxSessionsPerUser},
 		{path: []string{"limits", "maxConcurrentBuilds"}, value: p.MaxConcurrentBuilds},

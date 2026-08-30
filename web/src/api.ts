@@ -64,7 +64,7 @@ export interface SettingsValues {
   claude: { credentials: string; binary: string; model: string }
   git: { userName: string; userEmail: string }
   vscode: { dir: string; version: string }
-  docker: { host: string }
+  docker: { host: string; cli: string }
   limits: { maxSessionsPerUser: number; maxConcurrentBuilds: number; publicRatePerMinute: number }
   callbackUrl: string
 }
@@ -84,7 +84,7 @@ export interface SettingsUpdate {
   claude?: { credentials?: string | null; anthropicApiKey?: string; binary?: string; model?: string }
   git?: { userName?: string; userEmail?: string }
   vscode?: { dir?: string; version?: string }
-  docker?: { host?: string }
+  docker?: { host?: string; cli?: string }
   limits?: { maxSessionsPerUser?: number; maxConcurrentBuilds?: number; publicRatePerMinute?: number }
 }
 
@@ -130,7 +130,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
-export type ImageSource = 'dockerfile' | 'registry'
+// 'compose' is an advanced image: a Dockerfile and a compose file together. The
+// Dockerfile still describes the container Claude Code runs in and builds like
+// any other; the compose file describes the services beside it.
+export type ImageSource = 'dockerfile' | 'registry' | 'compose'
 export type ImageStatus = 'pending' | 'building' | 'ready' | 'failed'
 
 export interface Image {
@@ -138,6 +141,7 @@ export interface Image {
   name: string
   sourceType: ImageSource
   dockerfile?: string
+  compose?: string
   registryRef?: string
   imageRef?: string
   status: ImageStatus
@@ -151,16 +155,32 @@ export interface ImageLog {
   error: string
 }
 
-// What Claude Code came back with when asked to change a Dockerfile.
-export interface DockerfileEdit {
-  dockerfile: string
+// Which of an image's two files Claude Code is being asked to change. The
+// values are the image source types they belong to.
+export type SourceKind = 'dockerfile' | 'compose'
+
+// What Claude Code came back with when asked to change one of them.
+export interface SourceEdit {
+  content: string
   summary: string
+}
+
+// What the Images page starts from, and what this server can do besides
+// building: canAsk is false with no Claude Code binary, canCompose false with no
+// `docker compose`. The page leaves each control out rather than offering one
+// that always fails.
+export interface ImageTemplate {
+  dockerfile: string
+  compose: string
+  canAsk: boolean
+  canCompose: boolean
 }
 
 export interface NewImage {
   name: string
   sourceType: ImageSource
   dockerfile?: string
+  compose?: string
   registryRef?: string
 }
 
@@ -197,7 +217,19 @@ export interface Session {
   // mounted. Decided at creation, like propagateToken above: the mount and the
   // port binding are the container.
   vscode: boolean
+  // The ports the session publishes. `host` is absent until the container is
+  // running: Docker picks a new host port every time it starts, so there is
+  // nothing to report before then and nothing to store afterwards.
+  ports: SessionPort[]
+  // Whether the session is a compose project rather than a single container,
+  // which is a property of the image it came from.
+  compose: boolean
   createdAt: string
+}
+
+export interface SessionPort {
+  container: number
+  host?: number
 }
 
 export interface NewSession {
@@ -214,6 +246,10 @@ export interface NewSession {
   // Off by default, unlike the two above: it costs a mount and a published
   // port, and a session that never opens the editor should carry neither.
   vscode?: boolean
+  // Container ports to publish on the host's loopback interface. The host side
+  // is Docker's to choose. Settable only here: a container keeps the port
+  // bindings it was created with.
+  ports?: number[]
 }
 
 // What a session's settings can be changed to after it exists. Omitted fields
@@ -345,13 +381,11 @@ export const api = {
       request<Image>('/images', { method: 'POST', body: JSON.stringify(image) }),
     remove: (id: string) => request<null>(`/images/${id}`, { method: 'DELETE' }),
     log: (id: string) => request<ImageLog>(`/images/${id}/log`),
-    // canAsk is false when the server has no Claude Code binary to run, and the
-    // page then leaves the control out instead of offering one that fails.
-    template: () => request<{ dockerfile: string; canAsk: boolean }>('/images/template'),
-    editDockerfile: (dockerfile: string, instruction: string) =>
-      request<DockerfileEdit>('/images/dockerfile', {
+    template: () => request<ImageTemplate>('/images/template'),
+    editSource: (kind: SourceKind, content: string, instruction: string) =>
+      request<SourceEdit>('/images/source', {
         method: 'POST',
-        body: JSON.stringify({ dockerfile, instruction }),
+        body: JSON.stringify({ kind, content, instruction }),
       }),
   },
 }

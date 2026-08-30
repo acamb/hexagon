@@ -130,14 +130,38 @@ provide `git`, `tmux` and `claude` on the `PATH`, and a long-running `CMD`; the 
 [deploy/images/base/Dockerfile](deploy/images/base/Dockerfile) is offered as the starting
 point and is the reference for what a session needs.
 
-**Editing a Dockerfile with Claude Code** — under the Dockerfile box, say what to change
-("add the Go toolchain") and Hexagon runs `claude -p` on the host to rewrite it, showing
-what changed with an undo. The call has every built-in tool removed (`--tools ""`), so it
-is a text transformation with no shell, no file access and no fetch of its own, and it
-ignores your own Claude Code configuration (`--safe-mode`). It authenticates with the Claude
-login configured on the Accounts page, falling back to the host's own login when none is
-stored. Without a `claude` binary on the server the control is not shown and the box is
-edited by hand, as before.
+**Images with services beside them** — the third kind of image is a Dockerfile *and* a
+compose file. The Dockerfile still describes the container Claude Code runs in and builds
+exactly as it would alone; the compose file describes the services that have to be there
+next to it — a database, a cache, a queue. A session from such an image is a compose
+project: Hexagon writes its own service into a second file, so the workspace mount, the
+host uid and the labels stay where they are, and the agent starts last and reaches the
+others by their service name. Stopping the session stops the project, and deleting it takes
+the project with it — with the named volumes too, if you tick the box that also deletes the
+workspace.
+
+The compose file is checked before the image is saved, so a refusal arrives while you are
+still looking at the editor. A service is refused if it uses `build`, bind mounts a host
+path (named volumes are fine), fixes a host port, asks for `privileged`, `cap_add`,
+`security_opt` or `devices`, sets `network_mode`, `pid`, `ipc` or `uts` to `host`, or runs
+as root — and a service may not be called `hexagon`, which is the name Hexagon's own takes.
+That list is what keeps "containers run as you, and never as root" true of a file somebody
+else wrote; it is checked against `docker compose config`'s normalized output, so the same
+request written another way is refused too.
+[deploy/images/base/compose.yaml](deploy/images/base/compose.yaml) is the starting point.
+The whole mode needs `docker compose` on the server; without it the Images page does not
+offer it at all.
+
+**Editing an image's files with Claude Code** — under each editor, say what to change ("add
+the Go toolchain", "add a postgres 16") and Hexagon runs `claude -p` on the host to rewrite
+that file, showing what changed with an undo. The call has every built-in tool removed
+(`--tools ""`), so it is a text transformation with no shell, no file access and no fetch of
+its own, and it ignores your own Claude Code configuration (`--safe-mode`). It authenticates
+with the Claude login configured on the Accounts page, falling back to the host's own login
+when none is stored. Without a `claude` binary on the server the control is not shown and
+the boxes are edited by hand, as before. A compose file Claude Code wrote goes through
+exactly the same refusals as one typed in: the prompt lists them as a convenience, it is not
+what enforces them.
 
 **Accounts** — repositories come from the accounts you connect on the Accounts page. GitHub is
 there already: it is how you signed in. Bitbucket is added with an Atlassian account email and an
@@ -197,6 +221,17 @@ with how to scroll back through the output.
 brings it back with a fresh tmux, so the previous scrollback is gone. Deleting always
 removes the container, and removes the clone on disk only if you tick the box.
 
+**Published ports** — a session can publish container ports on the host, chosen when it is
+created: type them as a list ("3000, 5173"). Hexagon publishes each on `127.0.0.1` and lets
+Docker pick the host port, so a second session of the same project never fails to start over
+a port already taken; the session page shows each pair, `3000 → 127.0.0.1:49154`, as a link
+once the container is up. There is nothing to show before that, and nothing stored
+afterwards: Docker picks a new host port every time the container starts. Like the VS Code
+box, this cannot be changed later — a container keeps the port bindings it was created with.
+Honestly, and for the same reason as code-server below: a published port answers on this
+machine's loopback interface with nothing in front of it, so any other process on the machine
+can reach it while the session is up.
+
 **VS Code in the browser** — ticking the box when a session is created gives its container a
 published port and a **VS Code** button on the session page, opening `code-server` on
 `/workspace` in a new tab. It is a creation-time choice because the mount and the port are
@@ -244,13 +279,14 @@ and has a default that suits a single user on a developer machine.
 | `HEXAGON_DEBUG` | `debug` | — | Set to anything for debug logging |
 | `HEXAGON_CLAUDE_CREDENTIALS` | `claude.credentials` | `~/.claude/.credentials.json` | Mounted read-only into session containers (from M4). Empty disables the mount. Also the file a browser login from the Accounts page writes |
 | `ANTHROPIC_API_KEY` | `claude.anthropicApiKey` | — | Injected into session containers instead of the credentials mount (from M4) |
-| `HEXAGON_CLAUDE_BINARY` | `claude.binary` | `claude` on `PATH`, then `~/.local/bin/claude` | Runs `claude -p` to edit a Dockerfile from the Images page |
+| `HEXAGON_CLAUDE_BINARY` | `claude.binary` | `claude` on `PATH`, then `~/.local/bin/claude` | Runs `claude -p` to edit a Dockerfile or a compose file from the Images page |
 | `HEXAGON_CLAUDE_MODEL` | `claude.model` | — | Model for that call; empty leaves the choice to the CLI |
 | `HEXAGON_GIT_USER_NAME` | `git.userName` | — | Git identity for clones and container commits (from M3) |
 | `HEXAGON_GIT_USER_EMAIL` | `git.userEmail` | — | |
 | `HEXAGON_VSCODE_DIR` | `vscode.dir` | `<data dir>/code-server` | Where the code-server release is kept, downloaded once for the machine |
 | `HEXAGON_VSCODE_VERSION` | `vscode.version` | the version Hexagon is pinned to | Release fetched when `vscode.dir` is empty |
 | `DOCKER_HOST` | `docker.host` | SDK default | Docker Engine endpoint (from M2) |
+| `HEXAGON_DOCKER_CLI` | `docker.cli` | `docker` on `PATH` | Runs `docker compose` for images that carry a compose file. Without it those images cannot be created or started, and the Images page leaves advanced mode out |
 | `HEXAGON_MAX_SESSIONS_PER_USER` | `limits.maxSessionsPerUser` | `20` | Sessions one account may have at once; creating another answers 429 |
 | `HEXAGON_MAX_CONCURRENT_BUILDS` | `limits.maxConcurrentBuilds` | `2` | Image builds one account may have in flight |
 | `HEXAGON_PUBLIC_RATE_PER_MINUTE` | `limits.publicRatePerMinute` | `60` | Requests a minute, per client address, to the routes that answer without a session |
@@ -368,6 +404,11 @@ deploy/proxy/       the reference nginx reverse proxy for a published instance
 
 ## Security notes
 
+- A user-supplied compose file is checked against the list above — no `privileged`,
+  `cap_add`, `security_opt` or `devices`, no host namespaces, no host bind mounts, no fixed
+  host ports, no `build`, and never root — before anything is created from it. Containers run
+  as the host user and never as root, and that is what upholds it for a file Hexagon did not
+  write.
 - Hexagon binds to loopback by default and should stay there. Anyone who can
   reach the port and hold a session controls the Docker socket. To publish it,
   put a TLS reverse proxy in front and leave the bind where it is: the server

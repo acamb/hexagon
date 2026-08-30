@@ -74,8 +74,14 @@ type ContainerState struct {
 type ManagedContainer struct {
 	ID        string
 	SessionID string
-	Running   bool
-	Status    string
+	// Role is the LabelRole value, empty for a session's own container. It is
+	// what tells the reconciler that a container belonging to a session is not
+	// the one the session's row points at — the services of a compose project
+	// are labelled with their session and would otherwise each look like a
+	// container that lost its row.
+	Role    string
+	Running bool
+	Status  string
 }
 
 // CreateContainer creates a session container without starting it.
@@ -99,8 +105,10 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (strin
 		for _, p := range spec.Ports {
 			port := nat.Port(strconv.Itoa(p) + "/tcp")
 			config.ExposedPorts[port] = struct{}{}
-			// Loopback, and a port Docker picks: whoever reaches it gets an editor
-			// inside the session without being asked for anything.
+			// Loopback, and a port Docker picks. Loopback because whoever
+			// reaches one of these is inside the session with nothing asked of
+			// them; a port Docker picks because a fixed one would make the
+			// second session from the same image fail to start.
 			hostConfig.PortBindings[port] = []nat.PortBinding{{HostIP: "127.0.0.1"}}
 		}
 	}
@@ -184,6 +192,7 @@ func (c *Client) ListManagedContainers(ctx context.Context) ([]ManagedContainer,
 		out = append(out, ManagedContainer{
 			ID:        summary.ID,
 			SessionID: summary.Labels[LabelSessionID],
+			Role:      summary.Labels[LabelRole],
 			Running:   summary.State == "running",
 			Status:    summary.State,
 		})

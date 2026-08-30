@@ -60,7 +60,13 @@ type testEnv struct {
 	docker        *fakeDocker
 	cloner        *fakeCloner
 	editor        *fakeEditor
+	compose       *fakeCompose
 	vscode        *fakeVSCode
+	// deps is what the running server was built from, so a test can rebuild it
+	// with an optional collaborator left out, and newSessions rebuilds the
+	// orchestrator the same way.
+	deps        Deps
+	newSessions func(session.Compose) *session.Manager
 	// workspaces is the root the session manager provisions into.
 	workspaces string
 }
@@ -160,16 +166,23 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	repos := provider.NewLister(providers, logins, time.Minute)
 	cloner := &fakeCloner{}
 	editor := &fakeEditor{}
+	compose := &fakeCompose{docker: docker}
 	vscode := &fakeVSCode{dir: "/vscode-release"}
 
-	sessions := session.NewManager(st, docker, cloner, auth.NewGitCredentialSource(logins, providers), vscode, session.Config{
-		WorkspaceRoot:     workspaces,
-		ClaudeCredentials: claudeCredentials,
-		ClaudeLoginDir:    filepath.Join(workspaces, "claude-login"),
-		GitUserName:       "Hexagon User",
-		GitUserEmail:      "user@example.test",
-		ContainerUser:     "1000:1000",
-	}, slog.New(slog.DiscardHandler))
+	// A closure rather than a value, so a test can rebuild the orchestrator
+	// without `docker compose`: the manager captures its collaborators, and
+	// leaving one out of Deps alone would not reach it.
+	newSessions := func(compose session.Compose) *session.Manager {
+		return session.NewManager(st, docker, cloner, auth.NewGitCredentialSource(logins, providers), vscode, compose, session.Config{
+			WorkspaceRoot:     workspaces,
+			ClaudeCredentials: claudeCredentials,
+			ClaudeLoginDir:    filepath.Join(workspaces, "claude-login"),
+			GitUserName:       "Hexagon User",
+			GitUserEmail:      "user@example.test",
+			ContainerUser:     "1000:1000",
+		}, slog.New(slog.DiscardHandler))
+	}
+	sessions := newSessions(compose)
 
 	oauth, err := auth.NewOAuth(auth.OAuthConfig{
 		ClientID:     "client",
@@ -194,7 +207,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		t.Fatalf("new setup: %v", err)
 	}
 
-	handler := New(Deps{
+	deps := Deps{
 		Config:         cfg,
 		Store:          st,
 		Auth:           logins,
@@ -206,12 +219,14 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		Docker:         docker,
 		Sessions:       sessions,
 		BaseDockerfile: "FROM scratch\n",
+		BaseCompose:    "services: {}\n",
 		Editor:         editor,
+		Compose:        compose,
 		Frontend:       fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}},
 		Log:            slog.New(slog.DiscardHandler),
-	})
+	}
 
-	server := httptest.NewServer(handler)
+	server := httptest.NewServer(New(deps))
 	t.Cleanup(server.Close)
 
 	jar, err := cookiejar.New(nil)
@@ -233,7 +248,10 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		docker:        docker,
 		cloner:        cloner,
 		editor:        editor,
+		compose:       compose,
 		vscode:        vscode,
+		deps:          deps,
+		newSessions:   newSessions,
 
 		workspaces: workspaces,
 		client: &http.Client{
@@ -241,6 +259,26 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 			CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		},
 	}
+}
+
+// without rebuilds the server with one optional collaborator left out, so a
+// test can see what a server that does not have it serves. The listener is the
+// same one, so the client keeps its cookies and its origin.
+func (e *testEnv) without(change func(*Deps)) {
+	e.t.Helper()
+	change(&e.deps)
+	e.server.Config.Handler = New(e.deps)
+}
+
+// withoutEditor is a server with no Claude Code binary; withoutCompose one with
+// no `docker compose`.
+func (e *testEnv) withoutEditor() { e.without(func(d *Deps) { d.Editor = nil }) }
+
+func (e *testEnv) withoutCompose() {
+	e.without(func(d *Deps) {
+		d.Compose = nil
+		d.Sessions = e.newSessions(nil)
+	})
 }
 
 // signIn completes a login so the client holds a session cookie.

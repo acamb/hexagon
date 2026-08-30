@@ -8,7 +8,7 @@ as described in [AGENTS.md](../../AGENTS.md).
 |---|---|---|---|
 | 1 | First time wizard | [01-first-time-wizard.md](01-first-time-wizard.md) | done |
 | 2 | Server settings | [02-server-settings.md](02-server-settings.md) | done |
-| 3 | Support for complex builds | | todo |
+| 3 | Support for complex builds | [03-complex-builds.md](03-complex-builds.md) | done |
 | 4 | Multiple Claude accounts | | todo |
 
 Points 1 and 2 are the same feature seen twice: the wizard configures a server
@@ -20,3 +20,8 @@ Point 2 covers the whole configuration file rather than the three settings its
 statement lists, at the user's request. Two keys are shown and not editable —
 the listen address and the secret key — for the reason given in the analysis: a
 wrong value in either cannot be corrected from the page afterwards.
+
+Point 3 is two features on one page: a second shape of image, where a compose
+file describes the services beside the one the Dockerfile builds, and published
+ports, which belong to the session rather than to the image because a port
+binding is a property of a container.

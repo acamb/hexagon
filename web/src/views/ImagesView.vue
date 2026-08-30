@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import AppHeader from '../components/AppHeader.vue'
+import AskClaude from '../components/AskClaude.vue'
 import Spinner from '../components/Spinner.vue'
 import StatusDot from '../components/StatusDot.vue'
 import { ApiError, api, type Image, type ImageSource } from '../api'
@@ -13,41 +14,14 @@ const submitting = ref(false)
 const name = ref('')
 const sourceType = ref<ImageSource>('dockerfile')
 const dockerfile = ref('')
+const compose = ref('')
 const registryRef = ref('')
 
-// Asking Claude Code to edit the Dockerfile. canAsk is false when the server has
-// no claude binary to run; previous holds the text the answer replaced, which is
-// what Undo puts back.
+// canAsk is false when the server has no claude binary to run, canCompose when
+// it has no `docker compose`. Each control is left out rather than offered as a
+// button that always fails.
 const canAsk = ref(false)
-const instruction = ref('')
-const asking = ref(false)
-const summary = ref('')
-const previous = ref<string | null>(null)
-
-async function ask() {
-  const said = instruction.value.trim()
-  if (!said || asking.value) return
-  asking.value = true
-  error.value = null
-  try {
-    const edit = await api.images.editDockerfile(dockerfile.value, said)
-    previous.value = dockerfile.value
-    dockerfile.value = edit.dockerfile
-    summary.value = edit.summary
-    instruction.value = ''
-  } catch (e) {
-    error.value = message(e)
-  } finally {
-    asking.value = false
-  }
-}
-
-function undo() {
-  if (previous.value === null) return
-  dockerfile.value = previous.value
-  previous.value = null
-  summary.value = ''
-}
+const canCompose = ref(false)
 
 const removing = ref<string | null>(null)
 const openLogId = ref<string | null>(null)
@@ -107,7 +81,8 @@ async function create() {
     const created = await api.images.create({
       name: name.value,
       sourceType: sourceType.value,
-      dockerfile: sourceType.value === 'dockerfile' ? dockerfile.value : undefined,
+      dockerfile: sourceType.value === 'registry' ? undefined : dockerfile.value,
+      compose: sourceType.value === 'compose' ? compose.value : undefined,
       registryRef: sourceType.value === 'registry' ? registryRef.value : undefined,
     })
     name.value = ''
@@ -181,7 +156,9 @@ onMounted(async () => {
   try {
     const template = await api.images.template()
     dockerfile.value = template.dockerfile
+    compose.value = template.compose
     canAsk.value = template.canAsk
+    canCompose.value = template.canCompose
   } catch {
     // The template is a convenience; the form still works without it.
   }
@@ -213,40 +190,58 @@ onUnmounted(() => window.clearInterval(timer))
         <div class="choices">
           <label><input type="radio" value="dockerfile" v-model="sourceType" /> Dockerfile</label>
           <label><input type="radio" value="registry" v-model="sourceType" /> Registry image</label>
+          <label v-if="canCompose">
+            <input type="radio" value="compose" v-model="sourceType" /> Dockerfile and compose
+          </label>
         </div>
       </div>
 
-      <div v-if="sourceType === 'dockerfile'" class="field">
+      <div v-if="sourceType !== 'registry'" class="field">
         <label>
           <span>Dockerfile</span>
           <textarea v-model="dockerfile" rows="14" spellcheck="false" required></textarea>
         </label>
 
-        <div v-if="canAsk" class="ask">
-          <input
-            v-model="instruction"
-            :disabled="asking"
-            placeholder="Ask Claude to change it: add the Go toolchain"
-            @keydown.enter.prevent="ask"
-          />
-          <button type="button" :disabled="asking || !instruction.trim()" @click="ask">
-            <Spinner v-if="asking" />{{ asking ? 'Asking…' : 'Ask Claude' }}
-          </button>
-        </div>
-
-        <p v-if="summary" class="summary">
-          {{ summary }}
-          <button v-if="previous !== null" type="button" class="link" @click="undo">undo</button>
-        </p>
+        <AskClaude
+          v-if="canAsk"
+          v-model="dockerfile"
+          kind="dockerfile"
+          placeholder="Ask Claude to change it: add the Go toolchain"
+          @failed="error = $event"
+        />
       </div>
 
-      <label v-else class="field">
+      <div v-if="sourceType === 'compose'" class="field">
+        <label>
+          <span>Compose file</span>
+          <textarea v-model="compose" rows="14" spellcheck="false" required></textarea>
+        </label>
+        <p class="hint">
+          The services a session needs beside the agent — a database, a cache, a queue. Hexagon
+          adds the agent itself as a service named <code>hexagon</code>, starting after these and
+          reaching them by their service name. The file is refused if any service uses
+          <code>build</code>, bind mounts a host path, fixes a host port, asks for
+          <code>privileged</code>, <code>cap_add</code>, <code>security_opt</code> or
+          <code>devices</code>, puts <code>network_mode</code>, <code>pid</code>,
+          <code>ipc</code> or <code>uts</code> on <code>host</code>, or runs as root.
+        </p>
+
+        <AskClaude
+          v-if="canAsk"
+          v-model="compose"
+          kind="compose"
+          placeholder="Ask Claude to change it: add a postgres 16"
+          @failed="error = $event"
+        />
+      </div>
+
+      <label v-if="sourceType === 'registry'" class="field">
         <span>Image reference</span>
         <input v-model="registryRef" required placeholder="node:22-bookworm-slim" />
       </label>
 
       <button type="submit" :disabled="submitting">
-        <Spinner v-if="submitting" />{{ sourceType === 'dockerfile' ? 'Build image' : 'Pull image' }}
+        <Spinner v-if="submitting" />{{ sourceType === 'registry' ? 'Pull image' : 'Build image' }}
       </button>
     </form>
 
@@ -341,31 +336,10 @@ h1 {
   font-size: 0.9rem;
 }
 
-.ask {
-  display: flex;
-  gap: 0.5rem;
-}
-
-.ask input {
-  flex: 1;
-  min-width: 0;
-}
-
-.summary {
+.hint {
   margin: 0;
   color: var(--text-muted);
-  font-size: 0.9rem;
-}
-
-.link {
-  margin-left: 0.4rem;
-  padding: 0;
-  border: none;
-  background: none;
-  color: var(--accent);
-  font: inherit;
-  font-size: 0.9rem;
-  cursor: pointer;
+  font-size: 0.85rem;
 }
 
 .choices {

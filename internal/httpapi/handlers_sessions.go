@@ -37,11 +37,30 @@ type sessionResponse struct {
 	PropagateToken bool `json:"propagateToken"`
 	// VSCode is reported but never updated: the mount and the port binding are
 	// the container, and there is no way to add them to one that exists.
-	VSCode    bool      `json:"vscode"`
+	VSCode bool `json:"vscode"`
+	// Ports pairs each container port the session publishes with the host port
+	// Docker gave it. Reported and never updated, for the same reason as VSCode
+	// above.
+	Ports []sessionPort `json:"ports"`
+	// Compose is whether this session is a project rather than a single
+	// container, which is a property of the image it came from.
+	Compose   bool      `json:"compose"`
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-func newSessionResponse(s *store.Session) sessionResponse {
+// sessionPort is one published port. Host is absent while the session is not
+// running, because that is the truth: there is no binding to report until the
+// container is up, and Docker picks a new one every time it starts.
+type sessionPort struct {
+	Container int `json:"container"`
+	Host      int `json:"host,omitempty"`
+}
+
+func newSessionResponse(s *store.Session, hostPorts map[int]int) sessionResponse {
+	ports := make([]sessionPort, 0, len(s.Ports))
+	for _, container := range s.Ports {
+		ports = append(ports, sessionPort{Container: container, Host: hostPorts[container]})
+	}
 	return sessionResponse{
 		ID:             s.ID,
 		Title:          s.Title,
@@ -56,6 +75,8 @@ func newSessionResponse(s *store.Session) sessionResponse {
 		AutoClaude:     s.AutoClaude,
 		PropagateToken: s.PropagateToken,
 		VSCode:         s.VSCode,
+		Ports:          ports,
+		Compose:        s.Compose,
 		CreatedAt:      s.CreatedAt,
 	}
 }
@@ -72,7 +93,7 @@ func (s *Server) handleListSessions(w http.ResponseWriter, r *http.Request) {
 
 	out := make([]sessionResponse, 0, len(sessions))
 	for _, session := range sessions {
-		out = append(out, newSessionResponse(session))
+		out = append(out, newSessionResponse(session, s.sessions.PublishedPorts(r.Context(), session)))
 	}
 	writeJSON(w, http.StatusOK, out)
 }
@@ -84,7 +105,14 @@ func (s *Server) handleGetSession(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, newSessionResponse(s.sessions.Refresh(r.Context(), found)))
+	s.writeSession(w, r, http.StatusOK, s.sessions.Refresh(r.Context(), found))
+}
+
+// writeSession answers with one session, looking its published ports up as it
+// goes. They are never stored: Docker picks a new host port every time a
+// container starts.
+func (s *Server) writeSession(w http.ResponseWriter, r *http.Request, status int, found *store.Session) {
+	writeJSON(w, status, newSessionResponse(found, s.sessions.PublishedPorts(r.Context(), found)))
 }
 
 type createSessionRequest struct {
@@ -115,6 +143,10 @@ type createSessionRequest struct {
 	// editor should carry neither. Only settable here — the mount and the port
 	// binding are the container, and there is no way to add them afterwards.
 	VSCode *bool `json:"vscode"`
+	// Ports are container ports to publish on the host's loopback interface,
+	// with the host side left to Docker. Only settable here, like VSCode above:
+	// a container keeps the port bindings it was created with.
+	Ports []int `json:"ports"`
 }
 
 // handleCreateSession starts provisioning a session and returns straight away;
@@ -156,6 +188,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		AutoClaude:     req.AutoClaude == nil || *req.AutoClaude,
 		PropagateToken: req.PropagateToken == nil || *req.PropagateToken,
 		VSCode:         req.VSCode != nil && *req.VSCode,
+		Ports:          req.Ports,
 	}
 	if fullName := strings.TrimSpace(req.RepoFullName); fullName != "" {
 		// The clone URL is never taken from the request: it is looked up in the
@@ -196,6 +229,12 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	case errors.Is(err, session.ErrVSCodeUnavailable):
 		writeError(w, http.StatusServiceUnavailable, "the VS Code integration is not available on this server")
 		return
+	case errors.Is(err, session.ErrComposeUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "this server has no docker compose to run a project with")
+		return
+	case errors.Is(err, session.ErrInvalidPorts):
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
 	case err != nil:
 		s.log.Error("create session", "repo", create.RepoFullName, "err", err)
 		writeError(w, http.StatusInternalServerError, "cannot create session")
@@ -204,7 +243,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 
 	s.log.Info("session created", "session", created.ID,
 		"repo", created.RepoFullName, "branch", created.Branch, "provider", created.Provider)
-	writeJSON(w, http.StatusAccepted, newSessionResponse(created))
+	s.writeSession(w, r, http.StatusAccepted, created)
 }
 
 // requireConnectedAccount reports whether the caller has that account, and
@@ -288,7 +327,7 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	found.AutoClaude = *req.AutoClaude
-	writeJSON(w, http.StatusOK, newSessionResponse(s.sessions.Refresh(r.Context(), found)))
+	s.writeSession(w, r, http.StatusOK, s.sessions.Refresh(r.Context(), found))
 }
 
 // handleStartSession brings a stopped session back up.
@@ -301,7 +340,7 @@ func (s *Server) handleStartSession(w http.ResponseWriter, r *http.Request) {
 		s.reportLifecycleError(w, "start", found, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newSessionResponse(s.sessions.Refresh(r.Context(), found)))
+	s.writeSession(w, r, http.StatusOK, s.sessions.Refresh(r.Context(), found))
 }
 
 // handleStopSession shuts a session's container down, keeping the workspace.
@@ -314,7 +353,7 @@ func (s *Server) handleStopSession(w http.ResponseWriter, r *http.Request) {
 		s.reportLifecycleError(w, "stop", found, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, newSessionResponse(s.sessions.Refresh(r.Context(), found)))
+	s.writeSession(w, r, http.StatusOK, s.sessions.Refresh(r.Context(), found))
 }
 
 // handleDeleteSession removes a session. ?purge=true also deletes the workspace

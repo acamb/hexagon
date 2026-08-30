@@ -2,8 +2,10 @@ package session
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -11,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/andrea/hexagon/internal/claudex"
+	"github.com/andrea/hexagon/internal/composex"
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/provider"
 	"github.com/andrea/hexagon/internal/store"
@@ -36,8 +39,43 @@ func testManager(t *testing.T, docker dockerx.API) (*Manager, *store.Store, stri
 	t.Cleanup(func() { st.Close() })
 
 	root := filepath.Join(t.TempDir(), "workspaces")
-	manager := NewManager(st, docker, nil, nil, nil, Config{WorkspaceRoot: root}, slog.New(slog.DiscardHandler))
+	manager := NewManager(st, docker, nil, nil, nil, nil, Config{WorkspaceRoot: root}, slog.New(slog.DiscardHandler))
 	return manager, st, root
+}
+
+// fakeCompose records what the manager asked of the compose CLI, so a test can
+// say that a compose session's lifecycle went through the project rather than
+// through one container.
+type fakeCompose struct {
+	services []string
+	err      error
+	calls    []string
+	downV    bool
+}
+
+func (f *fakeCompose) Validate(context.Context, string) ([]string, error) {
+	f.calls = append(f.calls, "validate")
+	return f.services, f.err
+}
+
+func (f *fakeCompose) Up(context.Context, composex.Project) error {
+	f.calls = append(f.calls, "up")
+	return f.err
+}
+
+func (f *fakeCompose) Start(context.Context, composex.Project) error {
+	f.calls = append(f.calls, "start")
+	return f.err
+}
+
+func (f *fakeCompose) Stop(context.Context, composex.Project) error {
+	f.calls = append(f.calls, "stop")
+	return f.err
+}
+
+func (f *fakeCompose) Down(_ context.Context, _ composex.Project, volumes bool) error {
+	f.calls, f.downV = append(f.calls, "down"), volumes
+	return f.err
 }
 
 // removeWorkspace is a recursive delete driven by a path from the database.
@@ -273,5 +311,127 @@ func TestContainerSpecKeepsTheCredentialsMountRegardless(t *testing.T) {
 	withoutCredential := manager.containerSpec(session, "/home", "", provider.GitAuth{}, claudex.Credential{})
 	if !slices.Contains(withoutCredential.Binds, wantMount) {
 		t.Errorf("binds = %v, want the credentials mount", withoutCredential.Binds)
+	}
+}
+
+// The generated compose service and the ContainerSpec for the same session must
+// describe the same container. Two hand-written lists would drift inside a
+// milestone; this is the test that says they are one list rendered twice.
+func TestComposeServiceMatchesTheContainerSpec(t *testing.T) {
+	manager, _, _ := testManager(t, nil)
+	manager.cfg.ContainerUser = "1000:1000"
+
+	session := &store.Session{ID: "s-1", RepoDir: "/repo", ImageRef: "ref", Ports: []int{3000}, Compose: true}
+	spec := manager.containerSpec(session, "/home", "", provider.GitAuth{}, claudex.Credential{})
+
+	rendered, err := composeOverlay(spec, []string{"db"})
+	if err != nil {
+		t.Fatalf("composeOverlay: %v", err)
+	}
+	var file struct {
+		Services map[string]composeService `json:"services"`
+	}
+	if err := json.Unmarshal(rendered, &file); err != nil {
+		t.Fatalf("the rendered file is not readable: %v\n%s", err, rendered)
+	}
+
+	agent, ok := file.Services[composex.AgentService]
+	if !ok {
+		t.Fatalf("no %q service in the rendered file:\n%s", composex.AgentService, rendered)
+	}
+	if agent.Image != spec.Image {
+		t.Errorf("image = %q, want %q", agent.Image, spec.Image)
+	}
+	if agent.ContainerName != spec.Name {
+		t.Errorf("container_name = %q, want %q — the terminal finds the container by this name", agent.ContainerName, spec.Name)
+	}
+	if agent.User != spec.User {
+		t.Errorf("user = %q, want %q", agent.User, spec.User)
+	}
+	if agent.WorkingDir != spec.WorkingDir {
+		t.Errorf("working_dir = %q, want %q", agent.WorkingDir, spec.WorkingDir)
+	}
+	if !slices.Equal(agent.Volumes, spec.Binds) {
+		t.Errorf("volumes = %v, want the spec's binds %v", agent.Volumes, spec.Binds)
+	}
+	if !slices.Equal(agent.Environment, spec.Env) {
+		t.Errorf("environment = %v, want the spec's env %v", agent.Environment, spec.Env)
+	}
+	if !slices.Equal(agent.Command, spec.Cmd) {
+		t.Errorf("command = %v, want the spec's command %v", agent.Command, spec.Cmd)
+	}
+	if !maps.Equal(agent.Labels, spec.Labels) {
+		t.Errorf("labels = %v, want the spec's labels %v", agent.Labels, spec.Labels)
+	}
+	// A published port keeps the host side to Docker, exactly as dockerx does.
+	if !slices.Equal(agent.Ports, []string{"127.0.0.1::3000"}) {
+		t.Errorf("ports = %v, want the container port published on loopback", agent.Ports)
+	}
+	// The agent exists to use the services, so it starts after them.
+	if !slices.Equal(agent.DependsOn, []string{"db"}) {
+		t.Errorf("depends_on = %v, want the user's services", agent.DependsOn)
+	}
+
+	// The user's services are labelled with their session, which is what stops
+	// the reconciler reporting each of them as a container that lost its row.
+	db := file.Services["db"]
+	if db.Labels[dockerx.LabelSessionID] != "s-1" || db.Labels[dockerx.LabelRole] != serviceRole {
+		t.Errorf("db labels = %v, want the session id and the service role", db.Labels)
+	}
+	if db.Image != "" {
+		t.Errorf("db.image = %q: the overlay must only add labels, not redefine the service", db.Image)
+	}
+}
+
+func TestCreateRejectsAComposeImageWithNoCompose(t *testing.T) {
+	ctx := context.Background()
+	manager, st, _ := testManager(t, stubDocker{})
+
+	user, err := st.UpsertUser(ctx, &store.User{GitHubLogin: "alice", GitHubID: 1})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	image, err := st.CreateImage(ctx, &store.Image{UserID: user.ID, Name: "advanced",
+		SourceType: store.ImageSourceCompose, Compose: "services: {}", ImageRef: "ref",
+		Status: store.ImageStatusReady})
+	if err != nil {
+		t.Fatalf("create image: %v", err)
+	}
+
+	_, err = manager.Create(ctx, user, CreateRequest{ImageID: image.ID})
+	if !errors.Is(err, ErrComposeUnavailable) {
+		t.Errorf("error = %v, want ErrComposeUnavailable", err)
+	}
+}
+
+func TestCheckPorts(t *testing.T) {
+	cases := []struct {
+		name   string
+		ports  []int
+		vscode bool
+		want   string
+	}{
+		{"nothing published", nil, false, ""},
+		{"an ordinary port", []int{3000, 8080}, false, ""},
+		{"the vscode port without the integration", []int{dockerx.VSCodePort}, false, ""},
+		{"zero", []int{0}, false, "not a port"},
+		{"above the range", []int{70000}, false, "not a port"},
+		{"a duplicate", []int{3000, 3000}, false, "twice"},
+		{"too many", make([]int, maxSessionPorts+1), false, "at most"},
+		{"the vscode port with the integration", []int{dockerx.VSCodePort}, true, "VS Code"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := checkPorts(c.ports, c.vscode)
+			switch {
+			case c.want == "" && err != nil:
+				t.Errorf("checkPorts = %v, want it accepted", err)
+			case c.want == "":
+			case err == nil:
+				t.Errorf("checkPorts accepted %v", c.ports)
+			case !strings.Contains(err.Error(), c.want):
+				t.Errorf("error = %q, want it to mention %q", err, c.want)
+			}
+		})
 	}
 }

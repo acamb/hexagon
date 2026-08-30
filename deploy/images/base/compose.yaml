@@ -1,0 +1,39 @@
+# Hexagon advanced image: the services a session needs beside the agent.
+#
+# Hexagon adds its own service to this project — the container Claude Code runs
+# in, built from the Dockerfile next to this file — so do not describe it here.
+# It is called "hexagon", it starts after everything below, and it reaches these
+# services on the project's default network by their service name: a session can
+# talk to the example below as "db".
+#
+# What this file may not ask for, because a session container must not be able
+# to leave its own container:
+#
+#   - build: every service comes from a registry image. The Dockerfile is the
+#     one thing Hexagon builds.
+#   - bind mounts of host paths. Named volumes, like the one below, are fine.
+#   - a fixed host port in ports. Hexagon publishes the ports a session asked
+#     for itself, and picks the host side so two sessions never collide.
+#   - privileged, cap_add, security_opt, devices.
+#   - network_mode, pid, ipc or uts set to host.
+#   - running as root.
+#
+# Delete everything below and write your own.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_PASSWORD: hexagon
+      POSTGRES_USER: hexagon
+      POSTGRES_DB: hexagon
+    user: "999:999"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+
+  cache:
+    image: redis:7-alpine
+    user: "999:999"
+
+volumes:
+  db-data:

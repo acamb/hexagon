@@ -71,15 +71,15 @@ func (r recordedFiles) env(t *testing.T) string {
 // success is the envelope the CLI prints with --output-format json and a schema.
 const success = `{"is_error":false,"result":"{\"dockerfile\":\"FROM busybox\\nRUN true\",\"summary\":\"Added a RUN\"}"}`
 
-func TestEditDockerfileReturnsTheEditedFile(t *testing.T) {
+func TestEditReturnsTheEditedFile(t *testing.T) {
 	runner, recorded := fakeClaude(t, success, 0)
 
-	edit, err := runner.EditDockerfile(context.Background(), Credential{}, "FROM busybox", "add a RUN")
+	edit, err := runner.Edit(context.Background(), Credential{}, SourceDockerfile, "FROM busybox", "add a RUN")
 	if err != nil {
-		t.Fatalf("EditDockerfile: %v", err)
+		t.Fatalf("Edit: %v", err)
 	}
-	if edit.Dockerfile != "FROM busybox\nRUN true" {
-		t.Errorf("dockerfile = %q", edit.Dockerfile)
+	if edit.Content != "FROM busybox\nRUN true" {
+		t.Errorf("content = %q", edit.Content)
 	}
 	if edit.Summary != "Added a RUN" {
 		t.Errorf("summary = %q", edit.Summary)
@@ -106,11 +106,11 @@ func TestEditDockerfileReturnsTheEditedFile(t *testing.T) {
 	}
 }
 
-func TestEditDockerfilePassesTheConfiguredModel(t *testing.T) {
+func TestEditPassesTheConfiguredModel(t *testing.T) {
 	runner, recorded := fakeClaude(t, success, 0)
 
-	if _, err := runner.WithModel("sonnet").EditDockerfile(context.Background(), Credential{}, "FROM busybox", "x"); err != nil {
-		t.Fatalf("EditDockerfile: %v", err)
+	if _, err := runner.WithModel("sonnet").Edit(context.Background(), Credential{}, SourceDockerfile, "FROM busybox", "x"); err != nil {
+		t.Fatalf("Edit: %v", err)
 	}
 	args, _ := recorded()
 	if !strings.Contains(args, "--model\nsonnet\n") {
@@ -118,7 +118,7 @@ func TestEditDockerfilePassesTheConfiguredModel(t *testing.T) {
 	}
 }
 
-func TestEditDockerfileReportsFailures(t *testing.T) {
+func TestEditReportsFailures(t *testing.T) {
 	cases := []struct {
 		name string
 		body string
@@ -128,16 +128,16 @@ func TestEditDockerfileReportsFailures(t *testing.T) {
 		{"a non-zero exit", "not logged in", 1, "claude code failed"},
 		{"output that is not JSON", "hello", 0, "unreadable"},
 		{"an error the CLI reports itself", `{"is_error":true,"result":"credit balance too low"}`, 0, "reported an error"},
-		{"an answer that is not a Dockerfile", `{"is_error":false,"result":"sorry"}`, 0, "did not answer with a Dockerfile"},
-		{"an empty Dockerfile", `{"is_error":false,"result":"{\"dockerfile\":\"  \",\"summary\":\"\"}"}`, 0, "empty Dockerfile"},
+		{"an answer that is not a Dockerfile", `{"is_error":false,"result":"sorry"}`, 0, "did not answer with a dockerfile"},
+		{"an empty Dockerfile", `{"is_error":false,"result":"{\"dockerfile\":\"  \",\"summary\":\"\"}"}`, 0, "empty dockerfile"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			runner, _ := fakeClaude(t, c.body, c.code)
 
-			_, err := runner.EditDockerfile(context.Background(), Credential{}, "FROM busybox", "x")
+			_, err := runner.Edit(context.Background(), Credential{}, SourceDockerfile, "FROM busybox", "x")
 			if err == nil {
-				t.Fatal("EditDockerfile accepted it")
+				t.Fatal("Edit accepted it")
 			}
 			if !strings.Contains(err.Error(), c.want) {
 				t.Errorf("error = %q, want it to mention %q", err, c.want)
@@ -146,17 +146,17 @@ func TestEditDockerfileReportsFailures(t *testing.T) {
 	}
 }
 
-func TestEditDockerfileGivesUpWhenTheContextEnds(t *testing.T) {
+func TestEditGivesUpWhenTheContextEnds(t *testing.T) {
 	runner, _ := fakeClaude(t, success, 0)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Nanosecond)
 	defer cancel()
 
-	if _, err := runner.EditDockerfile(ctx, Credential{}, "FROM busybox", "x"); err == nil {
-		t.Fatal("EditDockerfile ignored a context that was already over")
+	if _, err := runner.Edit(ctx, Credential{}, SourceDockerfile, "FROM busybox", "x"); err == nil {
+		t.Fatal("Edit ignored a context that was already over")
 	}
 }
 
-func TestEditDockerfilePassesTheCredentialByKind(t *testing.T) {
+func TestEditPassesTheCredentialByKind(t *testing.T) {
 	cases := []struct {
 		name string
 		cred Credential
@@ -169,8 +169,8 @@ func TestEditDockerfilePassesTheCredentialByKind(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			runner, recorded := fakeClaudeEnv(t, success, 0)
-			if _, err := runner.EditDockerfile(context.Background(), c.cred, "FROM busybox", "x"); err != nil {
-				t.Fatalf("EditDockerfile: %v", err)
+			if _, err := runner.Edit(context.Background(), c.cred, SourceDockerfile, "FROM busybox", "x"); err != nil {
+				t.Fatalf("Edit: %v", err)
 			}
 			env := recorded.env(t)
 			if !strings.Contains(env, c.want+"\n") {
@@ -183,12 +183,12 @@ func TestEditDockerfilePassesTheCredentialByKind(t *testing.T) {
 	}
 }
 
-func TestEditDockerfileWithNoCredentialLeavesTheEnvironmentAlone(t *testing.T) {
+func TestEditWithNoCredentialLeavesTheEnvironmentAlone(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "server-key")
 	runner, recorded := fakeClaudeEnv(t, success, 0)
 
-	if _, err := runner.EditDockerfile(context.Background(), Credential{}, "FROM busybox", "x"); err != nil {
-		t.Fatalf("EditDockerfile: %v", err)
+	if _, err := runner.Edit(context.Background(), Credential{}, SourceDockerfile, "FROM busybox", "x"); err != nil {
+		t.Fatalf("Edit: %v", err)
 	}
 	env := recorded.env(t)
 	if !strings.Contains(env, "ANTHROPIC_API_KEY=server-key\n") {
@@ -196,13 +196,13 @@ func TestEditDockerfileWithNoCredentialLeavesTheEnvironmentAlone(t *testing.T) {
 	}
 }
 
-func TestEditDockerfileCredentialReplacesTheServersOwn(t *testing.T) {
+func TestEditCredentialReplacesTheServersOwn(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "server-key")
 	runner, recorded := fakeClaudeEnv(t, success, 0)
 
 	cred := Credential{Kind: KindAPIKey, Secret: "stored-key"}
-	if _, err := runner.EditDockerfile(context.Background(), cred, "FROM busybox", "x"); err != nil {
-		t.Fatalf("EditDockerfile: %v", err)
+	if _, err := runner.Edit(context.Background(), cred, SourceDockerfile, "FROM busybox", "x"); err != nil {
+		t.Fatalf("Edit: %v", err)
 	}
 	env := recorded.env(t)
 	if strings.Count(env, "ANTHROPIC_API_KEY=") != 1 {
@@ -238,5 +238,58 @@ func TestNewRefusesSomethingThatIsNotExecutable(t *testing.T) {
 	}
 	if _, err := New(filepath.Join(t.TempDir(), "missing")); !errors.Is(err, ErrUnavailable) {
 		t.Errorf("err = %v, want ErrUnavailable for a path that does not exist", err)
+	}
+}
+
+// The generalisation from "edit a Dockerfile" to "edit a source file" must cost
+// the Dockerfile path nothing and give the compose path its own prompt and its
+// own schema. Everything else — the flags that make the call safe — is shared.
+func TestEditAsksForTheKindItWasGiven(t *testing.T) {
+	const composeAnswer = `{"is_error":false,"result":"{\"compose\":\"services:\\n  db:\\n    image: postgres:16\",\"summary\":\"Added postgres\"}"}`
+	runner, recorded := fakeClaude(t, composeAnswer, 0)
+
+	edit, err := runner.Edit(context.Background(), Credential{}, SourceCompose, "services: {}", "add postgres")
+	if err != nil {
+		t.Fatalf("Edit: %v", err)
+	}
+	if !strings.Contains(edit.Content, "postgres") {
+		t.Errorf("content = %q", edit.Content)
+	}
+
+	args, stdin := recorded()
+	if !strings.Contains(stdin, "Docker Compose file") {
+		t.Errorf("the compose prompt was not used:\n%s", stdin)
+	}
+	if strings.Contains(stdin, "editing a Dockerfile") {
+		t.Errorf("the Dockerfile prompt reached a compose edit:\n%s", stdin)
+	}
+	// The rules the validator enforces are in the prompt as a convenience. They
+	// are not the check, but leaving them out makes every second answer a 400.
+	for _, rule := range []string{"no service named", "no build", "no fixed host port"} {
+		if !strings.Contains(stdin, rule) {
+			t.Errorf("the compose prompt does not mention %q:\n%s", rule, stdin)
+		}
+	}
+	if !strings.Contains(args, `"compose": {"type": "string"}`) {
+		t.Errorf("the schema does not ask for a compose file:\n%s", args)
+	}
+}
+
+// An answer carrying the other kind is an answer to a question that was not
+// asked, and must not be handed back as if it were the file requested.
+func TestEditRefusesAnAnswerOfAnotherKind(t *testing.T) {
+	runner, _ := fakeClaude(t, success, 0)
+
+	if _, err := runner.Edit(context.Background(), Credential{}, SourceCompose, "services: {}", "x"); err == nil {
+		t.Fatal("a Dockerfile answer was accepted for a compose edit")
+	}
+}
+
+func TestEditRefusesAnUnknownKind(t *testing.T) {
+	runner, _ := fakeClaude(t, success, 0)
+
+	_, err := runner.Edit(context.Background(), Credential{}, "readme", "x", "y")
+	if err == nil || !strings.Contains(err.Error(), "no such editable file") {
+		t.Errorf("err = %v, want it to name the unknown kind", err)
 	}
 }

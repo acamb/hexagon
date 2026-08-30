@@ -45,7 +45,8 @@ internal/auth/      GitHub OAuth login, session cookies, credential encryption
 internal/provider/  the interface a source of repositories implements, and the merged listing
 internal/github/    GitHub REST client
 internal/bitbucket/ Bitbucket Cloud REST client
-internal/claudex/   runs the Claude Code CLI for the Dockerfile editor
+internal/claudex/   runs the Claude Code CLI for the image source editor
+internal/composex/  runs the Docker Compose CLI for images that carry a compose file
 internal/dockerx/   Docker Engine API behind an interface
 internal/gitops/    host-side git: cloning a repository into a session workspace
 internal/session/   orchestrator: provisioning, lifecycle, reconciliation
@@ -220,7 +221,10 @@ These are not preferences. A change that breaks one is wrong even if it passes.
 - Mutating API calls require a same-origin request and a JSON content type.
 - The default listen address stays loopback: whoever reaches the port controls
   the Docker socket.
-- Containers run as the host user, and never as root.
+- Containers run as the host user, and never as root. A user-supplied compose file is
+  checked against a list of refusals — privileged, added capabilities, host namespaces,
+  host bind mounts, fixed host ports, build, and root — before anything is created from
+  it. See [plans/M2/03-complex-builds.md](plans/M2/03-complex-builds.md).
 
 ## Plans and milestones
 

@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/andrea/hexagon/internal/claudex"
 	"github.com/andrea/hexagon/internal/store"
 	"github.com/distribution/reference"
 	"github.com/google/uuid"
@@ -29,9 +30,13 @@ const (
 	// buildLogFlush is how often a running build's output reaches the database,
 	// and therefore the UI.
 	buildLogFlush = time.Second
-	// dockerfileEditTimeout bounds a call to Claude Code. It answers in seconds;
+	// sourceEditTimeout bounds a call to Claude Code. It answers in seconds;
 	// this is the point at which something has gone wrong rather than slow.
-	dockerfileEditTimeout = 3 * time.Minute
+	sourceEditTimeout = 3 * time.Minute
+	// composeValidateTimeout bounds the `docker compose config` a submitted
+	// compose file goes through. It is a local parse: this is the point at which
+	// the CLI is not answering rather than being slow.
+	composeValidateTimeout = 30 * time.Second
 	// maxInstruction bounds what the user can ask for. It is a sentence or two.
 	maxInstruction = 4 << 10
 )
@@ -44,6 +49,7 @@ type imageResponse struct {
 	Name        string    `json:"name"`
 	SourceType  string    `json:"sourceType"`
 	Dockerfile  string    `json:"dockerfile,omitempty"`
+	Compose     string    `json:"compose,omitempty"`
 	RegistryRef string    `json:"registryRef,omitempty"`
 	ImageRef    string    `json:"imageRef,omitempty"`
 	Status      string    `json:"status"`
@@ -57,6 +63,7 @@ func newImageResponse(img *store.Image) imageResponse {
 		Name:        img.Name,
 		SourceType:  img.SourceType,
 		Dockerfile:  img.Dockerfile,
+		Compose:     img.Compose,
 		RegistryRef: img.RegistryRef,
 		ImageRef:    img.ImageRef,
 		Status:      img.Status,
@@ -104,48 +111,57 @@ func (s *Server) handleImageLog(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// handleImageTemplate hands the UI the reference Dockerfile to start from, and
-// says whether this server can also edit one: with no Claude Code binary the
-// page leaves the control out rather than offering a button that always fails.
+// handleImageTemplate hands the UI the files to start a new image from, and
+// says what this server can do besides building one: with no Claude Code binary
+// there is no ask-Claude control, and with no `docker compose` there is no
+// advanced mode. Both are left out of the page rather than offered as buttons
+// that always fail.
 func (s *Server) handleImageTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"dockerfile": s.baseDockerfile,
+		"compose":    s.baseCompose,
 		"canAsk":     s.editor != nil,
+		"canCompose": s.compose != nil,
 	})
 }
 
-type editDockerfileRequest struct {
-	Dockerfile  string `json:"dockerfile"`
+type editSourceRequest struct {
+	Kind        string `json:"kind"`
+	Content     string `json:"content"`
 	Instruction string `json:"instruction"`
 }
 
-// handleEditDockerfile asks Claude Code to apply an instruction to a Dockerfile
-// and hands back the result. Nothing is stored: this is the editor's undo
-// buffer, not an image.
+// handleEditSource asks Claude Code to apply an instruction to a Dockerfile or a
+// compose file and hands back the result. Nothing is stored: this is the
+// editor's undo buffer, not an image.
 //
 // It lives outside /api/images/{id} because the image does not exist yet, and
 // may never: the answer is something to read before deciding to build.
-func (s *Server) handleEditDockerfile(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleEditSource(w http.ResponseWriter, r *http.Request) {
 	if s.editor == nil {
 		writeError(w, http.StatusServiceUnavailable, "this server has no Claude Code binary to run")
 		return
 	}
 
-	var req editDockerfileRequest
+	var req editSourceRequest
 	if err := decodeJSON(w, r, maxImageRequestBody, &req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
 		return
 	}
 	instruction := strings.TrimSpace(req.Instruction)
 	switch {
+	case req.Kind != claudex.SourceDockerfile && req.Kind != claudex.SourceCompose:
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("kind must be %q or %q",
+			claudex.SourceDockerfile, claudex.SourceCompose))
+		return
 	case instruction == "":
 		writeError(w, http.StatusBadRequest, "say what to change")
 		return
 	case len(instruction) > maxInstruction:
 		writeError(w, http.StatusBadRequest, "that instruction is too long")
 		return
-	case strings.TrimSpace(req.Dockerfile) == "":
-		writeError(w, http.StatusBadRequest, "there is no Dockerfile to change")
+	case strings.TrimSpace(req.Content) == "":
+		writeError(w, http.StatusBadRequest, "there is nothing to change")
 		return
 	}
 
@@ -158,17 +174,17 @@ func (s *Server) handleEditDockerfile(w http.ResponseWriter, r *http.Request) {
 
 	// Tied to the request: a browser that has gone away is not going to read
 	// the answer, and this call costs money for as long as it runs.
-	ctx, cancel := context.WithTimeout(r.Context(), dockerfileEditTimeout)
+	ctx, cancel := context.WithTimeout(r.Context(), sourceEditTimeout)
 	defer cancel()
 
-	edit, err := s.editor.EditDockerfile(ctx, cred, req.Dockerfile, instruction)
+	edit, err := s.editor.Edit(ctx, cred, req.Kind, req.Content, instruction)
 	if err != nil {
-		s.log.Error("edit dockerfile", "login", s.user(r).GitHubLogin, "err", err)
+		s.log.Error("edit image source", "kind", req.Kind, "login", s.user(r).GitHubLogin, "err", err)
 		// 502: the thing that failed is something this server called out to.
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
-	s.log.Info("dockerfile edited", "login", s.user(r).GitHubLogin, "summary", edit.Summary)
+	s.log.Info("image source edited", "kind", req.Kind, "login", s.user(r).GitHubLogin, "summary", edit.Summary)
 	writeJSON(w, http.StatusOK, edit)
 }
 
@@ -176,6 +192,7 @@ type createImageRequest struct {
 	Name        string `json:"name"`
 	SourceType  string `json:"sourceType"`
 	Dockerfile  string `json:"dockerfile"`
+	Compose     string `json:"compose"`
 	RegistryRef string `json:"registryRef"`
 }
 
@@ -195,6 +212,22 @@ func (s *Server) handleCreateImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	img.UserID = s.user(r).ID
+
+	// While the operator is still looking at the editor, rather than at the
+	// first session that fails to start. A file Claude Code wrote comes through
+	// here too: the prompt lists the rules, this is what enforces them.
+	if img.SourceType == store.ImageSourceCompose {
+		if s.compose == nil {
+			writeError(w, http.StatusServiceUnavailable, "this server has no docker compose to run a project with")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), composeValidateTimeout)
+		defer cancel()
+		if _, err := s.compose.Validate(ctx, img.Compose); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
 
 	// A build runs for as long as its Dockerfile takes and pulls whatever that
 	// Dockerfile names, so only so many run at once.
@@ -254,6 +287,23 @@ func imageFromRequest(req createImageRequest) (*store.Image, error) {
 		img.Dockerfile = dockerfile
 		img.ImageRef = imageTag(img.ID)
 
+	case store.ImageSourceCompose:
+		// A Dockerfile and a compose file together: the Dockerfile still
+		// describes the container Claude Code runs in, and builds exactly as it
+		// does above.
+		dockerfile := strings.TrimSpace(req.Dockerfile)
+		compose := strings.TrimSpace(req.Compose)
+		switch {
+		case dockerfile == "":
+			return nil, errors.New("a Dockerfile is required")
+		case compose == "":
+			return nil, errors.New("a compose file is required")
+		}
+		img.SourceType = store.ImageSourceCompose
+		img.Dockerfile = dockerfile
+		img.Compose = compose
+		img.ImageRef = imageTag(img.ID)
+
 	case store.ImageSourceRegistry:
 		ref, err := normalizeRegistryRef(req.RegistryRef)
 		if err != nil {
@@ -264,7 +314,8 @@ func imageFromRequest(req createImageRequest) (*store.Image, error) {
 		img.ImageRef = ref
 
 	default:
-		return nil, fmt.Errorf("sourceType must be %q or %q", store.ImageSourceDockerfile, store.ImageSourceRegistry)
+		return nil, fmt.Errorf("sourceType must be %q, %q or %q",
+			store.ImageSourceDockerfile, store.ImageSourceRegistry, store.ImageSourceCompose)
 	}
 	return img, nil
 }
@@ -324,7 +375,7 @@ func (s *Server) handleDeleteImage(w http.ResponseWriter, r *http.Request) {
 
 	// Only tags Hexagon created are ours to remove; a pulled image may well be
 	// in use by something else on this machine.
-	if img.SourceType == store.ImageSourceDockerfile && img.ImageRef != "" {
+	if img.SourceType != store.ImageSourceRegistry && img.ImageRef != "" {
 		if err := s.docker.RemoveImage(r.Context(), img.ImageRef); err != nil {
 			s.log.Warn("image row deleted but the docker image remains", "ref", img.ImageRef, "err", err)
 		}
@@ -360,7 +411,10 @@ func (s *Server) startImageBuild(img *store.Image) {
 
 		var err error
 		switch img.SourceType {
-		case store.ImageSourceDockerfile:
+		// An advanced image builds exactly as a plain one does: the compose
+		// file is a session-time concern and there is nothing here to build
+		// from it.
+		case store.ImageSourceDockerfile, store.ImageSourceCompose:
 			err = s.docker.BuildImage(ctx, img.Dockerfile, img.ImageRef, sink)
 		case store.ImageSourceRegistry:
 			err = s.docker.PullImage(ctx, img.ImageRef, sink)

@@ -119,6 +119,18 @@ func (f *fakeDocker) addContainer(id string, running bool) {
 	f.containers[id] = &fakeContainer{running: running}
 }
 
+// addNamedContainer registers a container under a name rather than a generated
+// id, the way compose does: the project names the agent container, and Docker
+// takes that name wherever it takes an id.
+func (f *fakeDocker) addNamedContainer(name string, running bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.containers == nil {
+		f.containers = map[string]*fakeContainer{}
+	}
+	f.containers[name] = &fakeContainer{running: running}
+}
+
 // setContainerPort makes InspectContainer report a host binding for one of a
 // container's published ports, the way a running container would once Docker
 // has picked one.
@@ -133,6 +145,14 @@ func (f *fakeDocker) setContainerPort(id string, containerPort, hostPort int) {
 		container.ports = map[int]int{}
 	}
 	container.ports[containerPort] = hostPort
+}
+
+// createdContainers is how many containers went through CreateContainer, as
+// opposed to appearing some other way — a compose project creates its own.
+func (f *fakeDocker) createdContainers() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.nextContainer
 }
 
 // containerSpecs returns what was asked of CreateContainer, by container id.

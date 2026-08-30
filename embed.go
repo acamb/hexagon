@@ -23,3 +23,10 @@ func FrontendFS() (fs.FS, error) {
 //
 //go:embed deploy/images/base/Dockerfile
 var BaseDockerfile string
+
+// BaseCompose is the reference compose file for an advanced image, offered as
+// the starting point beside the Dockerfile. An empty editor with a list of
+// rules attached is a worse place to start than two services commented out.
+//
+//go:embed deploy/images/base/compose.yaml
+var BaseCompose string

@@ -12,7 +12,11 @@ import (
 	"testing"
 	"time"
 
+	"os"
+	"path/filepath"
+
 	"github.com/andrea/hexagon/internal/claudex"
+	"github.com/andrea/hexagon/internal/composex"
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/store"
 )
@@ -26,6 +30,7 @@ type fakeDocker struct {
 	pullErr   error
 	attachErr error
 	built     []string
+	builtFrom []string
 	pulled    []string
 	removed   []string
 
@@ -58,6 +63,7 @@ func (f *fakeDocker) Ping(context.Context) error {
 func (f *fakeDocker) BuildImage(_ context.Context, dockerfile, tag string, logs io.Writer) error {
 	f.mu.Lock()
 	f.built = append(f.built, tag)
+	f.builtFrom = append(f.builtFrom, dockerfile)
 	err := f.buildErr
 	f.mu.Unlock()
 
@@ -439,25 +445,114 @@ func TestImageTemplateIsTheBaseDockerfile(t *testing.T) {
 	}
 }
 
+// builtDockerfiles returns the sources BuildImage was given, in order.
+func (f *fakeDocker) builtDockerfiles() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.builtFrom...)
+}
+
+// fakeCompose stands in for the compose CLI. The real one is exercised in
+// internal/composex against a fake binary; here what matters is that the
+// handler refuses what it refuses.
+type fakeCompose struct {
+	mu sync.Mutex
+	// docker is where Up registers the containers the project would have
+	// created, so the rest of the server finds the agent container by name the
+	// way it would with a real daemon.
+	docker   *fakeDocker
+	err      error
+	services []string
+	seen     []string
+	calls    []string
+}
+
+func (f *fakeCompose) Validate(_ context.Context, content string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.seen = append(f.seen, content)
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.services == nil {
+		return []string{"db"}, nil
+	}
+	return f.services, nil
+}
+
+// Up reads the file Hexagon generated and registers its agent container, which
+// is also what says that file is well formed and names the container.
+func (f *fakeCompose) Up(_ context.Context, p composex.Project) error {
+	if err := f.record("up"); err != nil {
+		return err
+	}
+	overlay, err := os.ReadFile(filepath.Join(p.Dir, "hexagon.yaml"))
+	if err != nil {
+		return err
+	}
+	var file struct {
+		Services map[string]struct {
+			ContainerName string `json:"container_name"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(overlay, &file); err != nil {
+		return err
+	}
+	f.docker.addNamedContainer(file.Services["hexagon"].ContainerName, true)
+	return nil
+}
+
+func (f *fakeCompose) Start(_ context.Context, _ composex.Project) error { return f.record("start") }
+func (f *fakeCompose) Stop(_ context.Context, _ composex.Project) error  { return f.record("stop") }
+
+func (f *fakeCompose) Down(_ context.Context, _ composex.Project, _ bool) error {
+	return f.record("down")
+}
+
+func (f *fakeCompose) record(call string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, call)
+	return f.err
+}
+
+func (f *fakeCompose) validated() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.seen) > 0
+}
+
+// quote renders a string as a JSON literal, for a test that builds a request
+// body around content it did not write itself.
+func quote(s string) string {
+	out, _ := json.Marshal(s)
+	return string(out)
+}
+
 // fakeEditor stands in for Claude Code. The real one is exercised in
 // internal/claudex against a fake binary; here what matters is the handler.
 type fakeEditor struct {
 	mu          sync.Mutex
 	err         error
 	checkErr    error
-	dockerfile  string
+	answer      string
+	kind        string
+	content     string
 	instruction string
 	checked     []claudex.Credential
 }
 
-func (f *fakeEditor) EditDockerfile(_ context.Context, _ claudex.Credential, dockerfile, instruction string) (claudex.DockerfileEdit, error) {
+func (f *fakeEditor) Edit(_ context.Context, _ claudex.Credential, kind, content, instruction string) (claudex.Edit, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.dockerfile, f.instruction = dockerfile, instruction
+	f.kind, f.content, f.instruction = kind, content, instruction
 	if f.err != nil {
-		return claudex.DockerfileEdit{}, f.err
+		return claudex.Edit{}, f.err
 	}
-	return claudex.DockerfileEdit{Dockerfile: dockerfile + "RUN apt-get install -y ripgrep\n", Summary: "Added ripgrep"}, nil
+	if f.answer != "" {
+		return claudex.Edit{Content: f.answer, Summary: "As asked"}, nil
+	}
+	return claudex.Edit{Content: content + "RUN apt-get install -y ripgrep\n", Summary: "Added ripgrep"}, nil
 }
 
 func (f *fakeEditor) Check(_ context.Context, cred claudex.Credential) error {
@@ -467,62 +562,79 @@ func (f *fakeEditor) Check(_ context.Context, cred claudex.Credential) error {
 	return f.checkErr
 }
 
-func (f *fakeEditor) asked() (dockerfile, instruction string) {
+func (f *fakeEditor) asked() (kind, content, instruction string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.dockerfile, f.instruction
+	return f.kind, f.content, f.instruction
 }
 
-func TestEditDockerfileReturnsWhatClaudeAnswered(t *testing.T) {
+func TestEditSourceReturnsWhatClaudeAnswered(t *testing.T) {
 	env := newTestEnv(t, "alice")
 	env.signIn()
 
-	resp := env.postJSON("/api/images/dockerfile",
-		`{"dockerfile":"FROM busybox\n","instruction":"add ripgrep"}`)
+	resp := env.postJSON("/api/images/source",
+		`{"kind":"dockerfile","content":"FROM busybox\n","instruction":"add ripgrep"}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200", resp.StatusCode)
 	}
-	var edit claudex.DockerfileEdit
+	var edit claudex.Edit
 	env.decode(resp, &edit)
-	if !strings.Contains(edit.Dockerfile, "ripgrep") || !strings.HasPrefix(edit.Dockerfile, "FROM busybox") {
-		t.Errorf("dockerfile = %q", edit.Dockerfile)
+	if !strings.Contains(edit.Content, "ripgrep") || !strings.HasPrefix(edit.Content, "FROM busybox") {
+		t.Errorf("content = %q", edit.Content)
 	}
 	if edit.Summary != "Added ripgrep" {
 		t.Errorf("summary = %q", edit.Summary)
 	}
 
-	dockerfile, instruction := env.editor.asked()
-	if dockerfile != "FROM busybox\n" || instruction != "add ripgrep" {
-		t.Errorf("asked for %q with %q", dockerfile, instruction)
+	kind, content, instruction := env.editor.asked()
+	if kind != "dockerfile" || content != "FROM busybox\n" || instruction != "add ripgrep" {
+		t.Errorf("asked to edit the %s %q with %q", kind, content, instruction)
 	}
 }
 
-func TestEditDockerfileNeedsSomethingToDo(t *testing.T) {
+func TestEditSourceEditsAComposeFileToo(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	resp := env.postJSON("/api/images/source",
+		`{"kind":"compose","content":"services: {}\n","instruction":"add postgres"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if kind, _, _ := env.editor.asked(); kind != "compose" {
+		t.Errorf("kind = %q, want the compose file to have been asked for", kind)
+	}
+}
+
+func TestEditSourceNeedsSomethingToDo(t *testing.T) {
 	env := newTestEnv(t, "alice")
 	env.signIn()
 
 	for _, body := range []string{
-		`{"dockerfile":"FROM busybox\n","instruction":"   "}`,
-		`{"dockerfile":"  ","instruction":"add ripgrep"}`,
+		`{"kind":"dockerfile","content":"FROM busybox\n","instruction":"   "}`,
+		`{"kind":"dockerfile","content":"  ","instruction":"add ripgrep"}`,
+		// A kind this server has no prompt for is a request it cannot answer.
+		`{"kind":"readme","content":"hello","instruction":"add ripgrep"}`,
+		`{"content":"FROM busybox\n","instruction":"add ripgrep"}`,
 	} {
-		if resp := env.postJSON("/api/images/dockerfile", body); resp.StatusCode != http.StatusBadRequest {
+		if resp := env.postJSON("/api/images/source", body); resp.StatusCode != http.StatusBadRequest {
 			t.Errorf("status = %d for %s, want 400", resp.StatusCode, body)
 		}
 	}
-	if _, instruction := env.editor.asked(); instruction != "" {
+	if _, _, instruction := env.editor.asked(); instruction != "" {
 		t.Errorf("a refused request still reached Claude Code: %q", instruction)
 	}
 }
 
 // The failure is in something this server called out to, and the message is
 // what the user needs to see: not logged in, out of credit, and so on.
-func TestEditDockerfileReportsAFailureAsABadGateway(t *testing.T) {
+func TestEditSourceReportsAFailureAsABadGateway(t *testing.T) {
 	env := newTestEnv(t, "alice")
 	env.signIn()
 	env.editor.err = fmt.Errorf("claude code failed: credit balance too low")
 
-	resp := env.postJSON("/api/images/dockerfile",
-		`{"dockerfile":"FROM busybox\n","instruction":"add ripgrep"}`)
+	resp := env.postJSON("/api/images/source",
+		`{"kind":"dockerfile","content":"FROM busybox\n","instruction":"add ripgrep"}`)
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("status = %d, want 502", resp.StatusCode)
 	}
@@ -533,29 +645,164 @@ func TestEditDockerfileReportsAFailureAsABadGateway(t *testing.T) {
 	}
 }
 
-func TestEditDockerfileNeedsAuthentication(t *testing.T) {
+func TestEditSourceNeedsAuthentication(t *testing.T) {
 	env := newTestEnv(t, "alice")
 
-	resp := env.postJSON("/api/images/dockerfile",
-		`{"dockerfile":"FROM busybox\n","instruction":"add ripgrep"}`)
+	resp := env.postJSON("/api/images/source",
+		`{"kind":"dockerfile","content":"FROM busybox\n","instruction":"add ripgrep"}`)
 	if resp.StatusCode != http.StatusUnauthorized {
 		t.Errorf("status = %d, want 401", resp.StatusCode)
 	}
 }
 
-func TestTemplateSaysWhetherClaudeCanBeAsked(t *testing.T) {
+// Without a Claude Code binary the route answers 503 rather than pretending.
+func TestEditSourceWithoutAnEditor(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.withoutEditor()
+	env.signIn()
+
+	resp := env.postJSON("/api/images/source",
+		`{"kind":"dockerfile","content":"FROM busybox\n","instruction":"add ripgrep"}`)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+func TestTemplateSaysWhatThisServerCanDo(t *testing.T) {
 	env := newTestEnv(t, "alice")
 	env.signIn()
 
 	var body struct {
 		Dockerfile string `json:"dockerfile"`
+		Compose    string `json:"compose"`
 		CanAsk     bool   `json:"canAsk"`
+		CanCompose bool   `json:"canCompose"`
 	}
 	env.decode(env.do(http.MethodGet, "/api/images/template", nil), &body)
 	if body.Dockerfile == "" {
-		t.Error("the template came back empty")
+		t.Error("the Dockerfile template came back empty")
+	}
+	if body.Compose == "" {
+		t.Error("the compose template came back empty")
 	}
 	if !body.CanAsk {
 		t.Error("canAsk = false with an editor wired in")
+	}
+	if !body.CanCompose {
+		t.Error("canCompose = false with docker compose wired in")
+	}
+}
+
+// An advanced image is a Dockerfile and a compose file together: it builds like
+// any other image, and the compose file is kept for session time.
+func TestCreateComposeImageKeepsBothFiles(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	resp := env.postJSON("/api/images", `{"name":"advanced","sourceType":"compose",
+		"dockerfile":"FROM busybox\n","compose":"services:\n  db:\n    image: postgres:16\n"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+	var img imageResponse
+	env.decode(resp, &img)
+	if img.SourceType != store.ImageSourceCompose {
+		t.Errorf("sourceType = %q, want compose", img.SourceType)
+	}
+	if !strings.Contains(img.Compose, "postgres") {
+		t.Errorf("compose = %q, want the file that was sent", img.Compose)
+	}
+	if !strings.Contains(img.Dockerfile, "busybox") {
+		t.Errorf("dockerfile = %q, want the file that was sent", img.Dockerfile)
+	}
+	if !env.compose.validated() {
+		t.Error("the compose file was stored without being validated")
+	}
+
+	// It builds its Dockerfile, exactly as a plain image does.
+	env.waitForImageStatus(img.ID, store.ImageStatusReady)
+	if built := env.docker.builtDockerfiles(); len(built) != 1 || !strings.Contains(built[0], "busybox") {
+		t.Errorf("built = %v, want the image's Dockerfile", built)
+	}
+}
+
+// Both halves are required: a compose image with no Dockerfile has no container
+// to run Claude Code in, and one with no compose file is a plain image.
+func TestCreateComposeImageNeedsBothFiles(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	for _, body := range []string{
+		`{"name":"a","sourceType":"compose","compose":"services: {}"}`,
+		`{"name":"b","sourceType":"compose","dockerfile":"FROM busybox\n"}`,
+	} {
+		if resp := env.postJSON("/api/images", body); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d for %s, want 400", resp.StatusCode, body)
+		}
+	}
+}
+
+// The refusals are the security boundary, and they run while the operator is
+// still looking at the editor rather than at the first session that fails.
+func TestCreateComposeImageRefusesAFileTheValidatorRejects(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	env.compose.err = fmt.Errorf(`service "db": privileged is not allowed here`)
+
+	resp := env.postJSON("/api/images", `{"name":"advanced","sourceType":"compose",
+		"dockerfile":"FROM busybox\n","compose":"services:\n  db:\n    privileged: true\n"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	var body map[string]string
+	env.decode(resp, &body)
+	if !strings.Contains(body["error"], "privileged") {
+		t.Errorf("error = %q, want it to name the refused key", body["error"])
+	}
+	// Nothing was stored, so there is no image to start a session from.
+	var images []imageResponse
+	env.decode(env.do(http.MethodGet, "/api/images", nil), &images)
+	if len(images) != 0 {
+		t.Errorf("images = %v, want the refused one not to have been saved", images)
+	}
+}
+
+// A compose file Claude Code wrote is not trusted any more than one typed by
+// hand: the prompt lists the rules, this is what enforces them.
+func TestAComposeFileFromClaudeGoesThroughTheSameValidation(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	env.editor.answer = "services:\n  db:\n    privileged: true\n"
+
+	var edit claudex.Edit
+	env.decode(env.postJSON("/api/images/source",
+		`{"kind":"compose","content":"services: {}","instruction":"give db everything"}`), &edit)
+
+	env.compose.err = fmt.Errorf(`service "db": privileged is not allowed here`)
+	resp := env.postJSON("/api/images", `{"name":"advanced","sourceType":"compose",
+		"dockerfile":"FROM busybox\n","compose":`+quote(edit.Content)+`}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400: an answer from Claude Code is still just a file", resp.StatusCode)
+	}
+}
+
+// Without `docker compose` the server does not offer advanced images at all.
+func TestCreateComposeImageWithoutCompose(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.withoutCompose()
+	env.signIn()
+
+	resp := env.postJSON("/api/images", `{"name":"advanced","sourceType":"compose",
+		"dockerfile":"FROM busybox\n","compose":"services: {}"}`)
+	if resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+
+	var body struct {
+		CanCompose bool `json:"canCompose"`
+	}
+	env.decode(env.do(http.MethodGet, "/api/images/template", nil), &body)
+	if body.CanCompose {
+		t.Error("canCompose = true on a server with no docker compose")
 	}
 }

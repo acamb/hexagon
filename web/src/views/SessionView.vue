@@ -26,6 +26,18 @@ const cheatsheetOpen = ref(false)
 
 // Why the session runs without credentials, which is a different sentence for a
 // session that has an account it was refused and one that has no account at all.
+// The published ports, shown only while the session is up: there is no binding
+// to report before that, and Docker picks a new host port at every start.
+const publishedPorts = computed(() =>
+  session.value?.status === 'running' ? session.value.ports : [],
+)
+
+// The same honesty the README carries for code-server, said where the link is:
+// a published port answers on this machine's loopback interface with nothing in
+// front of it.
+const loopbackWarning =
+  'Published on 127.0.0.1 with nothing in front of it: any other process on this machine can reach it while the session is up.'
+
 const noToken = computed(() => {
   const current = session.value
   if (!current || current.propagateToken) return ''
@@ -160,6 +172,13 @@ onUnmounted(() => window.clearTimeout(timer))
           >
             VS Code
           </a>
+          <span v-for="port in publishedPorts" :key="port.container" class="port">
+            <a v-if="port.host" :href="`http://127.0.0.1:${port.host}`" target="_blank" rel="noopener"
+              :title="loopbackWarning">
+              {{ port.container }} → 127.0.0.1:{{ port.host }}
+            </a>
+            <span v-else :title="loopbackWarning">{{ port.container }} → not published yet</span>
+          </span>
           <button type="button" @click="cheatsheetOpen = true">tmux keys</button>
           <button type="button" @click="router.push({ name: 'sessions' })">All sessions</button>
         </div>
@@ -246,6 +265,19 @@ onUnmounted(() => window.clearTimeout(timer))
 .pending {
   color: var(--text-muted);
   font-size: 0.85rem;
+}
+
+.port {
+  padding: 0.1rem 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+.port a {
+  color: var(--accent);
 }
 
 button {

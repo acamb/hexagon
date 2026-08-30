@@ -105,6 +105,7 @@ type settingsVSCode struct {
 
 type settingsDocker struct {
 	Host string `json:"host"`
+	CLI  string `json:"cli"`
 }
 
 type settingsLimits struct {
@@ -160,6 +161,7 @@ type settingsRequest struct {
 
 	Docker struct {
 		Host *string `json:"host"`
+		CLI  *string `json:"cli"`
 	} `json:"docker"`
 
 	Limits struct {
@@ -355,7 +357,7 @@ func settingsValuesOf(cfg *config.Config) settingsValues {
 		},
 		Git:    settingsGit{UserName: cfg.GitUserName, UserEmail: cfg.GitUserEmail},
 		VSCode: settingsVSCode{Dir: cfg.VSCodeDir, Version: cfg.VSCodeVersion},
-		Docker: settingsDocker{Host: cfg.DockerHost},
+		Docker: settingsDocker{Host: cfg.DockerHost, CLI: cfg.DockerCLI},
 		Limits: settingsLimits{
 			MaxSessionsPerUser:  cfg.MaxSessionsPerUser,
 			MaxConcurrentBuilds: cfg.MaxConcurrentBuilds,
@@ -404,6 +406,7 @@ func environmentSettings() []string {
 		{"HEXAGON_VSCODE_DIR", "vscode.dir"},
 		{"HEXAGON_VSCODE_VERSION", "vscode.version"},
 		{"DOCKER_HOST", "docker.host"},
+		{"HEXAGON_DOCKER_CLI", "docker.cli"},
 		{"HEXAGON_MAX_SESSIONS_PER_USER", "limits.maxSessionsPerUser"},
 		{"HEXAGON_MAX_CONCURRENT_BUILDS", "limits.maxConcurrentBuilds"},
 		{"HEXAGON_PUBLIC_RATE_PER_MINUTE", "limits.publicRatePerMinute"},
@@ -450,6 +453,7 @@ func (req settingsRequest) patch(current *config.Config) (config.Patch, error) {
 		VSCodeVersion: text(req.VSCode.Version, current.VSCodeVersion),
 
 		DockerHost: text(req.Docker.Host, current.DockerHost),
+		DockerCLI:  text(req.Docker.CLI, current.DockerCLI),
 
 		MaxSessionsPerUser:  number(req.Limits.MaxSessionsPerUser, current.MaxSessionsPerUser),
 		MaxConcurrentBuilds: number(req.Limits.MaxConcurrentBuilds, current.MaxConcurrentBuilds),

@@ -126,7 +126,7 @@ func (s *Server) handleSetClaudeCredential(w http.ResponseWriter, r *http.Reques
 	cred := claudex.Credential{Kind: kind, Secret: secret}
 
 	if s.editor != nil {
-		ctx, cancel := context.WithTimeout(r.Context(), dockerfileEditTimeout)
+		ctx, cancel := context.WithTimeout(r.Context(), sourceEditTimeout)
 		defer cancel()
 		if err := s.editor.Check(ctx, cred); err != nil {
 			// The CLI's own words, not ours: what is wrong with a credential is
