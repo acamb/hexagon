@@ -1,32 +1,191 @@
 # Hexagon
 
-A web UI for running Claude Code sessions in Docker containers. Pick a base
-image, and a repository from a connected account or none at all: Hexagon clones
-the repo, starts a container with the workspace bind-mounted, runs `tmux` inside
-it, and renders that tmux in the browser.
+Hexagon runs [Claude Code](https://claude.com/claude-code) in Docker containers and puts
+them in your browser. You pick a repository and a base image; it clones the repository on
+the host, starts a container with that clone mounted inside, runs `tmux` in it, and renders
+that terminal on a web page. Close the tab and the agent keeps working; open it again and
+you are back where you left off.
 
-Go backend, Vue 3 frontend, one binary with the frontend embedded.
+It is one binary — a Go server with the frontend built into it — and it talks to the Docker
+daemon on the machine it runs on.
 
-## Status
+![A session: Claude Code running in tmux inside its container, with the session's published
+port beside the controls](docs/images/session.jpg)
 
-The implementation follows [start-plan.md](start-plan.md), milestone by
-milestone.
+## Features
 
-| Milestone | |
-|---|---|
-| M0 — scaffolding, config, database, embedded SPA | done |
-| M1 — GitHub sign-in, sessions, allowlist | done |
-| M2 — base image management | done |
-| M3 — repository listing and cloning | done |
-| M4 — session containers | done |
-| M5 — browser terminal | done |
-| M6 — frontend and polish | done |
+### Sessions
 
-## Requirements
+A session is a repository, a container and a terminal. Choose an image, then a repository
+from any account you have connected — or none at all, for a session that starts on an empty
+workspace and clones something later.
 
-Go 1.26, Node 22, Docker (from M2 on), and a GitHub account.
+The clone lives on the host, under the workspace directory, and is bind mounted at
+`/workspace` in the container. The container runs as **you**, not as root, so every file the
+agent writes stays yours.
+
+Stopping a session shuts its container down and keeps the clone. Starting it again brings
+the container back with a fresh `tmux`, so the previous scrollback is gone but the work is
+not. Deleting removes the container, and removes the clone on disk only if you tick the box.
+
+### The terminal
+
+The session page attaches to the container's `tmux`. Closing the tab only detaches — Claude
+Code keeps going — and reopening the page rejoins the same session. Opening a second tab
+takes the terminal over from the first.
+
+A session either opens with `claude` already running or leaves you at a shell prompt. It is
+a checkbox when you create the session, on by default, and a switch on the session page
+afterwards; since it is the command `tmux` was started with, flipping it on a running session
+takes effect the next time that session starts. When Claude Code exits you get a shell
+rather than a terminal that closes.
+
+The **tmux keys** button in the header opens the shortcuts worth knowing, starting with how
+to scroll back through the output.
+
+### Images
+
+![The Images page: a Dockerfile, the three kinds of source, and the box that asks Claude Code
+to change it](docs/images/images.jpg)
+
+A session runs in a container built from a base image you register. There are three kinds:
+
+- **A Dockerfile.** Hexagon builds it and follows the build log live. The image has to
+  provide `git`, `tmux` and `claude` on the `PATH` and a long-running `CMD`;
+  [deploy/images/base/Dockerfile](deploy/images/base/Dockerfile) is offered as the starting
+  point and is the reference for what a session needs.
+- **A registry reference.** `node:22-bookworm-slim` and the like, pulled as it is.
+- **A Dockerfile and a compose file.** For a project that needs a database, a cache or a
+  queue running beside it.
+
+The repository is never baked into an image: it arrives as a bind mount when the session
+starts, so one image serves every project that needs the same tools.
+
+### Images with services beside them
+
+![The compose editor, with the rules a service has to obey and its own Ask Claude
+box](docs/images/compose.jpg)
+
+The compose file describes the services a session needs *next to* the agent — Hexagon
+supplies the agent's own service, so you never describe it yourself. It is called `hexagon`,
+it starts after everything you listed, and it reaches your services on the project's network
+by their service name: a session can talk to a `db:` service as `db`.
+
+The file is checked before the image is saved, so a refusal arrives while you are still
+looking at the editor. A service is refused if it uses `build`, bind mounts a host path
+(named volumes are fine), fixes a host port, asks for `privileged`, `cap_add`,
+`security_opt` or `devices`, sets `network_mode`, `pid`, `ipc` or `uts` to `host`, or runs
+as root. [deploy/images/base/compose.yaml](deploy/images/base/compose.yaml) is the starting
+point. This mode needs `docker compose` on the server; without it, it is not offered.
+
+Stopping such a session stops the whole project, and deleting it takes the project with it —
+including the named volumes, if you also chose to delete the workspace.
+
+### Editing an image with Claude Code
+
+Under each editor there is a box: say what you want changed — "add the Go toolchain", "add a
+postgres 16" — and Hexagon rewrites the file for you, showing a one-line summary and an
+undo.
+
+The call runs with every built-in tool removed, so it is a pure text transformation: no
+shell, no file access, no network of its own. A compose file it writes goes through exactly
+the same refusals as one you typed by hand.
+
+Without a `claude` binary on the server the box is simply not shown, and the editors work by
+hand.
+
+### Published ports
+
+![The new-session options: what to start, which token to pass, VS Code, and the published
+ports with the address they bind](docs/images/new-session.jpg)
+
+A session can publish container ports on the host: type them as a list — `3000, 5173` — with
+the address they bind beside them. Docker picks the host port, so a second session of the
+same project never fails to start over a port already taken, and the session page shows each
+pair as a link once the container is up.
+
+The address defaults to `0.0.0.0`, because published ports are most useful when Hexagon runs
+on another machine and a port bound to *that* machine's loopback is reachable by nobody. The
+warning under the field is the whole point of it: on `0.0.0.0` those ports are open to
+anyone who can reach the machine, with nothing in front of them — no password, and not
+Hexagon's own sign-in. Use `127.0.0.1` to keep them local.
+
+Ports are fixed when the container is created and cannot be added later.
+
+### VS Code in the browser
+
+Tick the box when you create a session and its page gets a **VS Code** button that opens
+`code-server` on the workspace in a new tab. The editor is not part of any image: one
+release is downloaded into the data directory the first time a session asks for it, and
+shared by all of them.
+
+Like ports, this is a creation-time choice — the mount and the port are part of the
+container.
+
+### Accounts
+
+![The Accounts page: the connected providers, and the card that sets the Claude Code account
+sessions run as](docs/images/accounts.jpg)
+
+Repositories come from the accounts you connect. GitHub is there already: it is how you
+signed in.
+
+Bitbucket is added with an Atlassian account email and an API token, created under Atlassian
+account settings → Security → API tokens with `read:workspace:bitbucket` and
+`read:repository:bitbucket`, plus `write:repository:bitbucket` if Claude Code should push.
+Both reads are needed because Bitbucket lists workspaces first and their repositories one
+workspace at a time. App passwords are not supported — Atlassian removed them in July 2026.
+
+Credentials are checked against a real API call before they are stored, and sealed at rest.
+
+### The provider token
+
+A session created from a repository carries that account's credentials unless you untick the
+box; a session created without one carries none unless you choose an account for it. The
+clone on the host uses the credentials either way — it could not reach a private repository
+otherwise — so the choice is only about what runs *inside* the container. Without the token
+nothing in the session can fetch or push.
+
+It cannot be changed afterwards: a container keeps the environment it was created with.
+
+### The Claude login
+
+The Claude card on the Accounts page is where a session's Claude Code account is set,
+without needing a shell on the server. Either paste an API key from the Console, or the
+token `claude setup-token` prints — both are checked against the CLI before being stored —
+or press **Log in** to get a real terminal running `claude auth login`.
+
+A pasted credential reaches sessions created after it was stored, and outranks the key the
+server was started with. A browser login reaches an existing session the next time it
+starts. The card says which of the two a new session will actually use.
+
+Inside a session, `claude` opens straight into the repository: each session gets its own
+`$HOME/.claude.json` marked as already onboarded and already trusting `/workspace`, so it
+does not greet you with the first-run flow.
+
+### Settings
+
+![The Settings page: the listen address, the flag that qualifies it, and a public URL an
+environment variable is overriding](docs/images/settings.jpg)
+
+The whole configuration file, edited from the browser, grouped as the file groups it, each
+key labelled with the environment variable that overrides it.
+
+Most settings are read once when the server starts, so the page shows what the process is
+*running on* beside what the file now *says*, and marks the ones waiting for a restart —
+including changes you made in the file by hand. Only the GitHub client id, client secret and
+allowlist take effect the moment they are saved.
+
+Nothing is written until the candidate file has been loaded successfully, so a save cannot
+leave behind a configuration the server would refuse to start from. Everyone the allowlist
+admits can use the page: that list is also the list of administrators, and it cannot be
+saved without you on it.
 
 ## Getting started
+
+### Requirements
+
+Docker, and a GitHub account. Building from source additionally needs Go 1.26 and Node 22.
 
 ### 1. Register a GitHub OAuth App
 
@@ -34,416 +193,160 @@ At <https://github.com/settings/developers> → **New OAuth App**:
 
 | Field | Value |
 |---|---|
-| Application name | Hexagon (dev) |
+| Application name | Hexagon |
 | Homepage URL | `http://localhost:5173` |
 | Authorization callback URL | `http://localhost:5173/api/auth/callback` |
 
-Then **Generate a new client secret**. The callback URL has to match exactly:
-GitHub compares it verbatim against the `redirect_uri` the server sends.
+Then **Generate a new client secret**. The callback URL has to match exactly: GitHub
+compares it verbatim against what the server sends.
 
-You can skip this step and let Hexagon ask: started with no client id and
-secret, it prints a password in its log and serves a first-time wizard at
-`/setup` that writes them into the configuration file for you. See
-[First run](#first-run) below.
+You can skip this step entirely and let Hexagon ask you — see [First run](#first-run).
 
-### 2. Configure and run
-
-Either put the values in a configuration file:
-
-```sh
-mkdir -p ~/.config/hexagon
-install -m 600 config.example.json ~/.config/hexagon/config.json
-$EDITOR ~/.config/hexagon/config.json     # clientId, clientSecret, allowedUsers
-
-make dev
-```
-
-or export them:
-
-```sh
-export HEXAGON_GITHUB_CLIENT_ID=Iv23li...
-export HEXAGON_GITHUB_CLIENT_SECRET=...
-export HEXAGON_ALLOWED_USERS=your-github-login
-
-make dev
-```
-
-Open <http://localhost:5173> — **not** `127.0.0.1:5173`. `make dev` sets
-`HEXAGON_PUBLIC_URL=http://localhost:5173`, and the server's origin check
-compares hosts, so requests from `127.0.0.1` are rejected.
-
-You should land on `/login`, sign in through GitHub (it asks for the `repo`
-scope: Claude Code needs it to clone and push), and come back signed in.
-
-`make dev` runs the Go server on `:8080` and the Vite dev server on `:5173`,
-which proxies `/api` to the Go process. Ctrl-C stops both.
-
-### First run
-
-Started without a GitHub client id and secret, Hexagon does not refuse to run.
-It logs a line like
-
-```
-WARN first-time setup is open until somebody signs in url=http://localhost:5173/setup password=K7QX-4M2A-...
-```
-
-and serves a wizard at that URL which asks for the password, then for the client
-id, the client secret and the accounts allowed to sign in. It shows the exact
-callback URL to register on GitHub, writes the settings into the configuration
-file (creating it with mode 600 if it is not there yet), and reconfigures the
-running server, so the sign-in works without a restart.
-
-The password lives only in that process's memory: a restart prints a new one
-and retires the old. The wizard stays reachable until somebody signs in
-successfully, so a client secret with a typo can be corrected from the same page
-rather than by editing files on the server. After the first sign-in it is closed
-for good.
-
-An environment variable still outranks the file, so `HEXAGON_GITHUB_CLIENT_ID`
-and friends override what the wizard writes — the wizard says so when one of
-them is set, and they are the way back into an instance whose saved settings are
-wrong.
-
-### Publishing it
-
-Hexagon has no TLS of its own. To reach it from anywhere but the machine it runs
-on, leave it bound to loopback and put a reverse proxy in front:
-[deploy/proxy/](deploy/proxy/) is the nginx configuration known to work, with a
-compose file and the two settings to change. It refuses to start on an address
-the network can reach unless its public URL is https, so this is not optional by
-accident.
-
-### Production-style run
+### 2. Run it
 
 ```sh
 make build && ./bin/hexagon
 ```
 
-The binary serves the built frontend itself on `http://127.0.0.1:8080`. Set
-`HEXAGON_PUBLIC_URL` to the same address and register a matching OAuth callback.
+The binary serves everything itself on `http://127.0.0.1:8080`. Set `HEXAGON_PUBLIC_URL` to
+the address you actually open in the browser, and register the matching callback URL on
+GitHub.
 
-## Using it
+For working on Hexagon itself, `make dev` runs the Go server on `:8080` and the Vite dev
+server on `:5173`, which proxies the API to it. Open <http://localhost:5173> — **not**
+`127.0.0.1:5173`: the origin check compares hostnames, and the two are different origins.
+[AGENTS.md](AGENTS.md) has the conventions.
 
-**Images** — a session runs in a container built from a base image you register on the
-Images page, either from a Dockerfile or by pulling a registry reference. An image must
-provide `git`, `tmux` and `claude` on the `PATH`, and a long-running `CMD`; the one in
-[deploy/images/base/Dockerfile](deploy/images/base/Dockerfile) is offered as the starting
-point and is the reference for what a session needs.
+Signing in asks GitHub for the `repo` scope, because that is what Claude Code needs to clone
+and push.
 
-**Images with services beside them** — the third kind of image is a Dockerfile *and* a
-compose file. The Dockerfile still describes the container Claude Code runs in and builds
-exactly as it would alone; the compose file describes the services that have to be there
-next to it — a database, a cache, a queue. A session from such an image is a compose
-project: Hexagon writes its own service into a second file, so the workspace mount, the
-host uid and the labels stay where they are, and the agent starts last and reaches the
-others by their service name. Stopping the session stops the project, and deleting it takes
-the project with it — with the named volumes too, if you tick the box that also deletes the
-workspace.
+### First run
 
-The compose file is checked before the image is saved, so a refusal arrives while you are
-still looking at the editor. A service is refused if it uses `build`, bind mounts a host
-path (named volumes are fine), fixes a host port, asks for `privileged`, `cap_add`,
-`security_opt` or `devices`, sets `network_mode`, `pid`, `ipc` or `uts` to `host`, or runs
-as root — and a service may not be called `hexagon`, which is the name Hexagon's own takes.
-That list is what keeps "containers run as you, and never as root" true of a file somebody
-else wrote; it is checked against `docker compose config`'s normalized output, so the same
-request written another way is refused too.
-[deploy/images/base/compose.yaml](deploy/images/base/compose.yaml) is the starting point.
-The whole mode needs `docker compose` on the server; without it the Images page does not
-offer it at all.
+Started with no GitHub client id and secret, Hexagon does not refuse to run. It logs a line
+like
 
-**Editing an image's files with Claude Code** — under each editor, say what to change ("add
-the Go toolchain", "add a postgres 16") and Hexagon runs `claude -p` on the host to rewrite
-that file, showing what changed with an undo. The call has every built-in tool removed
-(`--tools ""`), so it is a text transformation with no shell, no file access and no fetch of
-its own, and it ignores your own Claude Code configuration (`--safe-mode`). It authenticates
-with the Claude login configured on the Accounts page, falling back to the host's own login
-when none is stored. Without a `claude` binary on the server the control is not shown and
-the boxes are edited by hand, as before. A compose file Claude Code wrote goes through
-exactly the same refusals as one typed in: the prompt lists them as a convenience, it is not
-what enforces them.
+```
+WARN first-time setup is open until somebody signs in url=http://localhost:5173/setup password=K7QX-4M2A-...
+```
 
-**Accounts** — repositories come from the accounts you connect on the Accounts page. GitHub is
-there already: it is how you signed in. Bitbucket is added with an Atlassian account email and an
-API token, created under Atlassian account settings → Security → API tokens with
-`read:workspace:bitbucket` and `read:repository:bitbucket`, plus `write:repository:bitbucket` if
-Claude Code should push. Both reads are needed because Bitbucket lists the workspaces first and
-their repositories one workspace at a time. `read:user:bitbucket` is optional and only decides
-whether the account shows its username or its email. App passwords are not supported: Atlassian removed them in July 2026. The
-credentials are checked against the call a listing starts from before they are stored, and sealed
-with the same key as the GitHub token.
+and serves a wizard at that address which asks for the password, then for the client id, the
+client secret and the accounts allowed to sign in. It shows the exact callback URL to
+register on GitHub, writes everything into the configuration file — creating it with mode
+`600` if it is not there — and reconfigures the running server, so signing in works without
+a restart.
 
-**Sessions** — pick an image, and a repository from any connected account or none at all.
-With a repository Hexagon clones it into `<workspace root>/<session id>/repo` on the host;
-without one that directory starts empty. Either way it is bind mounted on `/workspace` in a
-container running `tmux`. The container runs as you, so files it writes stay yours rather
-than root's.
+The password lives only in that process's memory: a restart prints a new one and retires the
+old. The wizard stays open until somebody signs in successfully, so a client secret with a
+typo can be fixed from the same page. After the first sign-in it closes for good.
 
-**The provider token** — a session with a repository carries the credentials of the account
-the repository came from, unless the box is unticked when it is created; a session without a
-repository carries none unless an account is chosen for it. The clone on the host uses them
-either way — it could not reach a private repository otherwise — so the choice is only about
-what runs inside the container. It cannot be changed afterwards: a container keeps the
-environment it was created with. Without the token nothing in the session can fetch or push.
+### Publishing it
 
-**Starting Claude Code by itself** — a session either opens with `claude` already running in
-its tmux or leaves you at a shell prompt. It is a checkbox when you create the session, on
-by default, and a switch in the session page afterwards; because it is the command the tmux
-session is created with, changing it on a running session takes effect the next time that
-session starts. When Claude Code exits you get a shell rather than a terminal that closes.
+Hexagon has no TLS of its own. To reach it from anywhere but the machine it runs on, leave
+it bound to loopback and put a reverse proxy in front: [deploy/proxy/](deploy/proxy/) is an
+nginx configuration known to work, with a compose file and the two values to change.
 
-**Configuring the Claude login** — the Claude card on the Accounts page is where a session's
-Claude Code account is set, without a shell on the host. Paste an API key from the Console or
-the token `claude setup-token` prints, checked against the CLI before it is stored; or press
-**Log in** to open a real terminal running `claude auth login` in a container whose
-`$HOME/.claude` is this machine's own, so signing in there writes the same file every
-session mounts. A pasted
-credential reaches sessions created after it was stored — it is an environment variable, fixed
-when the container is created — and outranks the server's configured key; a browser login
-reaches an existing session the next time it starts, since the mount is a path resolved at
-start time. The card says which of the two a new session will actually use.
-
-**Claude Code in a session** — the host's `~/.claude/.credentials.json` is bind mounted
-read-only, and each session gets its own `$HOME/.claude.json` seeded with
-`hasCompletedOnboarding` and trust for `/workspace`, so `claude` opens straight into the
-repository. Without that file Claude Code sees a machine it has never run on and starts
-its first-run onboarding, which reads as being asked to sign in again. Because the
-credentials are mounted read-only a session cannot refresh an expired OAuth token: when
-that happens, log in again from the Accounts page (or on the host), or set `ANTHROPIC_API_KEY`.
-
-**The terminal** — the session page attaches to the container's tmux session. Closing the
-tab only detaches: Claude Code keeps working, and reopening the page finds the session
-where you left it. Opening a second tab takes the terminal over from the first. The
-**tmux keys** button in the session header opens the shortcuts worth knowing, starting
-with how to scroll back through the output.
-
-**Stopping and deleting** — stopping shuts the container down and keeps the clone; starting
-brings it back with a fresh tmux, so the previous scrollback is gone. Deleting always
-removes the container, and removes the clone on disk only if you tick the box.
-
-**Published ports** — a session can publish container ports on the host, chosen when it is
-created: type them as a list ("3000, 5173"), with the interface they bind beside them. Docker
-picks the host port, so a second session of the same project never fails to start over a port
-already taken; the session page shows each pair, `3000 → 0.0.0.0:49154`, as a link once the
-container is up. There is nothing to show before that, and nothing stored afterwards: Docker
-picks a new host port every time the container starts. Like the VS Code box, this cannot be
-changed later — a container keeps the port bindings it was created with.
-
-The address defaults to `0.0.0.0` in the dialog, because a Hexagon on a remote machine is
-what published ports are for and a port on that machine's loopback interface is reachable by
-nobody. **That is the whole warning**: on `0.0.0.0` those ports are open to anyone who can
-reach the machine, with nothing in front of them — no password, and not Hexagon's own
-sign-in, which only guards the API and the VS Code proxy. Use `127.0.0.1` to keep them on the
-machine running Hexagon. The API is the other way round and answers `127.0.0.1` to a request
-that names no address: it is the dialog that proposes the open value, with the warning
-attached. Whatever the session chooses, code-server's own port stays on loopback — it
-authenticates nobody, so a copy of it on a public interface is an unauthenticated shell in
-the workspace.
-
-**VS Code in the browser** — ticking the box when a session is created gives its container a
-published port and a **VS Code** button on the session page, opening `code-server` on
-`/workspace` in a new tab. It is a creation-time choice because the mount and the port are
-the container: there is no way to add them to one that already exists. The code-server
-release itself is not part of any image; it is downloaded once into the data directory the
-first time a session asks for it, and upgrading it is deleting that directory so the next
-session downloads again. Honestly: code-server answers on the host's loopback interface with
-no password of its own — Hexagon's session cookie is what stands in front of it — so any other
-process on the machine can reach a running session's editor while it is up.
-
-**Settings** — the configuration file, edited from the browser. Every key is on the page,
-grouped as the file groups them, each with the environment variable that overrides it.
-One is shown and cannot be changed there, because a wrong value could not be corrected
-from the page that wrote it: the secret key, which seals every stored provider token.
-Everyone the allowlist admits can use the page — that list is also the list of
-administrators, and it cannot be saved without you in it.
-
-The listen address is editable, and it is the one setting whose mistake this page cannot
-undo: it is read when the process starts, so a bad one is saved, marked as waiting for a
-restart, and correctable from the same page right up until that restart — after which the
-page is behind a port nobody can reach and the only way back is the file. It is refused
-unless it parses as a host and a port, and the pair with the public URL is checked too, so
-a configuration the next start would refuse cannot be saved. **Serve a non-loopback address
-without https** sits directly under it, because that is the only setting it qualifies.
-
-Only the GitHub client id, client secret and allowlist take effect when they are saved.
-Everything else is read once when the server starts, so the page shows what the process is
-running on beside what the file now says and marks the settings waiting for a restart —
-including ones changed in the file by hand. Nothing is written until the candidate file has
-been loaded successfully, so a save cannot leave behind a configuration the server refuses
-to start from.
+The server refuses to start on an address the network can reach unless its public URL is
+`https`, so serving it in plaintext is something you have to say out loud rather than
+something you can do by accident.
 
 ## Configuration
 
-Every setting can come from a JSON configuration file or from the environment,
-and has a default that suits a single user on a developer machine.
+Every setting can come from a JSON configuration file or from the environment, and has a
+default that suits a single user on a developer machine. **The environment wins over the
+file, which wins over the defaults.**
 
 | Variable | File key | Default | |
 |---|---|---|---|
 | `HEXAGON_CONFIG` | — | `~/.config/hexagon/config.json` | Where the configuration file is; `-config <path>` overrides it |
-| `HEXAGON_ADDR` | `addr` | `127.0.0.1:8080` | Listen address |
-| `HEXAGON_PUBLIC_URL` | `publicUrl` | `http://127.0.0.1:8080` | Origin the browser uses; OAuth callbacks and the origin check derive from it |
+| `HEXAGON_ADDR` | `addr` | `127.0.0.1:8080` | The interface and port the server binds |
+| `HEXAGON_PUBLIC_URL` | `publicUrl` | `http://127.0.0.1:8080` | The origin your browser uses; the OAuth callback and the origin check derive from it |
 | `HEXAGON_INSECURE_HTTP` | `insecureHttp` | — | Set to anything to serve a non-loopback address without https, which the server otherwise refuses to do |
 | `HEXAGON_DATA_DIR` | `dataDir` | `~/.local/share/hexagon` | Database and secret key |
 | `HEXAGON_WORKSPACE_ROOT` | `workspaceRoot` | `<data dir>/workspaces` | One directory per session, holding its workspace |
 | `HEXAGON_GITHUB_CLIENT_ID` | `github.clientId` | — | From the first-time wizard when it is not set |
 | `HEXAGON_GITHUB_CLIENT_SECRET` | `github.clientSecret` | — | From the first-time wizard when it is not set |
-| `HEXAGON_ALLOWED_USERS` | `github.allowedUsers` | — | Who may sign in, asked for by the first-time wizard when it is not set: comma-separated in the environment, a JSON array in the file. An entry that is a number is a GitHub account id, anything else a login — prefer ids, since a login is released when an account is renamed and can then be claimed by somebody else |
-| `HEXAGON_GITHUB_API_URL` | `github.apiUrl` | `https://api.github.com` | Override for GitHub Enterprise, or a stub in development |
-| `HEXAGON_BITBUCKET_API_URL` | `bitbucket.apiUrl` | `https://api.bitbucket.org/2.0` | Override, or a stub in development |
+| `HEXAGON_ALLOWED_USERS` | `github.allowedUsers` | — | Who may sign in: comma-separated in the environment, a JSON array in the file. A number is a GitHub account id, anything else a login — prefer ids, since a login is released when an account is renamed and can then be claimed by somebody else |
+| `HEXAGON_GITHUB_API_URL` | `github.apiUrl` | `https://api.github.com` | Override for GitHub Enterprise |
+| `HEXAGON_BITBUCKET_API_URL` | `bitbucket.apiUrl` | `https://api.bitbucket.org/2.0` | Override |
 | `HEXAGON_SECRET_KEY` | `secretKey` | `<data dir>/secret.key` | 32 bytes, base64. Generated on first run |
 | `HEXAGON_DEBUG` | `debug` | — | Set to anything for debug logging |
-| `HEXAGON_CLAUDE_CREDENTIALS` | `claude.credentials` | `~/.claude/.credentials.json` | Mounted read-only into session containers (from M4). Empty disables the mount. Also the file a browser login from the Accounts page writes |
-| `ANTHROPIC_API_KEY` | `claude.anthropicApiKey` | — | Injected into session containers instead of the credentials mount (from M4) |
-| `HEXAGON_CLAUDE_BINARY` | `claude.binary` | `claude` on `PATH`, then `~/.local/bin/claude` | Runs `claude -p` to edit a Dockerfile or a compose file from the Images page |
+| `HEXAGON_CLAUDE_CREDENTIALS` | `claude.credentials` | `~/.claude/.credentials.json` | Mounted read-only into session containers. Empty disables the mount. Also the file a browser login writes |
+| `ANTHROPIC_API_KEY` | `claude.anthropicApiKey` | — | Handed to session containers when no credential is configured in the UI |
+| `HEXAGON_CLAUDE_BINARY` | `claude.binary` | `claude` on `PATH`, then `~/.local/bin/claude` | Rewrites a Dockerfile or a compose file from the Images page |
 | `HEXAGON_CLAUDE_MODEL` | `claude.model` | — | Model for that call; empty leaves the choice to the CLI |
-| `HEXAGON_GIT_USER_NAME` | `git.userName` | — | Git identity for clones and container commits (from M3) |
+| `HEXAGON_GIT_USER_NAME` | `git.userName` | — | Git identity for clones and for commits made inside containers |
 | `HEXAGON_GIT_USER_EMAIL` | `git.userEmail` | — | |
 | `HEXAGON_VSCODE_DIR` | `vscode.dir` | `<data dir>/code-server` | Where the code-server release is kept, downloaded once for the machine |
-| `HEXAGON_VSCODE_VERSION` | `vscode.version` | the version Hexagon is pinned to | Release fetched when `vscode.dir` is empty |
-| `DOCKER_HOST` | `docker.host` | SDK default | Docker Engine endpoint (from M2) |
-| `HEXAGON_DOCKER_CLI` | `docker.cli` | `docker` on `PATH` | Runs `docker compose` for images that carry a compose file. Without it those images cannot be created or started, and the Images page leaves advanced mode out |
-| `HEXAGON_MAX_SESSIONS_PER_USER` | `limits.maxSessionsPerUser` | `20` | Sessions one account may have at once; creating another answers 429 |
+| `HEXAGON_VSCODE_VERSION` | `vscode.version` | the pinned version | Release fetched when the directory is empty |
+| `DOCKER_HOST` | `docker.host` | SDK default | Docker Engine endpoint |
+| `HEXAGON_DOCKER_CLI` | `docker.cli` | `docker` on `PATH` | Runs `docker compose` for images that carry a compose file |
+| `HEXAGON_MAX_SESSIONS_PER_USER` | `limits.maxSessionsPerUser` | `20` | Sessions one account may have at once |
 | `HEXAGON_MAX_CONCURRENT_BUILDS` | `limits.maxConcurrentBuilds` | `2` | Image builds one account may have in flight |
 | `HEXAGON_PUBLIC_RATE_PER_MINUTE` | `limits.publicRatePerMinute` | `60` | Requests a minute, per client address, to the routes that answer without a session |
 
 ### The configuration file
 
-[config.example.json](config.example.json) is a complete one; copy it to
-`~/.config/hexagon/config.json`, or keep it anywhere and point `-config` at it.
-The server looks for `-config`, then `HEXAGON_CONFIG`, then the default path. A
-file named by either of the first two must exist — ignoring a path you asked for
-would start the server configured by accident — while the default location is
-optional, so no file at all means the environment and the defaults, as before.
+[config.example.json](config.example.json) is a complete one. Copy it to
+`~/.config/hexagon/config.json`, or keep it anywhere and point `-config` at it. The server
+looks for `-config`, then `HEXAGON_CONFIG`, then the default path.
 
 Four things are worth knowing:
 
-- **The environment wins over the file**, which wins over the defaults. That
-  keeps `make dev` working over whatever file you have, and a one-off override a
-  one-off override. An unset variable is not a value and overrides nothing.
-- **The file must not be readable by anyone else.** It can hold the OAuth client
-  secret, an API key and the key that seals stored GitHub tokens, so the server
-  refuses to start on anything looser than `chmod 600`.
-- **An unknown key is an error.** A misspelled `allowedUsers` that was quietly
-  ignored would be an empty allowlist, which is to say an authentication bypass.
-- **A leading `~` is expanded** in `dataDir`, `workspaceRoot`, `claude.credentials`
-  and `vscode.dir`.
-- **The Settings page writes this file**, every key except `addr` and `secretKey`.
-  It writes only what changed, removes the key of a setting left empty rather than
-  writing an empty one, and re-orders the keys alphabetically — JSON has no comments,
-  so there are none to lose.
+- **A file named with `-config` or `HEXAGON_CONFIG` must exist.** Ignoring a path you asked
+  for would start the server configured by accident. The default location is optional.
+- **It must not be readable by other users.** It can hold the OAuth client secret, an API
+  key and the key that seals stored tokens, so the server refuses a file with wider
+  permissions than `600`.
+- **An unknown key is an error.** A misspelled `allowedUsers` would otherwise be dropped in
+  silence, and a dropped allowlist is an authentication bypass.
+- **`claude.credentials` is the one key where an empty string means something**: mount
+  nothing. Remove the key to go back to the default path.
 
-Values that are `""` or absent fall through to the layer below, with one
-exception: `claude.credentials` set to `""` means *no credentials mount*, which
-is how you tell a session to use `anthropicApiKey` instead.
+Almost all of it can also be edited from the Settings page. The one exception is the secret
+key: a wrong value there could not be corrected from the page that wrote it, because it
+would make every stored token undecryptable.
 
-The server refuses to start without a client id, a client secret and a non-empty
-allowlist. That is deliberate: it drives the Docker socket and holds GitHub
-credentials, so an unauthenticated instance is a root shell on this machine.
-There is no way to skip the login: the development bypass that used to exist
-(`dev.user` / `HEXAGON_DEV_USER`, `dev.githubToken` / `HEXAGON_GITHUB_TOKEN`)
-has been removed, and a configuration file that still names them will not start,
-because an unknown key is an error. Working on the UI means registering an OAuth
-App, which is [step 1 of Getting started](#1-register-a-github-oauth-app) and
-takes a minute.
-
-## Testing it by hand
-
-Once signed in, these are the interesting things to try:
-
-```sh
-# A GitHub account outside the allowlist: change the value, restart, sign in.
-export HEXAGON_ALLOWED_USERS=somebody-else        # → /login?error=not_allowed
-
-# The stored GitHub token is encrypted at rest: this prints hex, never a gho_ token.
-sqlite3 ~/.local/share/hexagon/hexagon.db 'select github_login, hex(github_token_enc) from users'
-
-# Start over.
-rm ~/.local/share/hexagon/hexagon.db*
-```
-
-Sign out from the header and you land back on `/login`; reloading `/` keeps you
-there. Sessions last 7 days and are extended whenever a browser uses one that is
-more than halfway through its life, so an instance in daily use never signs you
-out on the clock.
-
-Your account id is the `id` in `curl https://api.github.com/users/<login>`. A
-login on the list still works, and is refused only if this instance has already
-seen a different account under it.
-
-Removing a login from `allowedUsers` and restarting ends that account's sessions:
-admission is re-checked on every request, and the sessions of anyone no longer on
-the list are deleted at startup.
-
-Calling the API by hand takes one more header: a mutating request has to show
-that it came from our own pages, and `curl` says nothing about where it is from.
-
-```sh
-curl -X POST -H "Content-Type: application/json" -H "Origin: $HEXAGON_PUBLIC_URL" \
-  -b "hexagon_session=..." http://127.0.0.1:8080/api/auth/logout
-```
-
-For a session, the things worth checking are that a file Claude writes in the
-container belongs to you on the host, and that closing the tab does not
-interrupt it:
-
-```sh
-# after starting a session, from the host
-ls -l <workspace root>/<session id>/repo
-docker ps --filter label=hexagon.managed=true
-```
-
-```sh
-make test    # go test ./...
-make vet
-```
-
-## Layout
-
-```
-cmd/hexagon/        entry point: config, database, HTTP server
-internal/config/    environment configuration
-internal/store/     SQLite: schema migrations and queries
-internal/auth/      GitHub OAuth login, session cookies, credential encryption
-internal/provider/  what a source of repositories is, and merging the connected ones
-internal/github/    GitHub REST client
-internal/bitbucket/ Bitbucket Cloud REST client
-internal/claudex/   runs `claude -p` for the Dockerfile editor
-internal/dockerx/   Docker Engine API: images, and exec attach for the terminal
-internal/gitops/    host-side git: cloning a repository into a session workspace
-internal/session/   orchestrator: provisioning, lifecycle, reconciliation
-internal/httpapi/   routes, middleware, handlers, the terminal WebSocket, SPA serving
-web/                Vue 3 + Vite frontend, embedded into the binary at build time
-deploy/images/      base image definitions for session containers (from M2)
-deploy/proxy/       the reference nginx reverse proxy for a published instance
-```
+The listen address *can* be edited there, and it is the one setting whose mistake the page
+cannot undo. It is read when the process starts, so a bad value is saved, marked as waiting
+for a restart, and correctable right up until that restart — after which the page is behind
+a port nobody can reach, and the only way back is the file.
 
 ## Security notes
 
-- A user-supplied compose file is checked against the list above — no `privileged`,
-  `cap_add`, `security_opt` or `devices`, no host namespaces, no host bind mounts, no fixed
-  host ports, no `build`, and never root — before anything is created from it. Containers run
-  as the host user and never as root, and that is what upholds it for a file Hexagon did not
-  write.
-- Hexagon binds to loopback by default and should stay there. Anyone who can
-  reach the port and hold a session controls the Docker socket. To publish it,
-  put a TLS reverse proxy in front and leave the bind where it is: the server
-  refuses to start on a listen address the network can reach unless
-  `publicUrl` is https, or `insecureHttp` says the plaintext is deliberate.
-- The routes that answer without a session — the health check and the login
-  handshake — are rate limited per client address, and the health check tells an
-  unauthenticated caller only that the server is up. Behind the proxy the
-  address comes from `X-Forwarded-For`, which is believed only because the peer
-  is loopback; exposed directly, the header is ignored.
-- A mutating API call is refused unless it shows a same-origin signal — a
-  matching `Origin`, or `Sec-Fetch-Site: same-origin` — and a JSON content type.
-  `SameSite=Lax` is a browser default, not something this server enforces.
-- Session cookies are `HttpOnly` and `SameSite=Lax`; only the SHA-256 of the
-  cookie value is stored. Over https the cookie is `Secure` and named
-  `__Host-hexagon_session`, a prefix the browser enforces so no sibling
-  subdomain can overwrite it over plaintext. GitHub tokens are sealed with AES-256-GCM under the
-  server key.
-- The `repo` scope grants full read/write over your repositories, and that token
-  is handed to a container running an autonomous agent. That is the deliberate
-  trade-off of the project, and the reason it can be declined per session. The
-  same applies to a connected Bitbucket token: a session gets one account's
-  credentials at most, chosen when it is created, and never another's.
+Hexagon drives the Docker socket and holds credentials for your repositories. Anyone who can
+reach it and hold a session can run anything on the machine it runs on. These are the
+properties it maintains, and the ones it deliberately does not.
+
+- **There is no way in without signing in.** Every endpoint except the health check, the
+  login handshake and the first-run wizard requires a session, the terminal WebSocket
+  included. Admission is re-checked against the allowlist on every request, not only at
+  login, so removing somebody takes effect immediately; their existing sessions are deleted
+  at the next startup.
+- **It binds loopback by default and should stay there.** To publish it, put a TLS reverse
+  proxy in front and leave the bind where it is. The server refuses to start on an address
+  the network can reach unless `publicUrl` is https, or `insecureHttp` says the plaintext is
+  deliberate.
+- **Containers run as you, never as root**, and a user-supplied compose file is checked
+  against that before anything is created from it: no `privileged`, no added capabilities,
+  no host namespaces, no host bind mounts, no fixed host ports, no `build`, and no service
+  running as root. The check runs against Docker's own normalized view of the file, so the
+  same request written another way is refused too.
+- **A published session port has nothing in front of it.** Neither has code-server on its
+  own port. Hexagon's sign-in guards the API and the VS Code proxy, not a port you asked it
+  to publish — which is why the address field carries a warning. code-server's own port
+  always stays on loopback, whatever a session chose for its own.
+- **Tokens are sealed at rest** with AES-256-GCM under the server key, and never leave the
+  server: no response ever carries one. Only the SHA-256 of a session cookie is stored.
+- **Session cookies are `HttpOnly` and `SameSite=Lax`.** Over https the cookie is `Secure`
+  and named `__Host-hexagon_session`, a prefix the browser enforces so no sibling subdomain
+  can overwrite it over plaintext.
+- **A mutating API call is refused** unless it shows a same-origin signal — a matching
+  `Origin`, or `Sec-Fetch-Site: same-origin` — and a JSON content type.
+- **The routes that answer without a session are rate limited** per client address, and the
+  health check tells an unauthenticated caller only that the server is up. Behind the proxy
+  the address comes from `X-Forwarded-For`, believed only because the peer is loopback;
+  exposed directly, the header is ignored.
+- **The `repo` scope is broad**, and that token is handed to a container running an
+  autonomous agent. That is the deliberate trade-off of the project, and the reason it can be
+  declined per session. A session gets one account's credentials at most, chosen when it is
+  created, and never another's.
