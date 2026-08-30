@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -64,6 +65,24 @@ var (
 	// honoured.
 	ErrInvalidPorts = errors.New("invalid published ports")
 )
+
+// loopback is the address a published port binds when the session named none,
+// and the only one code-server is ever published on.
+const loopback = "127.0.0.1"
+
+// publishAddress turns a session's stored address into one Docker can be given.
+//
+// The empty string is the trap this exists for. It is what a session that named
+// no address holds, and it reads as "unset" everywhere in Hexagon — but Docker
+// takes an empty HostIP to mean every interface, so passing it through would
+// turn the closed default into the open one, silently, for every session that
+// never asked for anything.
+func publishAddress(stored string) string {
+	if stored == "" {
+		return loopback
+	}
+	return stored
+}
 
 // maxSessionPorts bounds what one session may publish. Each one is a listening
 // socket on the host's loopback interface with nothing in front of it, so the
@@ -167,10 +186,13 @@ type CreateRequest struct {
 	// release bind mounted. Decided here because the mount and the port
 	// binding are properties of the container, fixed when it is created.
 	VSCode bool
-	// Ports are container ports to publish on the host's loopback interface,
-	// with the host side left to Docker. Decided here for the same reason as
-	// VSCode above, and never edited afterwards.
+	// Ports are container ports to publish, with the host side left to Docker.
+	// Decided here for the same reason as VSCode above, and never edited
+	// afterwards.
 	Ports []int
+	// PortAddress is the host interface they bind. Empty is loopback, which is
+	// the answer that exposes nothing beyond this machine.
+	PortAddress string
 }
 
 // Create records the session and provisions it in the background. It returns as
@@ -192,7 +214,7 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 	if compose && m.compose == nil {
 		return nil, ErrComposeUnavailable
 	}
-	if err := checkPorts(req.Ports, req.VSCode); err != nil {
+	if err := checkPorts(req.Ports, req.PortAddress, req.VSCode); err != nil {
 		return nil, err
 	}
 
@@ -241,6 +263,7 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 		PropagateToken: req.PropagateToken,
 		VSCode:         req.VSCode,
 		Ports:          req.Ports,
+		PortAddress:    req.PortAddress,
 		Compose:        compose,
 		Status:         store.SessionStatusCreating,
 	})
@@ -257,7 +280,13 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 // The collision with the VS Code port is the one worth naming: without this
 // check the editor's own binding is quietly taken by something else and the
 // button stops working for a reason nobody could find.
-func checkPorts(ports []int, vscode bool) error {
+func checkPorts(ports []int, address string, vscode bool) error {
+	// An address Docker would reject leaves a session that fails to start with
+	// a daemon error nobody can act on. A name is refused too: the binding is an
+	// interface, and resolving one here would only move the surprise.
+	if address != "" && net.ParseIP(address) == nil {
+		return fmt.Errorf("%w: %q is not an address to publish on", ErrInvalidPorts, address)
+	}
 	if len(ports) > maxSessionPorts {
 		return fmt.Errorf("%w: at most %d ports", ErrInvalidPorts, maxSessionPorts)
 	}
@@ -484,14 +513,21 @@ func (m *Manager) containerSpec(session *store.Session, homeDir, vscodeDir strin
 				"path", path, "err", err)
 		}
 	}
-	ports := append([]int(nil), session.Ports...)
+	ports := make([]dockerx.PortPublication, 0, len(session.Ports)+1)
+	for _, p := range session.Ports {
+		ports = append(ports, dockerx.PortPublication{Container: p, Address: publishAddress(session.PortAddress)})
+	}
 	if vscodeDir != "" {
 		// Read-only: the container gets to run the editor, not to modify it.
 		// Everything code-server writes goes under $HOME, which is already a
 		// bind mount of the session's own directory, so its settings and
 		// extensions survive a restart.
 		binds = append(binds, vscodeDir+":"+dockerx.VSCodeMount+":ro")
-		ports = append(ports, dockerx.VSCodePort)
+		// Loopback whatever the session chose for its own ports. code-server
+		// asks nobody for anything — the session cookie in front of the proxy
+		// is the only thing that does — so a copy of it on a public interface
+		// is an unauthenticated shell in the workspace.
+		ports = append(ports, dockerx.PortPublication{Container: dockerx.VSCodePort, Address: loopback})
 	}
 
 	return dockerx.ContainerSpec{

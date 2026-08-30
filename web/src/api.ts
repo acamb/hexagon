@@ -223,6 +223,9 @@ export interface Session {
   // running: Docker picks a new host port every time it starts, so there is
   // nothing to report before then and nothing to store afterwards.
   ports: SessionPort[]
+  // The host interface those ports are bound to, "127.0.0.1" for a session that
+  // named none. Anything else means they are reachable from off this machine.
+  portAddress: string
   // Whether the session is a compose project rather than a single container,
   // which is a property of the image it came from.
   compose: boolean
@@ -248,10 +251,13 @@ export interface NewSession {
   // Off by default, unlike the two above: it costs a mount and a published
   // port, and a session that never opens the editor should carry neither.
   vscode?: boolean
-  // Container ports to publish on the host's loopback interface. The host side
-  // is Docker's to choose. Settable only here: a container keeps the port
-  // bindings it was created with.
+  // Container ports to publish. The host side is Docker's to choose. Settable
+  // only here: a container keeps the port bindings it was created with.
   ports?: number[]
+  // The host interface they bind. Omitted means loopback: the server gives the
+  // closed answer to a client that does not ask, and it is the dialog that
+  // proposes 0.0.0.0 with the warning beside it.
+  portAddress?: string
 }
 
 // What a session's settings can be changed to after it exists. Omitted fields

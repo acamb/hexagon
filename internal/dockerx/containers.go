@@ -51,9 +51,23 @@ type ContainerSpec struct {
 	Binds []string
 	// AutoRestart brings the container back after a Docker or machine restart.
 	AutoRestart bool
-	// Ports are container ports published on the host's loopback interface,
-	// with the host port left to Docker to choose.
-	Ports []int
+	// Ports are the container ports to publish, each with the host interface it
+	// is bound to. The host port is always left to Docker to choose.
+	Ports []PortPublication
+}
+
+// PortPublication is one container port on its way to the host.
+//
+// Address is the interface it binds. It is per port rather than per container
+// because the two kinds of published port answer to different rules: what the
+// user asked for goes wherever they said, and code-server stays on loopback
+// whatever they said, because it authenticates nobody.
+//
+// The host port is deliberately absent. Docker picks it, and a fixed one would
+// make the second session from the same image fail to start.
+type PortPublication struct {
+	Container int
+	Address   string
 }
 
 // ContainerState is what Hexagon needs to know about a container's real state.
@@ -103,13 +117,11 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (strin
 		config.ExposedPorts = nat.PortSet{}
 		hostConfig.PortBindings = nat.PortMap{}
 		for _, p := range spec.Ports {
-			port := nat.Port(strconv.Itoa(p) + "/tcp")
+			port := nat.Port(strconv.Itoa(p.Container) + "/tcp")
 			config.ExposedPorts[port] = struct{}{}
-			// Loopback, and a port Docker picks. Loopback because whoever
-			// reaches one of these is inside the session with nothing asked of
-			// them; a port Docker picks because a fixed one would make the
-			// second session from the same image fail to start.
-			hostConfig.PortBindings[port] = []nat.PortBinding{{HostIP: "127.0.0.1"}}
+			// The host port is left empty for Docker to choose: a fixed one
+			// would make the second session from the same image fail to start.
+			hostConfig.PortBindings[port] = []nat.PortBinding{{HostIP: p.Address}}
 		}
 	}
 

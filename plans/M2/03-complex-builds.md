@@ -39,6 +39,10 @@ Two divergences from the statement, decided with the user:
   port typed by the user would read better in a URL and would make the second
   session from the same image fail to start.
 
+  *Revised after implementation, at the user's request: the host **port** is
+  still Docker's to choose, but the host **interface** is not Hexagon's. See
+  "The publishing address" at the end of this document.*
+
 And one addition, asked for while this was being written: **"Ask Claude" belongs
 to each editor**. Advanced mode has two files, so it has two of those buttons.
 
@@ -367,3 +371,39 @@ Nothing else moves. The routes this point adds are in the `protected` map like
 every other endpoint, published ports keep binding loopback, and the agent
 container goes on running as the host user in both modes — which is the whole
 reason Hexagon writes that service rather than reading it.
+
+## The publishing address
+
+*Added after the point was implemented.*
+
+Published ports bound `127.0.0.1` and nothing else, which made the feature
+useless for the deployment it was most wanted in: a Hexagon on a remote machine
+publishes a dev server onto an interface only that machine can reach. So the
+address is now a field beside the ports, and it is the session's own choice.
+
+It sits with the ports rather than in the server configuration because it is the
+same decision: a port binding is one thing, fixed when the container is created,
+and splitting its interface into a setting read from somewhere else would mean
+two places to look at to know where a port actually answers.
+
+Three things about it are worth recording, because each is a place the obvious
+implementation is wrong:
+
+- **The dialog proposes `0.0.0.0`; the API answers `127.0.0.1`.** A request that
+  names no address gets the closed value, so a client that has never heard of
+  the field cannot be widened by it. The open value is proposed only where the
+  warning can be shown next to it, which is the browser.
+- **An empty address is loopback, and must be turned into one before Docker sees
+  it.** `HostIP: ""` means *every* interface to Docker, so passing the stored
+  empty string through would silently turn the closed default into the open one
+  for every session that never asked for anything. `session.publishAddress` is
+  that conversion, and it is the reason it exists.
+- **code-server stays on loopback whatever the session chose.** The ports a user
+  asks for carry whatever that user runs on them; code-server carries a shell in
+  the workspace and asks nobody for anything — Hexagon's session cookie guards
+  the proxy in front of it, not the published port. The two are therefore not
+  the same kind of port and do not take the same address.
+
+This widens what a session can expose, and it is a deliberate widening: the
+warning under the field, the coloured badge on the session page and the README
+paragraph are what make it a choice rather than a surprise.

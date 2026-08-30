@@ -32,11 +32,31 @@ const publishedPorts = computed(() =>
   session.value?.status === 'running' ? session.value.ports : [],
 )
 
-// The same honesty the README carries for code-server, said where the link is:
-// a published port answers on this machine's loopback interface with nothing in
-// front of it.
-const loopbackWarning =
-  'Published on 127.0.0.1 with nothing in front of it: any other process on this machine can reach it while the session is up.'
+// Whether the session's ports reach beyond the machine running Hexagon, which
+// decides both the caveat and where a link can usefully point.
+const portsAreExposed = computed(() => {
+  const address = session.value?.portAddress ?? '127.0.0.1'
+  return address !== '127.0.0.1' && address !== 'localhost' && address !== '::1'
+})
+
+// The same honesty the README carries for code-server, said where the link is.
+// The two cases are not the same warning: one is "anyone on this machine", the
+// other is "anyone who can reach that address".
+const portWarning = computed(() => {
+  const address = session.value?.portAddress ?? '127.0.0.1'
+  return portsAreExposed.value
+    ? `Published on ${address} with nothing in front of it: anyone who can reach that address can reach this port while the session is up.`
+    : 'Published on 127.0.0.1 with nothing in front of it: any other process on this machine can reach it while the session is up.'
+})
+
+// Where the link points. A port bound to 0.0.0.0 answers on every interface, so
+// the useful host is the one this browser already reached Hexagon on rather than
+// the address the binding names — 0.0.0.0 is not somewhere a browser can go.
+function portHref(host: number): string {
+  return portsAreExposed.value
+    ? `${window.location.protocol}//${window.location.hostname}:${host}`
+    : `http://127.0.0.1:${host}`
+}
 
 const noToken = computed(() => {
   const current = session.value
@@ -172,12 +192,17 @@ onUnmounted(() => window.clearTimeout(timer))
           >
             VS Code
           </a>
-          <span v-for="port in publishedPorts" :key="port.container" class="port">
-            <a v-if="port.host" :href="`http://127.0.0.1:${port.host}`" target="_blank" rel="noopener"
-              :title="loopbackWarning">
-              {{ port.container }} → 127.0.0.1:{{ port.host }}
+          <span
+            v-for="port in publishedPorts"
+            :key="port.container"
+            class="port"
+            :class="{ exposed: portsAreExposed }"
+          >
+            <a v-if="port.host" :href="portHref(port.host)" target="_blank" rel="noopener"
+              :title="portWarning">
+              {{ port.container }} → {{ session.portAddress }}:{{ port.host }}
             </a>
-            <span v-else :title="loopbackWarning">{{ port.container }} → not published yet</span>
+            <span v-else :title="portWarning">{{ port.container }} → not published yet</span>
           </span>
           <button type="button" @click="cheatsheetOpen = true">tmux keys</button>
           <button type="button" @click="router.push({ name: 'sessions' })">All sessions</button>
@@ -278,6 +303,17 @@ onUnmounted(() => window.clearTimeout(timer))
 
 .port a {
   color: var(--accent);
+}
+
+/* A port anyone on the network can reach does not look like one only this
+   machine can. */
+.port.exposed {
+  border-color: var(--warning);
+  color: var(--warning);
+}
+
+.port.exposed a {
+  color: var(--warning);
 }
 
 button {

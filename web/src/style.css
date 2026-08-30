@@ -9,6 +9,9 @@
   --accent: #7c3aed;
   --ok: #16a34a;
   --error: #dc2626;
+  /* A consequence to read before choosing it, not a failure: the ports a
+     session publishes off this machine are the first thing that needed one. */
+  --warning: #b45309;
 
   --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
   --mono: ui-monospace, 'JetBrains Mono', Consolas, monospace;
@@ -30,6 +33,7 @@
     --accent: #a78bfa;
     --ok: #4ade80;
     --error: #f87171;
+    --warning: #fbbf24;
   }
 }
 

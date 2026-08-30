@@ -42,6 +42,11 @@ type sessionResponse struct {
 	// Docker gave it. Reported and never updated, for the same reason as VSCode
 	// above.
 	Ports []sessionPort `json:"ports"`
+	// PortAddress is the host interface those ports are bound to, "127.0.0.1"
+	// for a session that named none. It is reported separately as well as on
+	// each port because the UI has to warn about it whether or not anything is
+	// running yet.
+	PortAddress string `json:"portAddress"`
 	// Compose is whether this session is a project rather than a single
 	// container, which is a property of the image it came from.
 	Compose   bool      `json:"compose"`
@@ -61,6 +66,12 @@ func newSessionResponse(s *store.Session, hostPorts map[int]int) sessionResponse
 	for _, container := range s.Ports {
 		ports = append(ports, sessionPort{Container: container, Host: hostPorts[container]})
 	}
+	// The stored empty string is loopback; the wire says so rather than making
+	// every client repeat the rule.
+	address := s.PortAddress
+	if address == "" {
+		address = "127.0.0.1"
+	}
 	return sessionResponse{
 		ID:             s.ID,
 		Title:          s.Title,
@@ -76,6 +87,7 @@ func newSessionResponse(s *store.Session, hostPorts map[int]int) sessionResponse
 		PropagateToken: s.PropagateToken,
 		VSCode:         s.VSCode,
 		Ports:          ports,
+		PortAddress:    address,
 		Compose:        s.Compose,
 		CreatedAt:      s.CreatedAt,
 	}
@@ -143,10 +155,14 @@ type createSessionRequest struct {
 	// editor should carry neither. Only settable here — the mount and the port
 	// binding are the container, and there is no way to add them afterwards.
 	VSCode *bool `json:"vscode"`
-	// Ports are container ports to publish on the host's loopback interface,
-	// with the host side left to Docker. Only settable here, like VSCode above:
-	// a container keeps the port bindings it was created with.
+	// Ports are container ports to publish, with the host side left to Docker.
+	// Only settable here, like VSCode above: a container keeps the port
+	// bindings it was created with.
 	Ports []int `json:"ports"`
+	// PortAddress is the host interface they bind. Absent means loopback, which
+	// exposes nothing beyond this machine — the browser proposes 0.0.0.0 with a
+	// warning attached, but a client that says nothing gets the closed answer.
+	PortAddress string `json:"portAddress"`
 }
 
 // handleCreateSession starts provisioning a session and returns straight away;
@@ -189,6 +205,7 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		PropagateToken: req.PropagateToken == nil || *req.PropagateToken,
 		VSCode:         req.VSCode != nil && *req.VSCode,
 		Ports:          req.Ports,
+		PortAddress:    strings.TrimSpace(req.PortAddress),
 	}
 	if fullName := strings.TrimSpace(req.RepoFullName); fullName != "" {
 		// The clone URL is never taken from the request: it is looked up in the

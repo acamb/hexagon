@@ -59,11 +59,14 @@ type Session struct {
 	// the release bind mounted. Set at creation only: a container keeps the
 	// mounts and the port bindings it was created with, so there is no setter.
 	VSCode bool
-	// Ports are the container ports this session publishes on the host's
-	// loopback interface. Set at creation only, for the same reason as VSCode
-	// above; the host port Docker picked for each is never stored, because
-	// Docker picks a new one every time the container starts.
+	// Ports are the container ports this session publishes. Set at creation
+	// only, for the same reason as VSCode above; the host port Docker picked
+	// for each is never stored, because Docker picks a new one every time the
+	// container starts.
 	Ports []int
+	// PortAddress is the host interface those ports are bound to. Empty means
+	// loopback, which is what every session created before the column had.
+	PortAddress string
 	// Compose is whether this session is a compose project rather than a single
 	// container. It comes from the image it was created from and, like the two
 	// above, cannot change afterwards.
@@ -100,8 +103,8 @@ func parsePorts(raw string) ([]int, error) {
 }
 
 const sessionColumns = `id, user_id, title, provider, repo_full_name, repo_clone_url, branch, image_id, image_ref,
-	workspace_dir, repo_dir, container_id, status, error, auto_claude, propagate_token, vscode, ports, compose,
-	created_at, updated_at`
+	workspace_dir, repo_dir, container_id, status, error, auto_claude, propagate_token, vscode, ports, port_address,
+	compose, created_at, updated_at`
 
 // SessionByID returns one of the user's sessions, or ErrNotFound.
 func (s *Store) SessionByID(ctx context.Context, userID, id string) (*Session, error) {
@@ -124,8 +127,8 @@ func scanSession(row scanner) (*Session, error) {
 	err := row.Scan(&session.ID, &session.UserID, &session.Title, &session.Provider, &session.RepoFullName,
 		&session.RepoCloneURL, &session.Branch, &session.ImageID, &session.ImageRef,
 		&session.WorkspaceDir, &session.RepoDir, &session.ContainerID, &session.Status,
-		&session.Error, &session.AutoClaude, &session.PropagateToken, &session.VSCode, &ports, &session.Compose,
-		&createdAt, &updatedAt)
+		&session.Error, &session.AutoClaude, &session.PropagateToken, &session.VSCode, &ports,
+		&session.PortAddress, &session.Compose, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -151,11 +154,11 @@ func (s *Store) CreateSession(ctx context.Context, session *Session) (*Session, 
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (`+sessionColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.UserID, session.Title, session.Provider, session.RepoFullName, session.RepoCloneURL,
 		session.Branch, session.ImageID, session.ImageRef, session.WorkspaceDir, session.RepoDir,
 		session.ContainerID, session.Status, session.Error, session.AutoClaude, session.PropagateToken, session.VSCode,
-		formatPorts(session.Ports), session.Compose, formatTime(now), formatTime(now))
+		formatPorts(session.Ports), session.PortAddress, session.Compose, formatTime(now), formatTime(now))
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}

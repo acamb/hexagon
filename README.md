@@ -222,15 +222,23 @@ brings it back with a fresh tmux, so the previous scrollback is gone. Deleting a
 removes the container, and removes the clone on disk only if you tick the box.
 
 **Published ports** — a session can publish container ports on the host, chosen when it is
-created: type them as a list ("3000, 5173"). Hexagon publishes each on `127.0.0.1` and lets
-Docker pick the host port, so a second session of the same project never fails to start over
-a port already taken; the session page shows each pair, `3000 → 127.0.0.1:49154`, as a link
-once the container is up. There is nothing to show before that, and nothing stored
-afterwards: Docker picks a new host port every time the container starts. Like the VS Code
-box, this cannot be changed later — a container keeps the port bindings it was created with.
-Honestly, and for the same reason as code-server below: a published port answers on this
-machine's loopback interface with nothing in front of it, so any other process on the machine
-can reach it while the session is up.
+created: type them as a list ("3000, 5173"), with the interface they bind beside them. Docker
+picks the host port, so a second session of the same project never fails to start over a port
+already taken; the session page shows each pair, `3000 → 0.0.0.0:49154`, as a link once the
+container is up. There is nothing to show before that, and nothing stored afterwards: Docker
+picks a new host port every time the container starts. Like the VS Code box, this cannot be
+changed later — a container keeps the port bindings it was created with.
+
+The address defaults to `0.0.0.0` in the dialog, because a Hexagon on a remote machine is
+what published ports are for and a port on that machine's loopback interface is reachable by
+nobody. **That is the whole warning**: on `0.0.0.0` those ports are open to anyone who can
+reach the machine, with nothing in front of them — no password, and not Hexagon's own
+sign-in, which only guards the API and the VS Code proxy. Use `127.0.0.1` to keep them on the
+machine running Hexagon. The API is the other way round and answers `127.0.0.1` to a request
+that names no address: it is the dialog that proposes the open value, with the warning
+attached. Whatever the session chooses, code-server's own port stays on loopback — it
+authenticates nobody, so a copy of it on a public interface is an unauthenticated shell in
+the workspace.
 
 **VS Code in the browser** — ticking the box when a session is created gives its container a
 published port and a **VS Code** button on the session page, opening `code-server` on

@@ -111,9 +111,11 @@ type composeService struct {
 func composeOverlay(spec dockerx.ContainerSpec, services []string) ([]byte, error) {
 	ports := make([]string, 0, len(spec.Ports))
 	for _, p := range spec.Ports {
-		// Host ip, no host port, container port: loopback with the host side
-		// left to Docker, exactly as dockerx publishes one.
-		ports = append(ports, "127.0.0.1::"+strconv.Itoa(p))
+		// Host ip, no host port, container port: the interface the spec names
+		// with the host side left to Docker, exactly as dockerx publishes one.
+		// The address is already resolved — see publishAddress — so an empty one
+		// here would be a spec nobody built through containerSpec.
+		ports = append(ports, publishAddress(p.Address)+"::"+strconv.Itoa(p.Container))
 	}
 
 	agent := composeService{

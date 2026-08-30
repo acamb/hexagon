@@ -572,7 +572,7 @@ func TestSessionCanBeCreatedWithVSCode(t *testing.T) {
 	for _, s := range specs {
 		spec = s
 	}
-	if len(spec.Ports) != 1 || spec.Ports[0] != dockerx.VSCodePort {
+	if len(spec.Ports) != 1 || spec.Ports[0].Container != dockerx.VSCodePort {
 		t.Errorf("ports = %v, want [%d]", spec.Ports, dockerx.VSCodePort)
 	}
 	if !contains(spec.Binds, "/vscode-release:"+dockerx.VSCodeMount+":ro") {
@@ -887,8 +887,9 @@ func TestSessionPublishesThePortsItAskedFor(t *testing.T) {
 
 	running := env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
 	containerID, spec := env.containerOf(running.ID)
-	if !slices.Contains(spec.Ports, 3000) || !slices.Contains(spec.Ports, 5173) {
-		t.Errorf("container ports = %v, want both published", spec.Ports)
+	if !slices.Contains(spec.Ports, dockerx.PortPublication{Container: 3000, Address: "127.0.0.1"}) ||
+		!slices.Contains(spec.Ports, dockerx.PortPublication{Container: 5173, Address: "127.0.0.1"}) {
+		t.Errorf("container ports = %v, want both published on loopback", spec.Ports)
 	}
 
 	// Once Docker has picked the host side, the session reports the pair.
@@ -988,5 +989,67 @@ func TestSessionFromAComposeImageWithoutCompose(t *testing.T) {
 	resp := env.postJSON("/api/sessions", fmt.Sprintf(`{"imageId":%q}`, image.ID))
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+// A Hexagon on a remote machine is the case published ports exist for, and a
+// port on that machine's loopback interface is reachable by nobody. The address
+// is the session's own choice, fixed with the binding.
+func TestSessionPublishesOnTheAddressItAskedFor(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions",
+		fmt.Sprintf(`{"imageId":%q,"ports":[3000],"portAddress":"0.0.0.0","vscode":true}`, image.ID)), &created)
+	if created.PortAddress != "0.0.0.0" {
+		t.Errorf("portAddress = %q, want the address that was asked for", created.PortAddress)
+	}
+
+	running := env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+	_, spec := env.containerOf(running.ID)
+	if !slices.Contains(spec.Ports, dockerx.PortPublication{Container: 3000, Address: "0.0.0.0"}) {
+		t.Errorf("ports = %v, want 3000 on every interface", spec.Ports)
+	}
+	// code-server stays on loopback whatever the session chose: it asks nobody
+	// for anything, so a copy of it on a public interface is an
+	// unauthenticated shell in the workspace.
+	if !slices.Contains(spec.Ports, dockerx.PortPublication{Container: dockerx.VSCodePort, Address: "127.0.0.1"}) {
+		t.Errorf("ports = %v, want code-server left on loopback", spec.Ports)
+	}
+}
+
+// A client that says nothing gets the closed answer. The browser proposes
+// 0.0.0.0 with a warning beside it; the API does not.
+func TestSessionWithoutAnAddressStaysOnLoopback(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions",
+		fmt.Sprintf(`{"imageId":%q,"ports":[3000]}`, image.ID)), &created)
+	if created.PortAddress != "127.0.0.1" {
+		t.Errorf("portAddress = %q, want loopback for a request that named none", created.PortAddress)
+	}
+
+	running := env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+	_, spec := env.containerOf(running.ID)
+	if !slices.Contains(spec.Ports, dockerx.PortPublication{Container: 3000, Address: "127.0.0.1"}) {
+		t.Errorf("ports = %v, want 3000 on loopback", spec.Ports)
+	}
+}
+
+func TestSessionRefusesAnAddressItCannotPublishOn(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+
+	for _, address := range []string{"hexagon.example", "0.0.0", "not an address"} {
+		body := fmt.Sprintf(`{"imageId":%q,"ports":[3000],"portAddress":%s}`, image.ID, quote(address))
+		if resp := env.postJSON("/api/sessions", body); resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d for %q, want 400", resp.StatusCode, address)
+		}
 	}
 }

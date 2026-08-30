@@ -321,7 +321,8 @@ func TestComposeServiceMatchesTheContainerSpec(t *testing.T) {
 	manager, _, _ := testManager(t, nil)
 	manager.cfg.ContainerUser = "1000:1000"
 
-	session := &store.Session{ID: "s-1", RepoDir: "/repo", ImageRef: "ref", Ports: []int{3000}, Compose: true}
+	session := &store.Session{ID: "s-1", RepoDir: "/repo", ImageRef: "ref",
+		Ports: []int{3000}, PortAddress: "0.0.0.0", Compose: true}
 	spec := manager.containerSpec(session, "/home", "", provider.GitAuth{}, claudex.Credential{})
 
 	rendered, err := composeOverlay(spec, []string{"db"})
@@ -363,9 +364,10 @@ func TestComposeServiceMatchesTheContainerSpec(t *testing.T) {
 	if !maps.Equal(agent.Labels, spec.Labels) {
 		t.Errorf("labels = %v, want the spec's labels %v", agent.Labels, spec.Labels)
 	}
-	// A published port keeps the host side to Docker, exactly as dockerx does.
-	if !slices.Equal(agent.Ports, []string{"127.0.0.1::3000"}) {
-		t.Errorf("ports = %v, want the container port published on loopback", agent.Ports)
+	// A published port keeps the host side to Docker and the interface the
+	// session chose, exactly as dockerx does.
+	if !slices.Equal(agent.Ports, []string{"0.0.0.0::3000"}) {
+		t.Errorf("ports = %v, want the container port on the session's address", agent.Ports)
 	}
 	// The agent exists to use the services, so it starts after them.
 	if !slices.Equal(agent.DependsOn, []string{"db"}) {
@@ -406,23 +408,31 @@ func TestCreateRejectsAComposeImageWithNoCompose(t *testing.T) {
 
 func TestCheckPorts(t *testing.T) {
 	cases := []struct {
-		name   string
-		ports  []int
-		vscode bool
-		want   string
+		name    string
+		ports   []int
+		address string
+		vscode  bool
+		want    string
 	}{
-		{"nothing published", nil, false, ""},
-		{"an ordinary port", []int{3000, 8080}, false, ""},
-		{"the vscode port without the integration", []int{dockerx.VSCodePort}, false, ""},
-		{"zero", []int{0}, false, "not a port"},
-		{"above the range", []int{70000}, false, "not a port"},
-		{"a duplicate", []int{3000, 3000}, false, "twice"},
-		{"too many", make([]int, maxSessionPorts+1), false, "at most"},
-		{"the vscode port with the integration", []int{dockerx.VSCodePort}, true, "VS Code"},
+		{name: "nothing published"},
+		{name: "an ordinary port", ports: []int{3000, 8080}},
+		{name: "the vscode port without the integration", ports: []int{dockerx.VSCodePort}},
+		{name: "every interface", ports: []int{3000}, address: "0.0.0.0"},
+		{name: "one interface", ports: []int{3000}, address: "192.0.2.10"},
+		{name: "every interface, v6", ports: []int{3000}, address: "::"},
+		{name: "zero", ports: []int{0}, want: "not a port"},
+		{name: "above the range", ports: []int{70000}, want: "not a port"},
+		{name: "a duplicate", ports: []int{3000, 3000}, want: "twice"},
+		{name: "too many", ports: make([]int, maxSessionPorts+1), want: "at most"},
+		{name: "the vscode port with the integration", ports: []int{dockerx.VSCodePort}, vscode: true, want: "VS Code"},
+		// A name would have to be resolved somewhere, and resolving it here
+		// would only move the surprise to the daemon.
+		{name: "a host name", ports: []int{3000}, address: "hexagon.example", want: "not an address"},
+		{name: "nonsense", ports: []int{3000}, address: "0.0.0", want: "not an address"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			err := checkPorts(c.ports, c.vscode)
+			err := checkPorts(c.ports, c.address, c.vscode)
 			switch {
 			case c.want == "" && err != nil:
 				t.Errorf("checkPorts = %v, want it accepted", err)

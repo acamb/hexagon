@@ -48,6 +48,24 @@ const vscode = ref(false)
 // a session that publishes nothing is the usual one — and, like the switch
 // above, fixed when the container is created.
 const ports = ref('')
+// Which host interface those ports bind. 0.0.0.0 by default because a Hexagon
+// on a remote machine is the case that needs published ports at all, and a port
+// on loopback there is reachable by nobody. What that costs is spelled out
+// under the field rather than assumed to be understood.
+const portAddress = ref('0.0.0.0')
+
+// Whether the chosen address reaches beyond this machine, which is what the
+// warning is about. Anything that is not a loopback address does.
+const portsAreExposed = computed(() => {
+  const value = portAddress.value.trim()
+  return (
+    parsedPorts.value.length > 0 &&
+    value !== '' &&
+    value !== '127.0.0.1' &&
+    value !== 'localhost' &&
+    value !== '::1'
+  )
+})
 
 // The ports as the API takes them. Anything that is not a number is dropped
 // here and refused by the server if it somehow gets through: this is a
@@ -138,6 +156,7 @@ async function submit() {
             propagateToken: tokenProvider.value !== '',
             vscode: vscode.value,
             ports: parsedPorts.value,
+            portAddress: portAddress.value.trim() || undefined,
           }
         : {
             provider: selected.value!.provider,
@@ -149,6 +168,7 @@ async function submit() {
             propagateToken: propagateToken.value,
             vscode: vscode.value,
             ports: parsedPorts.value,
+            portAddress: portAddress.value.trim() || undefined,
           },
     )
     emit('created', session)
@@ -312,17 +332,29 @@ onMounted(() => load())
             </span>
           </label>
 
-          <label class="field">
-            <span>Published ports <em>optional</em></span>
-            <input v-model="ports" placeholder="3000, 5173" />
-            <em class="note">
-              Container ports to reach from this machine — a dev server, a preview. Hexagon picks
-              the host port and the session page shows the pair. They answer on
-              <code>127.0.0.1</code> with nothing in front of them, so anything else on this
-              machine can reach them while the session is up, and they cannot be changed
-              afterwards: the container is built with them.
-            </em>
-          </label>
+          <div class="row">
+            <label class="field">
+              <span>Published ports <em>optional</em></span>
+              <input v-model="ports" placeholder="3000, 5173" />
+            </label>
+
+            <label class="field">
+              <span>On address</span>
+              <input v-model="portAddress" placeholder="0.0.0.0" :disabled="!parsedPorts.length" />
+            </label>
+          </div>
+          <em class="note">
+            Container ports to reach from outside the session — a dev server, a preview. Hexagon
+            picks the host port and the session page shows the pair. They cannot be changed
+            afterwards: the container is built with them. Use <code>127.0.0.1</code> to keep them
+            on the machine running Hexagon.
+          </em>
+          <p v-if="portsAreExposed" class="warning">
+            On <code>{{ portAddress.trim() }}</code> these ports are open to anyone who can reach
+            that address, with nothing in front of them — no password, and not Hexagon's own
+            sign-in. Whatever the session runs on them is public to that network for as long as
+            the session is up.
+          </p>
 
           <footer>
             <button type="button" @click="emit('close')">Cancel</button>
@@ -532,5 +564,16 @@ button:disabled {
   border: 1px solid var(--error);
   border-radius: 6px;
   color: var(--error);
+}
+
+/* Not .error: nothing has gone wrong. It is a consequence of a choice the user
+   is in the middle of making, and it has to be as visible as one. */
+.warning {
+  margin: 0;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid var(--warning);
+  border-radius: 6px;
+  color: var(--warning);
+  font-size: 0.9rem;
 }
 </style>
