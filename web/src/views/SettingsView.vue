@@ -22,6 +22,7 @@ type CredentialsMode = 'default' | 'none' | 'path'
 
 // The form. It starts as what the file says, because that is what a save edits.
 const form = reactive({
+  addr: '',
   publicUrl: '',
   insecureHttp: false,
   dataDir: '',
@@ -56,6 +57,7 @@ const waiting = computed(() => {
   const s = settings.value
   if (!s) return new Set<string>()
   const differs: [string, unknown, unknown][] = [
+    ['addr', s.running.addr, s.saved.addr],
     ['publicUrl', s.running.publicUrl, s.saved.publicUrl],
     ['insecureHttp', s.running.insecureHttp, s.saved.insecureHttp],
     ['dataDir', s.running.dataDir, s.saved.dataDir],
@@ -82,6 +84,7 @@ const waiting = computed(() => {
 function fill(current: Settings) {
   settings.value = current
   const s = current.saved
+  form.addr = s.addr
   form.publicUrl = s.publicUrl
   form.insecureHttp = s.insecureHttp
   form.dataDir = s.dataDir
@@ -121,6 +124,7 @@ onMounted(async () => {
 
 function update(): SettingsUpdate {
   const body: SettingsUpdate = {
+    addr: form.addr,
     publicUrl: form.publicUrl,
     insecureHttp: form.insecureHttp,
     dataDir: form.dataDir,
@@ -209,12 +213,32 @@ function message(e: unknown): string {
 
           <label class="field">
             <span>Listen address</span>
-            <input :value="settings.running.addr" disabled />
+            <input v-model="form.addr" spellcheck="false" placeholder="127.0.0.1:8080" />
             <span class="hint">
-              <code>HEXAGON_ADDR</code>. Read-only: a wrong address is a port nobody can
-              reach, and this page is behind it. Change it in the file and restart.
+              <code>HEXAGON_ADDR</code>. The interface and port the server binds. Keep it on
+              <code>127.0.0.1</code> unless something in front of it terminates TLS: whoever
+              reaches this port controls the Docker socket. An address with no host, as in
+              <code>:8080</code>, listens on every interface.
+            </span>
+            <span v-if="shadowed.has('addr')" class="hint env">
+              Set by <code>HEXAGON_ADDR</code>, which wins over what is saved here.
+            </span>
+            <span v-if="waiting.has('addr')" class="hint waiting">
+              Saved. Still listening on <code>{{ settings.running.addr }}</code> until a
+              restart — and a restart is what makes a wrong one hard to undo, since this page
+              is behind that port.
             </span>
           </label>
+
+          <label class="check">
+            <input type="checkbox" v-model="form.insecureHttp" />
+            <span>Serve a non-loopback address without https</span>
+          </label>
+          <p class="hint">
+            <code>HEXAGON_INSECURE_HTTP</code>. Only matters when the listen address above is
+            not loopback: without it the server refuses to start on an address the network can
+            reach unless the public URL is https.
+          </p>
 
           <label class="field">
             <span>Public URL</span>
@@ -231,15 +255,6 @@ function message(e: unknown): string {
               Saved. Still serving <code>{{ settings.running.publicUrl }}</code> until a restart.
             </span>
           </label>
-
-          <label class="check">
-            <input type="checkbox" v-model="form.insecureHttp" />
-            <span>Serve a non-loopback address without https</span>
-          </label>
-          <p class="hint">
-            <code>HEXAGON_INSECURE_HTTP</code>. Without it the server refuses to start on an
-            address the network can reach unless the public URL is https.
-          </p>
 
           <label class="check">
             <input type="checkbox" v-model="form.debug" />

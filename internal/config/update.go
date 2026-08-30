@@ -13,14 +13,22 @@ import (
 // file from the running server. A nil field is one the caller is not changing,
 // which is not the same as one it is clearing.
 //
-// Two settings are missing on purpose, and their absence is the whole of the
-// rule: a wrong value in either cannot be corrected from the page that wrote
-// it. A wrong addr is a port nobody can reach, and the settings page is behind
-// that port; a wrong secretKey makes every sealed token undecryptable. Both
-// stay a file edit and a restart. They are left out of this type rather than
-// checked in a handler, so there is no request that can express the change and
-// nothing to silently ignore.
+// One setting is missing on purpose, and its absence is the whole of the rule:
+// a wrong secretKey cannot be corrected from the page that wrote it, because it
+// makes every sealed token undecryptable. It stays a file edit and a restart,
+// and it is left out of this type rather than checked in a handler, so there is
+// no request that can express the change and nothing to silently ignore.
+//
+// Addr was once missing for a related but weaker reason — a wrong listen
+// address is a port nobody can reach, and the settings page is behind that
+// port. What makes it survivable here is that the address is read only when the
+// process starts: a bad one is saved, reported as waiting for a restart, and
+// correctable from the same page right up until that restart. The residual risk
+// is real and belongs to the restart, not to the save, which is why the caller
+// is expected to refuse anything that is not a host and a port before it gets
+// here — see httpapi.checkAddr.
 type Patch struct {
+	Addr          *string
 	PublicURL     *string
 	InsecureHTTP  *bool
 	DataDir       *string
@@ -79,6 +87,7 @@ type patchField struct {
 // readable as the list grows. The order is the order of the file.
 func (p Patch) fields() []patchField {
 	return []patchField{
+		{path: []string{"addr"}, value: p.Addr},
 		{path: []string{"publicUrl"}, value: p.PublicURL},
 		{path: []string{"insecureHttp"}, value: p.InsecureHTTP},
 		{path: []string{"dataDir"}, value: p.DataDir},

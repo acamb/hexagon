@@ -163,6 +163,10 @@ Adding a setting means, in this order:
    an empty value means something.
 4. A row in the README configuration table, and a key in `config.example.json`.
 
+Settings that can be written back from the running server also need a field on
+`config.Patch` and a row in its `fields()` table. `secretKey` is deliberately not
+one of them: a wrong value cannot be corrected from the page that wrote it.
+
 Required settings are validated where they are used (the OAuth constructor
 refuses an empty allowlist), not silently defaulted. Unknown keys in the file are
 an error, so a setting that is not in `config.file` cannot be configured at all.

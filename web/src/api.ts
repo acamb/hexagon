@@ -50,9 +50,10 @@ export interface Settings {
 }
 
 export interface SettingsValues {
-  // addr and secretKeySource are shown and cannot be changed from here: a wrong
-  // value in either could not be corrected from this page afterwards.
   addr: string
+  // secretKeySource is shown and cannot be changed from here: a wrong key could
+  // not be corrected from this page afterwards, because it would make every
+  // sealed token undecryptable.
   secretKeySource: string
   publicUrl: string
   insecureHttp: boolean
@@ -74,6 +75,7 @@ export interface SettingsValues {
 // `claude.credentials` uses all three states — omitted leaves it, null puts it
 // back to the default path, and "" mounts nothing.
 export interface SettingsUpdate {
+  addr?: string
   publicUrl?: string
   insecureHttp?: boolean
   dataDir?: string

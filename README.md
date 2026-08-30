@@ -244,11 +244,18 @@ process on the machine can reach a running session's editor while it is up.
 
 **Settings** — the configuration file, edited from the browser. Every key is on the page,
 grouped as the file groups them, each with the environment variable that overrides it.
-Two are shown and cannot be changed there, because a wrong value in either could not be
-corrected from the page that wrote it: the listen address, which is the port the page
-itself is behind, and the secret key, which seals every stored provider token. Everyone
-the allowlist admits can use the page — that list is also the list of administrators, and
-it cannot be saved without you in it.
+One is shown and cannot be changed there, because a wrong value could not be corrected
+from the page that wrote it: the secret key, which seals every stored provider token.
+Everyone the allowlist admits can use the page — that list is also the list of
+administrators, and it cannot be saved without you in it.
+
+The listen address is editable, and it is the one setting whose mistake this page cannot
+undo: it is read when the process starts, so a bad one is saved, marked as waiting for a
+restart, and correctable from the same page right up until that restart — after which the
+page is behind a port nobody can reach and the only way back is the file. It is refused
+unless it parses as a host and a port, and the pair with the public URL is checked too, so
+a configuration the next start would refuse cannot be saved. **Serve a non-loopback address
+without https** sits directly under it, because that is the only setting it qualifies.
 
 Only the GitHub client id, client secret and allowlist take effect when they are saved.
 Everything else is read once when the server starts, so the page shows what the process is

@@ -206,19 +206,113 @@ func TestSettingsRefuseValuesTheNextStartWouldNotLoad(t *testing.T) {
 	}
 }
 
-func TestSettingsCannotChangeTheAddressOrTheSecretKey(t *testing.T) {
+func TestSettingsCannotChangeTheSecretKey(t *testing.T) {
 	env := newSettingsEnv(t)
 
-	// Neither is a field of the request, so this is the whole of the check:
+	// It is not a field of the request, so this is the whole of the check:
 	// there is nothing to ignore, and the file gains nothing.
 	resp := env.sendJSON(http.MethodPut, "/api/settings", `{
-		"addr": "0.0.0.0:9999", "secretKey": "AAAA", "git": {"userName": "Someone"}
+		"secretKey": "AAAA", "git": {"userName": "Someone"}
 	}`)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, env.bodyString(resp))
 	}
 
-	data, err := os.ReadFile(env.cfg.ConfigPath)
+	doc := env.configDocument(t)
+	if _, ok := doc["secretKey"]; ok {
+		t.Error("secretKey was written, want it left to a file edit and a restart")
+	}
+	if git, _ := doc["git"].(map[string]any); git["userName"] != "Someone" {
+		t.Errorf("git = %v, want the settings the request could express saved", doc["git"])
+	}
+}
+
+// The listen address is editable, and it is the one setting whose mistake this
+// page cannot undo after a restart, so it is written only once it parses.
+func TestSettingsSavesTheListenAddress(t *testing.T) {
+	env := newSettingsEnv(t)
+
+	resp := env.sendJSON(http.MethodPut, "/api/settings", `{"addr": "127.0.0.1:9999"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, env.bodyString(resp))
+	}
+	if doc := env.configDocument(t); doc["addr"] != "127.0.0.1:9999" {
+		t.Errorf("addr = %v, want the address that was sent", doc["addr"])
+	}
+
+	// Saved is not applied: the address is read when the process starts, which
+	// is exactly what leaves room to correct a wrong one.
+	var settings settingsResponse
+	env.decode(resp, &settings)
+	if !settings.RestartRequired {
+		t.Error("restartRequired = false after changing the address the server is bound to")
+	}
+	if settings.Running.Addr == "127.0.0.1:9999" {
+		t.Error("the running address changed without a restart")
+	}
+}
+
+func TestSettingsRefusesAnUnusableListenAddress(t *testing.T) {
+	for _, addr := range []string{
+		"127.0.0.1",         // no port
+		"127.0.0.1:http",    // a name where a number belongs
+		"127.0.0.1:0",       // a port the server would not be found on
+		"127.0.0.1:70000",   // out of range
+		"what is this:8080", // neither an address nor a host name
+	} {
+		t.Run(addr, func(t *testing.T) {
+			env := newSettingsEnv(t)
+
+			resp := env.sendJSON(http.MethodPut, "/api/settings", `{"addr": `+quote(addr)+`}`)
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Fatalf("status = %d for %q, want 400", resp.StatusCode, addr)
+			}
+			if _, ok := env.configDocument(t)["addr"]; ok {
+				t.Error("a refused address was written to the file anyway")
+			}
+		})
+	}
+}
+
+// The pair checkTransport guards: an address the network can reach, in
+// plaintext, is refused before the file is touched — so the page cannot save a
+// configuration the next start would refuse.
+func TestSettingsRefusesAPublicAddressWithoutHTTPS(t *testing.T) {
+	env := newSettingsEnv(t)
+
+	resp := env.sendJSON(http.MethodPut, "/api/settings",
+		`{"addr": "0.0.0.0:8080", "publicUrl": "http://hexagon.example", "insecureHttp": false}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400: %s", resp.StatusCode, env.bodyString(resp))
+	}
+	// The refusal has to be the transport one, and it has to name both values,
+	// since neither is wrong on its own.
+	var body map[string]string
+	env.decode(resp, &body)
+	for _, want := range []string{"0.0.0.0:8080", "http://hexagon.example", "insecureHttp"} {
+		if !strings.Contains(body["error"], want) {
+			t.Errorf("error = %q, want it to mention %q", body["error"], want)
+		}
+	}
+	if _, ok := env.configDocument(t)["addr"]; ok {
+		t.Error("the address was written even though the configuration was refused")
+	}
+
+	// Said out loud, it is allowed: that is what the flag is for.
+	resp = env.sendJSON(http.MethodPut, "/api/settings",
+		`{"addr": "0.0.0.0:8080", "publicUrl": "http://hexagon.example", "insecureHttp": true}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, env.bodyString(resp))
+	}
+	if doc := env.configDocument(t); doc["addr"] != "0.0.0.0:8080" {
+		t.Errorf("addr = %v, want it saved once the flag says so", doc["addr"])
+	}
+}
+
+// configDocument is the configuration file as it is on disk.
+func (e *testEnv) configDocument(t *testing.T) map[string]any {
+	t.Helper()
+	data, err := os.ReadFile(e.cfg.ConfigPath)
 	if err != nil {
 		t.Fatalf("read the configuration file: %v", err)
 	}
@@ -226,15 +320,7 @@ func TestSettingsCannotChangeTheAddressOrTheSecretKey(t *testing.T) {
 	if err := json.Unmarshal(data, &doc); err != nil {
 		t.Fatalf("parse the configuration file: %v", err)
 	}
-	if _, ok := doc["addr"]; ok {
-		t.Error("addr was written, want a setting this API cannot express to stay out of the file")
-	}
-	if _, ok := doc["secretKey"]; ok {
-		t.Error("secretKey was written, want it left to a file edit and a restart")
-	}
-	if git, _ := doc["git"].(map[string]any); git["userName"] != "Someone" {
-		t.Errorf("git = %v, want the settings the request could express saved", doc["git"])
-	}
+	return doc
 }
 
 func TestSettingsNoticeAFileEditedByHand(t *testing.T) {

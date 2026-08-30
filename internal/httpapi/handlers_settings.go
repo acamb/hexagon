@@ -5,11 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/andrea/hexagon/internal/auth"
@@ -51,10 +54,10 @@ type settingsResponse struct {
 // settingsValues mirrors the configuration file group for group, plus two
 // values that are derived rather than configured.
 type settingsValues struct {
-	// Addr and SecretKeySource are here to be displayed and have no counterpart
-	// in the request: they are the two settings the API deliberately cannot
-	// change. SecretKeySource names where the key comes from, never the key.
-	Addr            string `json:"addr"`
+	Addr string `json:"addr"`
+	// SecretKeySource is here to be displayed and has no counterpart in the
+	// request: it is the one setting the API deliberately cannot change. It
+	// names where the key comes from, never the key.
 	SecretKeySource string `json:"secretKeySource"`
 
 	PublicURL     string `json:"publicUrl"`
@@ -119,9 +122,10 @@ type settingsLimits struct {
 //
 // Every field is a pointer: absent means "leave this one alone". That is what
 // lets the two secrets be kept without ever being sent to the browser and back,
-// and it is why there is no addr and no secretKey — see config.Patch for why
-// those two are not settings this API can express.
+// and it is why there is no secretKey — see config.Patch for why that one is
+// not a setting this API can express.
 type settingsRequest struct {
+	Addr          *string `json:"addr"`
 	PublicURL     *string `json:"publicUrl"`
 	InsecureHTTP  *bool   `json:"insecureHttp"`
 	DataDir       *string `json:"dataDir"`
@@ -256,6 +260,11 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 // a redirect_uri that moved on its own would send the browser to an origin this
 // same process rejects.
 func (s *Server) applySettings(ctx context.Context, user *store.User, patch config.Patch) error {
+	if patch.Addr != nil {
+		if err := checkAddr(*patch.Addr); err != nil {
+			return settingsError{err}
+		}
+	}
 	if patch.PublicURL != nil {
 		if err := checkPublicURL(*patch.PublicURL); err != nil {
 			return settingsError{err}
@@ -387,6 +396,7 @@ func restartRequired(running, saved settingsValues) bool {
 func environmentSettings() []string {
 	var out []string
 	for _, shadowed := range []struct{ variable, key string }{
+		{"HEXAGON_ADDR", "addr"},
 		{"HEXAGON_PUBLIC_URL", "publicUrl"},
 		{"HEXAGON_INSECURE_HTTP", "insecureHttp"},
 		{"HEXAGON_DATA_DIR", "dataDir"},
@@ -427,6 +437,7 @@ func environmentSettings() []string {
 // value left at its default would become a key.
 func (req settingsRequest) patch(current *config.Config) (config.Patch, error) {
 	patch := config.Patch{
+		Addr:          text(req.Addr, current.Addr),
 		PublicURL:     text(req.PublicURL, current.PublicURL),
 		InsecureHTTP:  flag(req.InsecureHTTP, current.InsecureHTTP),
 		DataDir:       text(req.DataDir, current.DataDir),
@@ -523,6 +534,42 @@ func list(want *[]string, current []string) *[]string {
 	}
 	return &value
 }
+
+// checkAddr refuses a listen address the server could not bind.
+//
+// config.Load takes any string here and net/http only complains at
+// ListenAndServe, which is after this page is gone — so a typo saved from the
+// browser would surface as a server that refuses to start, with the page that
+// wrote it unreachable. This is what stands between the two, and it is why the
+// address became editable at all.
+//
+// An empty host is legal and means every interface, which is the deployment
+// checkTransport pairs with insecureHttp; an empty port is not, because the
+// server would then be on a port nobody could predict.
+func checkAddr(raw string) error {
+	host, port, err := net.SplitHostPort(raw)
+	if err != nil {
+		return fmt.Errorf("listen address %q: want a host and a port, as in 127.0.0.1:8080", raw)
+	}
+	number, err := strconv.Atoi(port)
+	switch {
+	case err != nil:
+		return fmt.Errorf("listen address %q: %q is not a port number", raw, port)
+	case number < 1 || number > 65535:
+		return fmt.Errorf("listen address %q: port %d is out of range", raw, number)
+	}
+	// A name is allowed — "localhost:8080" is the obvious one — so this only
+	// refuses something that is neither an address nor a plausible name.
+	if host != "" && net.ParseIP(host) == nil && !hostnamePattern.MatchString(host) {
+		return fmt.Errorf("listen address %q: %q is not an address or a host name", raw, host)
+	}
+	return nil
+}
+
+// hostnamePattern is the shape of a name that could resolve to an interface on
+// this machine. It is deliberately loose: what actually binds is the operating
+// system's business, and this only has to catch a typo.
+var hostnamePattern = regexp.MustCompile(`^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$`)
 
 // checkPublicURL refuses a public URL that could not serve as an origin.
 //
