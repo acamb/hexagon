@@ -209,8 +209,12 @@ an error, so a setting that is not in `config.file` cannot be configured at all.
 
 These are not preferences. A change that breaks one is wrong even if it passes.
 
-- No endpoint outside `/api/health` and the auth handshake is reachable without a
-  valid session — the terminal WebSocket included.
+- No endpoint outside `/api/health`, the auth handshake and `/api/setup` is
+  reachable without a valid session — the terminal WebSocket included.
+  `/api/setup` is the first-time wizard, and it is the exception that proves the
+  rule: it answers only while no user has ever signed in, and only to a password
+  generated for this process and printed in its log. See
+  [plans/M2/01-first-time-wizard.md](plans/M2/01-first-time-wizard.md).
 - GitHub tokens are stored sealed with AES-256-GCM and never leave
   `internal/auth`. Only the SHA-256 of a session cookie is stored.
 - Mutating API calls require a same-origin request and a JSON content type.

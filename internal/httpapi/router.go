@@ -35,12 +35,13 @@ type Deps struct {
 	Config *config.Config
 	Store  *store.Store
 	Auth   *auth.Service
-	// OAuth drives the GitHub login.
-	OAuth *auth.OAuth
-	// Allowlist says who may use this instance. It is consulted on every
-	// request, not only at the login.
-	Allowlist *auth.Allowlist
-	GitHub    auth.UserFetcher
+	// Gate holds the GitHub login and the allowlist that says who may use this
+	// instance. It is read on every request, not only at the login, and it is
+	// empty on a server the first-time wizard has not configured yet.
+	Gate *auth.Gate
+	// Setup guards that wizard. It is nil once there is nothing left to set up.
+	Setup  *auth.Setup
+	GitHub auth.UserFetcher
 	// Providers are the sources of repositories this build knows about, and
 	// Repos merges the listings of the accounts a user has connected to them.
 	Providers provider.Registry
@@ -60,8 +61,8 @@ type Server struct {
 	cfg            *config.Config
 	store          *store.Store
 	auth           *auth.Service
-	oauth          *auth.OAuth
-	allowlist      *auth.Allowlist
+	gate           *auth.Gate
+	setup          *auth.Setup
 	github         auth.UserFetcher
 	providers      provider.Registry
 	repos          *provider.Lister
@@ -83,8 +84,8 @@ func New(deps Deps) http.Handler {
 		cfg:            deps.Config,
 		store:          deps.Store,
 		auth:           deps.Auth,
-		oauth:          deps.OAuth,
-		allowlist:      deps.Allowlist,
+		gate:           deps.Gate,
+		setup:          deps.Setup,
 		github:         deps.GitHub,
 		providers:      deps.Providers,
 		repos:          deps.Repos,
@@ -107,6 +108,14 @@ func New(deps Deps) http.Handler {
 	mux.HandleFunc("GET /api/health", s.limitPublic(s.handleHealth))
 	mux.HandleFunc("GET /api/auth/login", s.limitPublic(s.handleAuthLogin))
 	mux.HandleFunc("GET /api/auth/callback", s.limitPublic(s.handleAuthCallback))
+
+	// Public too, and the exception to the rule above: the first-time wizard
+	// runs before there is anybody to authenticate. It closes itself the moment
+	// somebody signs in, and until then it is guarded by a password that exists
+	// only in this process's memory and in its log. See
+	// plans/M2/01-first-time-wizard.md.
+	mux.HandleFunc("GET /api/setup", s.limitPublic(s.handleSetupStatus))
+	mux.HandleFunc("POST /api/setup", s.limitPublic(s.handleSetup))
 
 	// Authenticated.
 	protected := map[string]http.HandlerFunc{

@@ -191,3 +191,17 @@ func (s *Store) DeleteExpiredUserSessions(ctx context.Context) (int64, error) {
 	}
 	return res.RowsAffected()
 }
+
+// AnyUser reports whether anybody has ever signed in.
+//
+// It is what tells the first-time wizard it is still the first time: a server
+// nobody has reached the end of a login on is one whose configuration cannot be
+// trusted to work yet, whoever wrote it.
+func (s *Store) AnyUser(ctx context.Context) (bool, error) {
+	var exists bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM users)`).Scan(&exists)
+	if err != nil {
+		return false, fmt.Errorf("count users: %w", err)
+	}
+	return exists, nil
+}

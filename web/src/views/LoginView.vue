@@ -1,11 +1,14 @@
 <script setup lang="ts">
-import { computed } from 'vue'
-import { useRoute } from 'vue-router'
+import { computed, onMounted, ref } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
+import { api } from '../api'
 import { signIn } from '../session'
 
 const route = useRoute()
+const router = useRouter()
 
 const messages: Record<string, string> = {
+  not_configured: 'This server has not been set up yet.',
   invalid_state: 'The sign-in attempt expired. Please try again.',
   missing_code: 'GitHub did not return an authorization code.',
   exchange_failed: 'GitHub rejected the sign-in. Please try again.',
@@ -19,6 +22,24 @@ const error = computed(() => {
   if (typeof code !== 'string') return null
   return messages[code] ?? 'Sign-in failed.'
 })
+
+// Offer the first-time wizard while it is open. Asking here rather than in the
+// router guard keeps the extra request off every navigation: only somebody who
+// is not signed in ever reaches this page.
+const setupRequired = ref(false)
+
+onMounted(async () => {
+  try {
+    setupRequired.value = (await api.setup.status()).required
+  } catch {
+    // The wizard is an offer, not a requirement. A server that cannot answer
+    // is one this page cannot help with either.
+    return
+  }
+  if (setupRequired.value && route.query.error === 'not_configured') {
+    router.replace('/setup')
+  }
+})
 </script>
 
 <template>
@@ -29,6 +50,10 @@ const error = computed(() => {
     <p v-if="error" class="error">{{ error }}</p>
 
     <button type="button" class="signin" @click="signIn">Sign in with GitHub</button>
+
+    <p v-if="setupRequired" class="setup">
+      <RouterLink to="/setup">First-time setup</RouterLink>
+    </p>
   </main>
 </template>
 
@@ -73,5 +98,10 @@ h1 {
 
 .signin:hover {
   border-color: var(--accent);
+}
+
+.setup {
+  margin-top: 1.25rem;
+  font-size: 0.9rem;
 }
 </style>

@@ -52,10 +52,15 @@ type testEnv struct {
 	bbRepos *fakeProvider
 	repos   *provider.Lister
 	cfg     *config.Config
-	docker  *fakeDocker
-	cloner  *fakeCloner
-	editor  *fakeEditor
-	vscode  *fakeVSCode
+	// gate is the login the server reads on every request, so a test can watch
+	// the first-time wizard replace it.
+	gate *auth.Gate
+	// setupPassword is what this server printed for the first-time wizard.
+	setupPassword string
+	docker        *fakeDocker
+	cloner        *fakeCloner
+	editor        *fakeEditor
+	vscode        *fakeVSCode
 	// workspaces is the root the session manager provisions into.
 	workspaces string
 }
@@ -139,6 +144,9 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 
 	cfg := &config.Config{
 		Addr: "127.0.0.1:0", PublicURL: "http://127.0.0.1:8080", ClaudeCredentials: claudeCredentials,
+		// Where the first-time wizard would write. Nothing is there until a
+		// test puts it there.
+		ConfigPath: filepath.Join(t.TempDir(), "config.json"),
 		// The production defaults, so a test that is not about the limits does
 		// not have to know they exist.
 		MaxSessionsPerUser: 20, MaxConcurrentBuilds: 2, PublicRatePerMinute: 60,
@@ -176,13 +184,22 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	if err != nil {
 		t.Fatalf("new allowlist: %v", err)
 	}
+	gate := auth.NewGate(oauth, allowlist)
+
+	// Every test server starts with the first-time wizard open, because no
+	// user has signed in yet. That is the production state too, and it is what
+	// makes "every protected route still refuses" testable.
+	setup, setupPassword, err := auth.NewSetup()
+	if err != nil {
+		t.Fatalf("new setup: %v", err)
+	}
 
 	handler := New(Deps{
 		Config:         cfg,
 		Store:          st,
 		Auth:           logins,
-		OAuth:          oauth,
-		Allowlist:      allowlist,
+		Gate:           gate,
+		Setup:          setup,
 		GitHub:         gh,
 		Providers:      providers,
 		Repos:          repos,
@@ -202,19 +219,21 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		t.Fatalf("new cookie jar: %v", err)
 	}
 	return &testEnv{
-		t:       t,
-		server:  server,
-		store:   st,
-		auth:    logins,
-		github:  gh,
-		ghRepos: ghRepos,
-		bbRepos: bbRepos,
-		repos:   repos,
-		cfg:     cfg,
-		docker:  docker,
-		cloner:  cloner,
-		editor:  editor,
-		vscode:  vscode,
+		t:             t,
+		server:        server,
+		store:         st,
+		auth:          logins,
+		github:        gh,
+		ghRepos:       ghRepos,
+		bbRepos:       bbRepos,
+		repos:         repos,
+		cfg:           cfg,
+		gate:          gate,
+		setupPassword: setupPassword,
+		docker:        docker,
+		cloner:        cloner,
+		editor:        editor,
+		vscode:        vscode,
 
 		workspaces: workspaces,
 		client: &http.Client{

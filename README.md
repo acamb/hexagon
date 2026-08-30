@@ -41,6 +41,11 @@ At <https://github.com/settings/developers> → **New OAuth App**:
 Then **Generate a new client secret**. The callback URL has to match exactly:
 GitHub compares it verbatim against the `redirect_uri` the server sends.
 
+You can skip this step and let Hexagon ask: started with no client id and
+secret, it prints a password in its log and serves a first-time wizard at
+`/setup` that writes them into the configuration file for you. See
+[First run](#first-run) below.
+
 ### 2. Configure and run
 
 Either put the values in a configuration file:
@@ -72,6 +77,32 @@ scope: Claude Code needs it to clone and push), and come back signed in.
 
 `make dev` runs the Go server on `:8080` and the Vite dev server on `:5173`,
 which proxies `/api` to the Go process. Ctrl-C stops both.
+
+### First run
+
+Started without a GitHub client id and secret, Hexagon does not refuse to run.
+It logs a line like
+
+```
+WARN first-time setup is open until somebody signs in url=http://localhost:5173/setup password=K7QX-4M2A-...
+```
+
+and serves a wizard at that URL which asks for the password, then for the client
+id, the client secret and the accounts allowed to sign in. It shows the exact
+callback URL to register on GitHub, writes the settings into the configuration
+file (creating it with mode 600 if it is not there yet), and reconfigures the
+running server, so the sign-in works without a restart.
+
+The password lives only in that process's memory: a restart prints a new one
+and retires the old. The wizard stays reachable until somebody signs in
+successfully, so a client secret with a typo can be corrected from the same page
+rather than by editing files on the server. After the first sign-in it is closed
+for good.
+
+An environment variable still outranks the file, so `HEXAGON_GITHUB_CLIENT_ID`
+and friends override what the wizard writes — the wizard says so when one of
+them is set, and they are the way back into an instance whose saved settings are
+wrong.
 
 ### Publishing it
 
@@ -189,9 +220,9 @@ and has a default that suits a single user on a developer machine.
 | `HEXAGON_INSECURE_HTTP` | `insecureHttp` | — | Set to anything to serve a non-loopback address without https, which the server otherwise refuses to do |
 | `HEXAGON_DATA_DIR` | `dataDir` | `~/.local/share/hexagon` | Database and secret key |
 | `HEXAGON_WORKSPACE_ROOT` | `workspaceRoot` | `<data dir>/workspaces` | One directory per session, holding its workspace |
-| `HEXAGON_GITHUB_CLIENT_ID` | `github.clientId` | — | Required |
-| `HEXAGON_GITHUB_CLIENT_SECRET` | `github.clientSecret` | — | Required |
-| `HEXAGON_ALLOWED_USERS` | `github.allowedUsers` | — | Required. Who may sign in: comma-separated in the environment, a JSON array in the file. An entry that is a number is a GitHub account id, anything else a login — prefer ids, since a login is released when an account is renamed and can then be claimed by somebody else |
+| `HEXAGON_GITHUB_CLIENT_ID` | `github.clientId` | — | From the first-time wizard when it is not set |
+| `HEXAGON_GITHUB_CLIENT_SECRET` | `github.clientSecret` | — | From the first-time wizard when it is not set |
+| `HEXAGON_ALLOWED_USERS` | `github.allowedUsers` | — | Who may sign in, asked for by the first-time wizard when it is not set: comma-separated in the environment, a JSON array in the file. An entry that is a number is a GitHub account id, anything else a login — prefer ids, since a login is released when an account is renamed and can then be claimed by somebody else |
 | `HEXAGON_GITHUB_API_URL` | `github.apiUrl` | `https://api.github.com` | Override for GitHub Enterprise, or a stub in development |
 | `HEXAGON_BITBUCKET_API_URL` | `bitbucket.apiUrl` | `https://api.bitbucket.org/2.0` | Override, or a stub in development |
 | `HEXAGON_SECRET_KEY` | `secretKey` | `<data dir>/secret.key` | 32 bytes, base64. Generated on first run |

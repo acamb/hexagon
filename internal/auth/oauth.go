@@ -58,11 +58,20 @@ func NewOAuth(cfg OAuthConfig) (*OAuth, error) {
 	return &OAuth{
 		clientID:     cfg.ClientID,
 		clientSecret: cfg.ClientSecret,
-		redirectURI:  strings.TrimRight(cfg.PublicURL, "/") + "/api/auth/callback",
+		redirectURI:  CallbackURL(cfg.PublicURL),
 		authorizeURL: orDefault(cfg.AuthorizeURL, defaultAuthorizeURL),
 		tokenURL:     orDefault(cfg.TokenURL, defaultTokenURL),
 		http:         &http.Client{Timeout: 15 * time.Second},
 	}, nil
+}
+
+// CallbackURL is where GitHub sends the browser back, derived from the public
+// URL rather than configured: two settings that have to agree are one setting.
+//
+// It is exported because the first-time wizard has to show it before there is
+// an OAuth client to ask, and what it shows must be what the handshake sends.
+func CallbackURL(publicURL string) string {
+	return strings.TrimRight(publicURL, "/") + "/api/auth/callback"
 }
 
 func orDefault(value, fallback string) string {
@@ -71,6 +80,10 @@ func orDefault(value, fallback string) string {
 	}
 	return value
 }
+
+// ClientID is the OAuth application this server signs people in with. The
+// secret beside it is never handed back out.
+func (o *OAuth) ClientID() string { return o.clientID }
 
 // RedirectURI is the callback GitHub must be configured to call.
 func (o *OAuth) RedirectURI() string { return o.redirectURI }

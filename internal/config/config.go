@@ -31,6 +31,10 @@ type Config struct {
 	// ConfigFile is the file the settings were read from, empty when none was
 	// found. It is here so the process can report where it was configured from.
 	ConfigFile string
+	// ConfigPath is where a configuration file belongs for this process,
+	// whether or not one is there yet. It is what the first-time wizard writes,
+	// so it has to be known even on the run that finds no file at all.
+	ConfigPath string
 
 	// HTTP
 	Addr      string // HEXAGON_ADDR, addr
@@ -156,9 +160,17 @@ func Load(path string) (*Config, error) {
 		return nil, fmt.Errorf("resolve home directory: %w", err)
 	}
 
-	f, from, err := loadFile(path)
+	path, explicit, err := resolvePath(path)
 	if err != nil {
 		return nil, err
+	}
+	f, found, err := loadFile(path, explicit)
+	if err != nil {
+		return nil, err
+	}
+	from := ""
+	if found {
+		from = path
 	}
 
 	maxSessions, err := pickInt("HEXAGON_MAX_SESSIONS_PER_USER", f.Limits.MaxSessionsPerUser, 20)
@@ -177,6 +189,7 @@ func Load(path string) (*Config, error) {
 	dataDir := expandHome(home, pick("HEXAGON_DATA_DIR", f.DataDir, filepath.Join(home, ".local", "share", "hexagon")))
 	cfg := &Config{
 		ConfigFile: from,
+		ConfigPath: path,
 
 		Addr:         pick("HEXAGON_ADDR", f.Addr, "127.0.0.1:8080"),
 		PublicURL:    strings.TrimRight(pick("HEXAGON_PUBLIC_URL", f.PublicURL, "http://127.0.0.1:8080"), "/"),
@@ -267,49 +280,64 @@ func isLoopbackAddr(addr string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// loadFile reads the configuration file and reports which one it was.
+// resolvePath decides which configuration file this process uses: the one named
+// on the command line, then HEXAGON_CONFIG, then the default location. It
+// answers whether or not the file exists, because the first-time wizard has to
+// know where to create one.
+//
+// explicit says the user named the path, which is what makes a missing file an
+// error rather than a server that simply has no configuration file.
+func resolvePath(path string) (string, bool, error) {
+	if path != "" {
+		return path, true, nil
+	}
+	if path = os.Getenv("HEXAGON_CONFIG"); path != "" {
+		return path, true, nil
+	}
+	// Not under DataDir: the file is what sets DataDir, so looking for it there
+	// would be circular.
+	dir, err := os.UserConfigDir()
+	if err != nil {
+		// No config directory to name, so there is no file and nowhere to put
+		// one. Everything else still resolves from defaults and the
+		// environment.
+		return "", false, nil
+	}
+	return filepath.Join(dir, "hexagon", "config.json"), false, nil
+}
+
+// loadFile reads the configuration file at path and reports whether there was
+// one.
 //
 // A file the user named explicitly must exist: ignoring a path someone asked for
 // would start a server configured by accident. The default location is
 // optional, so a machine that has never had a configuration file keeps behaving
 // exactly as it did.
-func loadFile(path string) (*file, string, error) {
-	explicit := path != ""
+func loadFile(path string, explicit bool) (*file, bool, error) {
 	if path == "" {
-		if path = os.Getenv("HEXAGON_CONFIG"); path != "" {
-			explicit = true
-		}
-	}
-	if path == "" {
-		// Not under DataDir: the file is what sets DataDir, so looking for it
-		// there would be circular.
-		dir, err := os.UserConfigDir()
-		if err != nil {
-			return &file{}, "", nil
-		}
-		path = filepath.Join(dir, "hexagon", "config.json")
+		return &file{}, false, nil
 	}
 
 	info, err := os.Stat(path)
 	switch {
 	case errors.Is(err, os.ErrNotExist) && !explicit:
-		return &file{}, "", nil
+		return &file{}, false, nil
 	case errors.Is(err, os.ErrNotExist):
-		return nil, "", fmt.Errorf("configuration file %s does not exist", path)
+		return nil, false, fmt.Errorf("configuration file %s does not exist", path)
 	case err != nil:
-		return nil, "", fmt.Errorf("configuration file %s: %w", path, err)
+		return nil, false, fmt.Errorf("configuration file %s: %w", path, err)
 	}
 
 	// It can hold the OAuth client secret, an API key and the key that seals
 	// stored GitHub tokens, so it is held to the standard of the files Hexagon
 	// writes itself.
 	if perm := info.Mode().Perm(); perm&0o077 != 0 {
-		return nil, "", fmt.Errorf("configuration file %s is readable by other users (mode %04o): chmod 600 it", path, perm)
+		return nil, false, fmt.Errorf("configuration file %s is readable by other users (mode %04o): chmod 600 it", path, perm)
 	}
 
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, "", fmt.Errorf("read %s: %w", path, err)
+		return nil, false, fmt.Errorf("read %s: %w", path, err)
 	}
 
 	var f file
@@ -318,9 +346,9 @@ func loadFile(path string) (*file, string, error) {
 	// allowedUsers is an authentication bypass.
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&f); err != nil {
-		return nil, "", fmt.Errorf("parse %s: %w", path, err)
+		return nil, false, fmt.Errorf("parse %s: %w", path, err)
 	}
-	return &f, path, nil
+	return &f, true, nil
 }
 
 // loadSecretKey returns the configured key, falling back to path and generating

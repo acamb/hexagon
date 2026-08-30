@@ -25,10 +25,13 @@ type UserLookup interface {
 // otherwise. Ids are the form to prefer: GitHub releases a login when an
 // account is renamed, and anyone may then claim it.
 type Allowlist struct {
-	logins map[string]bool
-	ids    map[int64]bool
-	users  UserLookup
-	log    *slog.Logger
+	// entries is the list as it was configured, kept so the settings the server
+	// is running on can be shown back to whoever configured them.
+	entries []string
+	logins  map[string]bool
+	ids     map[int64]bool
+	users   UserLookup
+	log     *slog.Logger
 }
 
 // NewAllowlist builds the list from the configured entries.
@@ -48,6 +51,7 @@ func NewAllowlist(entries []string, users UserLookup, log *slog.Logger) (*Allowl
 		if entry == "" {
 			continue
 		}
+		list.entries = append(list.entries, entry)
 		if id, err := strconv.ParseInt(entry, 10, 64); err == nil {
 			list.ids[id] = true
 			continue
@@ -95,4 +99,11 @@ func (a *Allowlist) Allowed(ctx context.Context, login string, githubID int64) (
 		return false, nil
 	}
 	return true, nil
+}
+
+// Entries returns the allowlist as it was configured, in that order. It is for
+// showing the running configuration back, not for deciding anything: Allowed is
+// the only answer to who may sign in.
+func (a *Allowlist) Entries() []string {
+	return append([]string(nil), a.entries...)
 }

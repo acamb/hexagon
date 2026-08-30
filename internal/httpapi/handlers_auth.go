@@ -13,6 +13,14 @@ const loginPath = "/login"
 
 // handleAuthLogin starts the GitHub OAuth dance.
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	oauth := s.gate.OAuth()
+	if oauth == nil {
+		// Nothing to sign in to yet. The sign-in page turns this into a
+		// sentence and a way to the first-time wizard.
+		s.failLogin(w, r, "not_configured")
+		return
+	}
+
 	state, err := auth.NewState()
 	if err != nil {
 		s.log.Error("generate oauth state", "err", err)
@@ -20,12 +28,18 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.auth.SetState(w, state)
-	http.Redirect(w, r, s.oauth.AuthorizeURL(state), http.StatusFound)
+	http.Redirect(w, r, oauth.AuthorizeURL(state), http.StatusFound)
 }
 
 // handleAuthCallback completes the login: verify state, exchange the code,
 // identify the account, check the allowlist, issue a session.
 func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
+	oauth, allowlist := s.gate.OAuth(), s.gate.Allowlist()
+	if oauth == nil || allowlist == nil {
+		s.failLogin(w, r, "not_configured")
+		return
+	}
+
 	want := s.auth.State(w, r)
 	got := r.URL.Query().Get("state")
 	if want == "" || subtle.ConstantTimeCompare([]byte(want), []byte(got)) != 1 {
@@ -41,7 +55,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	token, err := s.oauth.Exchange(ctx, code)
+	token, err := oauth.Exchange(ctx, code)
 	if err != nil {
 		s.log.Error("oauth code exchange", "err", err)
 		s.failLogin(w, r, "exchange_failed")
@@ -55,7 +69,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	allowed, err := s.allowlist.Allowed(ctx, ghUser.Login, ghUser.ID)
+	allowed, err := allowlist.Allowed(ctx, ghUser.Login, ghUser.ID)
 	if err != nil {
 		s.log.Error("check the allowlist", "login", ghUser.Login, "err", err)
 		s.failLogin(w, r, "server_error")

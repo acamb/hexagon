@@ -103,8 +103,14 @@ func run(configPath string) error {
 		return err
 	}
 
+	// The wizard is open until somebody signs in, so this is asked at every
+	// start and not only on a server that has never been configured.
+	if err := openSetup(context.Background(), st, &deps, cfg, log); err != nil {
+		return err
+	}
+
 	// After buildDeps, which is where the allowlist is built.
-	pruneRevokedSessions(context.Background(), st, deps.Allowlist, log)
+	pruneRevokedSessions(context.Background(), st, deps.Gate.Allowlist(), log)
 
 	// Line the database up with what the daemon actually has, before serving
 	// anyone a stale view of it.
@@ -155,8 +161,11 @@ func run(configPath string) error {
 }
 
 // buildDeps wires authentication. The GitHub OAuth login is the only mode there
-// is, and its constructor refuses an empty allowlist, so the server never starts
-// with an unauthenticated API.
+// is, and a server that has not been given one starts anyway, serving the
+// first-time wizard and nothing else: the gate is empty, and requireAuth
+// refuses every request that is not part of setting it up. That is not a
+// weaker rule than before, when a missing allowlist was a startup error — it is
+// the same rule with somewhere to go from.
 func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slog.Logger) (httpapi.Deps, error) {
 	frontend, err := hexagon.FrontendFS()
 	if err != nil {
@@ -218,6 +227,14 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		deps.Editor = runner.WithModel(cfg.ClaudeModel)
 	}
 
+	gate := auth.NewGate(nil, nil)
+	deps.Gate = gate
+	if cfg.GitHubClientID == "" || cfg.GitHubClientSecret == "" || len(cfg.AllowedUsers) == 0 {
+		log.Warn("no github login configured: this server can serve the first-time wizard and nothing else",
+			"config_file", cfg.ConfigPath)
+		return deps, nil
+	}
+
 	allowlist, err := auth.NewAllowlist(cfg.AllowedUsers, st, log)
 	if err != nil {
 		return httpapi.Deps{}, err
@@ -231,15 +248,45 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		return httpapi.Deps{}, err
 	}
 	log.Info("github login enabled", "callback", oauth.RedirectURI(), "allowed_users", cfg.AllowedUsers)
-	deps.OAuth = oauth
-	deps.Allowlist = allowlist
+	gate.Set(oauth, allowlist)
 	return deps, nil
+}
+
+// openSetup opens the first-time wizard while nobody has ever signed in, and
+// prints the password that guards it.
+//
+// The log is the only channel a server nobody can sign in to already shares
+// with the operator, and this is the one moment the password exists in full:
+// it is generated here, printed here, and kept only as a digest afterwards. A
+// restart prints a new one and retires this one.
+func openSetup(ctx context.Context, st *store.Store, deps *httpapi.Deps, cfg *config.Config, log *slog.Logger) error {
+	signedIn, err := st.AnyUser(ctx)
+	if err != nil {
+		return fmt.Errorf("check whether anybody has signed in: %w", err)
+	}
+	if signedIn {
+		return nil
+	}
+
+	setup, password, err := auth.NewSetup()
+	if err != nil {
+		return err
+	}
+	deps.Setup = setup
+	log.Warn("first-time setup is open until somebody signs in",
+		"url", cfg.PublicURL+"/setup", "password", password)
+	return nil
 }
 
 // pruneRevokedSessions signs out anyone the allowlist no longer admits. The
 // per-request check already refuses them, but only when they come back: this is
 // what makes a removal take effect on a browser that never does.
 func pruneRevokedSessions(ctx context.Context, st *store.Store, allowlist *auth.Allowlist, log *slog.Logger) {
+	if allowlist == nil {
+		// Nothing to check against yet. Every request is refused anyway until
+		// the first-time wizard has run.
+		return
+	}
 	users, err := st.ListUsers(ctx)
 	if err != nil {
 		log.Warn("look for sessions to revoke", "err", err)

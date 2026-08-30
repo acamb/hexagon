@@ -14,6 +14,29 @@ export interface CurrentUser {
   avatarUrl: string
 }
 
+// SetupStatus describes the first-time wizard. Everything but `required` is
+// absent once the wizard has closed, and `writable` is absent rather than false
+// when the configuration file cannot be written.
+export interface SetupStatus {
+  required: boolean
+  configPath?: string
+  writable?: boolean
+  callbackUrl?: string
+  clientId?: string
+  allowedUsers?: string[]
+  // Settings an environment variable is supplying, by their configuration file
+  // key. The variable outranks the file, so writing these here has no effect
+  // until it goes away.
+  fromEnvironment?: string[]
+}
+
+export interface SetupRequest {
+  password: string
+  clientId: string
+  clientSecret: string
+  allowedUsers: string[]
+}
+
 export class ApiError extends Error {
   status: number
 
@@ -208,6 +231,12 @@ export const api = {
   me: () => request<CurrentUser>('/auth/me'),
   logout: () => request<{ status: string }>('/auth/logout', { method: 'POST' }),
   loginUrl: '/api/auth/login',
+
+  setup: {
+    status: () => request<SetupStatus>('/setup'),
+    save: (setup: SetupRequest) =>
+      request<SetupStatus>('/setup', { method: 'POST', body: JSON.stringify(setup) }),
+  },
 
   sessions: {
     list: () => request<Session[]>('/sessions'),

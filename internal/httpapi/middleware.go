@@ -34,7 +34,15 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		// SPA turns 401 into a redirect to /login, where signing in fails with
 		// not_allowed and says so. A 403 would leave them on a page that cannot
 		// recover.
-		allowed, err := s.allowlist.Allowed(r.Context(), user.GitHubLogin, user.GitHubID)
+		// A server the first-time wizard has not finished has no allowlist, so
+		// there is nobody it can admit. A leftover session from a configuration
+		// that has since been taken away is refused like any other.
+		allowlist := s.gate.Allowlist()
+		if allowlist == nil {
+			writeError(w, http.StatusUnauthorized, "authentication required")
+			return
+		}
+		allowed, err := allowlist.Allowed(r.Context(), user.GitHubLogin, user.GitHubID)
 		if err != nil {
 			s.log.Error("check the allowlist", "login", user.GitHubLogin, "err", err)
 			writeError(w, http.StatusInternalServerError, "authentication failed")
