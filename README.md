@@ -202,21 +202,30 @@ sudo apt install ./hexagon_0.1.0_amd64.deb
 
 It installs `/usr/bin/hexagon`, a system service running as a dedicated `hexagon` user, and
 `/etc/hexagon/config.json`. Under `DEBIAN_FRONTEND=noninteractive` every answer is its
-default, which is the wizard below.
+default, which is the wizard below. The package registers a **systemd** service; on Devuan
+or any other Debian without systemd, use the installer below — the package still carries the
+OpenRC init script, at `/usr/share/doc/hexagon/examples/hexagon.openrc`.
 
-**Anywhere else with systemd.** The installer downloads the latest release, checks it
-against the release's `SHA256SUMS`, and sets up a service. Download and run it.
+**Anywhere else, with systemd or OpenRC.** The installer downloads the latest release,
+checks it against the release's `SHA256SUMS`, and sets up a service under whichever of the
+two this machine runs. Download and run it.
 
 ```sh
 curl -fsSLO https://raw.githubusercontent.com/acamb/hexagon/master/install.sh
 sh install.sh
 ```
 
-It installs for **you** by default — `~/.local/bin`, a `systemd --user` service running as
-your account, with your `~/.claude` and your docker group — and offers a system-wide install:
+It installs for **you** by default — `~/.local/bin`, a service running as your account, with
+your `~/.claude` and your docker group — and offers a system-wide install:
  `sh install.sh --system`, `--yes` for every default, and
 `--version v0.1.0` to pin a release. Piping it into `sh` works too and takes every default,
 which is the unattended form.
+
+Per-user means `systemctl --user` under systemd, and an OpenRC **user service** in
+`~/.config/rc/init.d` (OpenRC 0.55 and newer) otherwise. OpenRC keeps a user's services in
+that user's own session, so to have yours start at boot the installer prints the one root
+command that arranges it — the counterpart of `loginctl enable-linger`. With neither init
+system, the files go in and the installer says how to run the server yourself.
 
 **From source**, which is also how you work on Hexagon:
 
@@ -264,11 +273,14 @@ like
 WARN first-time setup is open until somebody signs in url=http://127.0.0.1:8080/setup password=K7QX-4M2A-...
 ```
 
-As a service that line is in the journal rather than on a terminal:
+As a service that line is in the journal, or — OpenRC having no journal — in the log file
+the init script names, which the installer prints when it finishes:
 
 ```sh
-journalctl -u hexagon | grep 'first-time setup'          # the package, or --system
-journalctl --user -u hexagon | grep 'first-time setup'   # the installer's default
+journalctl -u hexagon | grep 'first-time setup'          # systemd, the package or --system
+journalctl --user -u hexagon | grep 'first-time setup'   # systemd, the installer's default
+grep 'first-time setup' /var/log/hexagon.log             # OpenRC, --system
+grep 'first-time setup' ~/.local/state/hexagon/hexagon.log   # OpenRC, per-user
 ```
 
 The server serves a wizard at that address which asks for the password, then for the client
@@ -288,8 +300,9 @@ sudo apt remove hexagon    # or: sudo apt purge hexagon
 sh uninstall.sh            # what install.sh put there; --system for a system install
 ```
 
-Both keep the session workspaces — git clones that may carry commits nobody pushed — and
-print where they are. `apt purge` also removes `/etc/hexagon` and the database, and the
+`uninstall.sh` finds the layout and the init system by itself, so it takes no arguments
+beyond `--system`. Both keep the session workspaces — git clones that may carry commits
+nobody pushed — and print where they are. `apt purge` also removes `/etc/hexagon` and the database, and the
 installer asks about both, defaulting to keeping them.
 
 ### Publishing it

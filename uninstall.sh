@@ -5,9 +5,11 @@
 #
 #   sh uninstall.sh            remove the user installation
 #   sh uninstall.sh --system   remove the system installation (needs root)
+#   sh uninstall.sh --init openrc   force an init system instead of detecting one
 set -eu
 
 MODE=
+INIT=
 ASSUME_YES=0
 
 die() {
@@ -52,8 +54,12 @@ while [ $# -gt 0 ]; do
 	--system) MODE=system ;;
 	--user) MODE=user ;;
 	--yes | -y) ASSUME_YES=1 ;;
+	--init)
+		INIT=${2:?--init needs systemd, openrc or none}
+		shift
+		;;
 	--help | -h)
-		sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
 		exit 0
 		;;
 	*) die "unknown option $1 (try --help)" ;;
@@ -61,14 +67,36 @@ while [ $# -gt 0 ]; do
 	shift
 done
 
+USER_RC=${XDG_CONFIG_HOME:-$HOME/.config}/rc/init.d/hexagon
+
 if [ -z "$MODE" ]; then
-	if [ -e "$HOME/.local/bin/hexagon" ] || [ -e "$HOME/.config/systemd/user/hexagon.service" ]; then
+	if [ -e "$HOME/.local/bin/hexagon" ] || [ -e "$HOME/.config/systemd/user/hexagon.service" ] ||
+		[ -e "$USER_RC" ]; then
 		MODE=user
-	elif [ -e /usr/bin/hexagon ] || [ -e /lib/systemd/system/hexagon.service ]; then
+	elif [ -e /usr/bin/hexagon ] || [ -e /lib/systemd/system/hexagon.service ] ||
+		[ -e /etc/init.d/hexagon ]; then
 		MODE=system
 	else
 		die "no installation found in $HOME/.local or in /usr"
 	fi
+fi
+
+# What removes the service. Detected the same way install.sh detects it, and
+# then corrected by what is actually on disk: a machine can have been rebooted
+# into another init system since the install.
+if [ -z "$INIT" ]; then
+	if [ -d /run/systemd/system ]; then
+		INIT=systemd
+	elif have rc-update && have rc-service; then
+		INIT=openrc
+	else
+		INIT=none
+	fi
+fi
+if [ "$MODE" = system ] && [ -e /etc/init.d/hexagon ] && have rc-service; then
+	INIT=openrc
+elif [ "$MODE" = user ] && [ -e "$USER_RC" ] && have rc-service; then
+	INIT=openrc
 fi
 
 # A packaged install is dpkg's to undo: removing its files behind its back
@@ -82,16 +110,26 @@ if [ "$MODE" = system ]; then
 	BIN_PATH=/usr/bin/hexagon
 	CONFIG_DIR=/etc/hexagon
 	UNIT_PATH=/lib/systemd/system/hexagon.service
+	RC_PATH=/etc/init.d/hexagon
+	RC_CONF=/etc/conf.d/hexagon
+	LOG_PATH=/var/log/hexagon.log
 	DOC_DIR=/usr/share/doc/hexagon
 	DATA_DEFAULT=/var/lib/hexagon
 	SYSTEMCTL="systemctl"
+	RC_UPDATE="rc-update"
+	RC_SERVICE="rc-service"
 else
 	BIN_PATH=$HOME/.local/bin/hexagon
 	CONFIG_DIR=$HOME/.config/hexagon
 	UNIT_PATH=$HOME/.config/systemd/user/hexagon.service
+	RC_PATH=$USER_RC
+	RC_CONF=${XDG_CONFIG_HOME:-$HOME/.config}/rc/conf.d/hexagon
+	LOG_PATH=${XDG_STATE_HOME:-$HOME/.local/state}/hexagon/hexagon.log
 	DOC_DIR=
 	DATA_DEFAULT=$HOME/.local/share/hexagon
 	SYSTEMCTL="systemctl --user"
+	RC_UPDATE="rc-update --user"
+	RC_SERVICE="rc-service --user"
 fi
 
 # The configuration file knows where the data actually is, which may not be the
@@ -102,10 +140,24 @@ if [ -r "$CONFIG_DIR/config.json" ]; then
 	if [ -n "$found" ]; then data_dir=$found; fi
 fi
 
-$SYSTEMCTL stop hexagon.service 2>/dev/null || true
-$SYSTEMCTL disable hexagon.service 2>/dev/null || true
+case "$INIT" in
+systemd)
+	$SYSTEMCTL stop hexagon.service 2>/dev/null || true
+	$SYSTEMCTL disable hexagon.service 2>/dev/null || true
+	$SYSTEMCTL daemon-reload 2>/dev/null || true
+	;;
+openrc)
+	$RC_SERVICE hexagon stop 2>/dev/null || true
+	$RC_UPDATE del hexagon default 2>/dev/null || true
+	rm -f "$RC_PATH" "$RC_CONF"
+	# The log is not user data, and it holds every one-time password the wizard
+	# ever printed, so it goes with the service rather than being left behind.
+	rm -f "$LOG_PATH"
+	;;
+esac
+# Outside the case on purpose: a unit left behind by an install made under
+# another init system should go too.
 rm -f "$UNIT_PATH"
-$SYSTEMCTL daemon-reload 2>/dev/null || true
 rm -f "$BIN_PATH"
 if [ -n "$DOC_DIR" ]; then rm -rf "$DOC_DIR"; fi
 echo "Removed the service and $BIN_PATH."

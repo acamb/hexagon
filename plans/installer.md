@@ -18,6 +18,10 @@ and, after the second:
 > ancora). Includi nel piano anche di aggiornare gli step di installazione per
 > usare il deb o l'installer.
 
+and, after the third:
+
+> vorrei che l'installer .sh fosse compatibile anche con openRC
+
 Six decisions were taken with the user while this was written, and they are
 treated here as settled rather than re-argued: the package installs a system
 service running as a dedicated `hexagon` user; `make deb` builds inside a Debian
@@ -25,7 +29,10 @@ container; the version comes from a `VERSION` file and nothing else;
 `install.sh` asks, and defaults to installing for the invoking user; the binary
 `install.sh` installs is downloaded from the latest GitHub release rather than
 built or found locally; and the README's installation steps become the package
-and the script, with building from source kept for development.
+and the script, with building from source kept for development. A seventh was taken
+with the OpenRC reading: a per-user install there is an OpenRC **user service**, the
+package stays systemd-only, and the root command that makes a user's services start
+at boot is printed rather than run.
 
 ## Where this document sits
 
@@ -72,6 +79,23 @@ the tree contains. The steps are rewritten around the package and the script,
 and the OAuth App registration moves after them — it was only first because
 there was nothing to run before it.
 
+**The machine this is written on cannot run what was written.** The first three
+readings assumed systemd without saying so — `systemctl`, `systemctl --user`,
+`loginctl enable-linger`, `journalctl`. The development machine is Gentoo with
+OpenRC 0.63 and no `systemctl` at all, so `install.sh` there copied the files,
+registered nothing, and printed instructions for a program that is not installed.
+An installer that only works on the distributions it was tested on is a shell
+script with a nice preamble.
+
+**Two init systems is a mapping, not a fork.** Everything either of them is asked
+is the same question — install a description of the service, enable it, start it,
+say where its log is — so the script gets four small functions with one case each
+and stops naming an init system anywhere else. What genuinely differs is not the
+commands but two facts about OpenRC: it has no journal, so the first-time wizard's
+password has to go to a file the installer names; and it runs a user's services
+from that user's own session, so *staying* started across a logout is a root
+command rather than something a user install can arrange.
+
 **The first question is a real feature, not a courtesy.** Hexagon already has a
 first-time wizard that configures a server from the browser
 ([M2/01-first-time-wizard.md](M2/01-first-time-wizard.md)). An installer that
@@ -109,6 +133,8 @@ There is no installation story at all.
   ./bin/hexagon`.
 - The `docker` group requirement is **stated nowhere in the repository**, even
   though the process is useless without socket access.
+- Nothing here knows about **any init system but systemd**, and the machine this
+  is developed on runs OpenRC 0.63 with no `systemctl` installed.
 
 Two properties of the running server constrain everything below.
 
@@ -435,6 +461,62 @@ is root-equivalent by construction, so sandboxing it further buys appearance
 rather than safety. `PrivateTmp` is safe only because workspaces live under
 `/var/lib/hexagon` and never in `/tmp`.
 
+### The second init system: OpenRC
+
+Detection is by what is *running*, not by what is installed: `[ -d /run/systemd/system ]`
+first — the same guard the package's `postinst` uses — then `rc-update` and `rc-service`
+on the path, then neither. A Gentoo with systemd installed but booted under OpenRC has no
+`/run/systemd/system` and lands in the second branch, which `have systemctl` would have got
+wrong. `--init systemd|openrc|none` overrides the answer.
+
+The mapping, four combinations of two modes and two init systems:
+
+| | systemd | OpenRC |
+|---|---|---|
+| system service | `/lib/systemd/system/hexagon.service` | `/etc/init.d/hexagon` + `/etc/conf.d/hexagon` |
+| user service | `~/.config/systemd/user/hexagon.service` | `~/.config/rc/init.d/hexagon` + `~/.config/rc/conf.d/hexagon` |
+| enable and start | `systemctl [--user] enable --now` | `rc-update [--user] add hexagon default`, `rc-service [--user] start` |
+| restart on failure | `Restart=on-failure` | `supervisor=supervise-daemon`, `respawn_delay=5` |
+| the wizard's password | `journalctl [--user] -u hexagon` | `grep` in the log file the conf.d names |
+| survives a logout | `loginctl enable-linger` | the `user.<login>` service, one root command, printed |
+
+**One init script for both modes.** `packaging/hexagon.openrc` ships in the stage as
+`usr/share/doc/hexagon/examples/hexagon.openrc` and is copied — never generated — into
+`/etc/init.d` or `~/.config/rc/init.d`. It can be one file because OpenRC sources
+`conf.d/<name>` on its own, so every difference between a system install and a per-user one
+is data: `HEXAGON_BIN`, `HEXAGON_HOME`, `HEXAGON_CONFIG`, `HEXAGON_LOG`, `HEXAGON_PIDFILE`,
+and only for a system install `HEXAGON_USER` / `HEXAGON_OWNER`. That is the opposite of the
+systemd case, where the user unit has to be written by hand because it cannot carry `User=`
+— and it is why the OpenRC script is not a heredoc in `install.sh`.
+
+`command_user` is set **only** for a system install: OpenRC's own guide says a user service
+must not have one, since it already runs as whoever starts it, and runtime files belong in
+`XDG_RUNTIME_DIR`.
+
+**OpenRC has no journal**, which is not a detail here: the one-time password that opens the
+first-time wizard is printed to the log and nowhere else. `output_log` and `error_log` in
+the init script point at `/var/log/hexagon.log`, or at
+`${XDG_STATE_HOME:-~/.local/state}/hexagon/hexagon.log` for a user install, and the
+installer's last lines name that file instead of a `journalctl` invocation. `start_pre`
+creates the file with `checkpath`, and creates its *directory* only when it is missing —
+for a system install that directory is `/var/log`, whose ownership must not be rewritten.
+
+**Two things a user install has to arrange itself**, both found by running it: a user's
+runlevels are created when their OpenRC session first runs, and `rc-update --user add`
+refuses a runlevel that is not there, so `install.sh` creates
+`~/.config/rc/runlevels/{boot,default,shutdown}`; and `checkpath` creates one directory
+rather than a path, so the log's parent is created by the installer.
+
+**Boot persistence is printed, not done.** OpenRC starts a user's services from a
+`user.<login>` service that only root can add, so the installer ends with the two commands
+rather than reaching for `sudo` on its own — unlike `loginctl enable-linger`, which the user
+can run themselves and the script therefore offers to run.
+
+The account creation in system mode grew a third branch for the same reason: Debian's
+`adduser` and busybox's are different programs under one name, so the order is Debian
+`adduser`, then `useradd` (Gentoo, Fedora, Arch), then busybox `adduser` + `addgroup`
+(Alpine).
+
 ### Maintainer scripts
 
 `postinst configure`:
@@ -546,6 +628,11 @@ bind, a piped run is a correct unattended install rather than a degraded one. Th
 README documents downloading the script and running it, and mentions the pipe as
 the unattended form, which is what it is.
 
+The service itself is never touched inline: `service_install`, `service_enable_start`,
+`service_enable_hint` and `service_log_hint` carry one case per init system, and nothing
+after the paths block names systemd or OpenRC. The paths block is where a mode and an init
+system meet, and it is the only place that has to grow when a third one arrives.
+
 **Question 1** is the configure-or-wizard question above. It comes before the
 layout question even though the layout decides the paths, because it decides how
 many questions there are at all, and answering it the default way should not mean
@@ -607,7 +694,10 @@ Three rules govern what is written.
 
 ### `uninstall.sh`
 
-Detects which layout is present rather than asking again. Stops and disables the
+Detects which layout **and which init system** is present rather than asking again — and
+corrects the second by what is on disk, because a machine can have been rebooted into
+another init system since the install. On OpenRC it also removes the log file: it is not
+user data, and it holds every one-time password the wizard has ever printed. Stops and disables the
 unit, removes the unit file and the binary, and then asks two questions that both
 default to **keep**: remove the configuration file, and remove the data directory
 — naming it, and saying that it contains the session workspaces. Same reasoning
@@ -718,6 +808,24 @@ turns a clear failure — no release, no network, an architecture that was never
 built — into several minutes of silence followed by a different failure, on a
 machine that by assumption has neither Go nor Node.
 
+**A system init script running as you, for the per-user install on OpenRC.**
+`command_user="$USER"` in `/etc/init.d/hexagon` would have kept the identity that
+matters and started at boot with no extra step — at the price of needing root for
+the install whose whole point is not needing it, and against OpenRC's own guidance
+that a user service must not set `command_user`. Rejected in favour of user
+services, with the boot command printed for whoever wants it.
+
+**Teaching the `.deb` about OpenRC.** Debian and Ubuntu are systemd, the `postinst`
+is already behind `[ -d /run/systemd/system ]`, and Devuan is one `install.sh` away.
+Rejected as a third branch through three maintainer scripts that are dense already;
+the package does ship the init script as an example, so nothing is lost.
+
+**Writing the OpenRC init script from a heredoc in `install.sh`.** It is what the
+systemd *user* unit does, so it would have been consistent — and it would have put a
+second copy of the service definition in a second file, free to drift from the one
+the package installs. Rejected: the script ships in the release, and conf.d carries
+what differs.
+
 **Pre-building the reference session image at install time.** Tempting — a fresh
 install has no images, and the first session needs a build. Rejected: it would
 put a multi-minute network operation inside `postinst`, and the Images page is
@@ -740,12 +848,13 @@ The only new knobs are Makefile variables — `PREFIX`, `DESTDIR`, `DEB_ARCH`,
 | File | Change |
 |---|---|
 | `VERSION` | new |
-| `Makefile` | `VERSION`, ldflags, `install`, `artifacts`, `deb`, `release`, `dist` in `clean` |
+| `Makefile` | `VERSION`, ldflags, `install` (unit, OpenRC script, docs), `artifacts`, `deb`, `release`, `dist` in `clean` |
 | `cmd/hexagon/main.go` | `version` variable and `-version` flag |
 | `cmd/hexagon/main_test.go` | version-drift test |
 | `packaging/hexagon.service` | new |
+| `packaging/hexagon.openrc` | new: one init script for both modes, driven by conf.d |
 | `packaging/deb/{build.sh,control.in,templates,config,postinst,prerm,postrm,copyright,changelog.Debian}` | new; `build.sh` also rolls the release tarball |
-| `install.sh`, `uninstall.sh` | new; `install.sh` downloads the latest release |
+| `install.sh`, `uninstall.sh` | new; `install.sh` downloads the latest release, and both detect systemd or OpenRC |
 | `.gitignore` | `dist/` |
 | `README.md` | "Getting started" rewritten: install the package or run the script, source build demoted, OAuth App made optional and moved after, the `docker` group, `DEBIAN_FRONTEND=noninteractive`, an uninstall section |
 | `AGENTS.md` | `make deb`, `make install` and `make release` in Commands, `packaging/` in Layout, the release sequence |
@@ -819,6 +928,37 @@ truncate -s -1k dist/hexagon_0.1.0_linux_amd64.tar.gz          # dist/SHA256SUMS
 The truncation check is the one worth writing down: the failure it guards against
 is a half-downloaded archive unpacked over a working installation, and the test
 is that `/usr/bin/hexagon` — or `~/.local/bin/hexagon` — is exactly as it was.
+
+On OpenRC the per-user path is exercised without root and without touching the real
+runlevels, by pointing `HOME` and the XDG variables at a temporary directory:
+
+```sh
+HOME=$t XDG_CONFIG_HOME=$t/.config XDG_STATE_HOME=$t/.local/state \
+  sh install.sh --tarball dist/hexagon_0.1.0_linux_amd64.tar.gz --user --use-wizard --yes
+rc-service --user hexagon status              # started
+grep 'first-time setup' $t/.local/state/hexagon/hexagon.log
+pkill -x -f $t/.local/bin/hexagon             # supervise-daemon brings it back in 5s
+sh uninstall.sh --user --yes                  # stopped, deleted from the runlevel, log gone
+```
+
+The kill is the part worth keeping: `respawn_delay=5` with `respawn_max=0` is the claim
+that this matches `Restart=on-failure`, and a new pid and a fresh "listening" line in the
+log are what settle it.
+
+The system path goes in a container, where `rc-update add` works but `rc-service start`
+cannot — OpenRC is not PID 1 there, and the failure is the expected one, with `install.sh`
+falling back to printing the command to run the server by hand:
+
+```sh
+docker run --rm -v "$PWD/dist:/pkg:ro" -v "$PWD/install.sh:/install.sh:ro" alpine sh -c '
+  apk add --no-cache openrc git tar coreutils
+  sh /install.sh --tarball /pkg/hexagon_0.1.0_linux_amd64.tar.gz --system --use-wizard --yes
+  cat /etc/conf.d/hexagon; id hexagon; ls -l /etc/runlevels/default/'
+```
+
+Alpine is the deliberate choice of container: it is the one distribution where the account
+is created by busybox's `adduser` rather than by `useradd`, so it tests the branch that a
+Gentoo or a Debian never reaches.
 
 Then the interactive behaviour, including the form people will actually paste:
 

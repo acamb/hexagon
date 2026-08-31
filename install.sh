@@ -1,11 +1,13 @@
 #!/bin/sh
-# Hexagon installer: downloads the latest release and sets up a systemd service.
+# Hexagon installer: downloads the latest release and sets up a service, under
+# systemd or OpenRC, whichever this machine runs.
 #
 #   sh install.sh                 ask, install for the invoking user
 #   sh install.sh --system        install the system service, as the deb does
 #   sh install.sh --yes           take every default, ask nothing
 #   sh install.sh --tarball F     install a local artifact instead of downloading
 #   sh install.sh --version v1.2.3   install that release rather than the latest
+#   sh install.sh --init openrc   force an init system instead of detecting one
 #
 # Every question has a default, and the shortest complete run is four presses of
 # Enter. The default answers are: leave the configuration to the first-time
@@ -22,6 +24,7 @@ MODE=
 CONFIGURE=
 TARBALL=
 TAG=
+INIT=
 WORK=
 STAGE=
 
@@ -29,7 +32,7 @@ usage() {
 	# The header of this file is the help text, when there is a file to read:
 	# piped into sh, $0 is the shell and there is nothing to quote.
 	if [ -r "$0" ]; then
-		sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//'
+		sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
 	else
 		echo "install.sh [--system|--user] [--yes] [--tarball FILE] [--version TAG]"
 	fi
@@ -151,6 +154,10 @@ while [ $# -gt 0 ]; do
 		TAG=${2:?--version needs a tag}
 		shift
 		;;
+	--init)
+		INIT=${2:?--init needs systemd, openrc or none}
+		shift
+		;;
 	--help | -h)
 		usage
 		exit 0
@@ -163,7 +170,7 @@ done
 # ---------------------------------------------------------------- preflight
 
 if [ "$(uname -s)" != Linux ]; then
-	die "Hexagon runs on Linux: the service is a systemd unit, and its containers run as the invoking user against a local Docker socket"
+	die "Hexagon runs on Linux: the service is a systemd unit or an OpenRC init script, and its containers run as the invoking user against a local Docker socket"
 fi
 
 case "$(uname -m)" in
@@ -203,6 +210,36 @@ if id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
 	echo "  docker group: you are in it"
 else
 	echo "  docker group: you are not in it (only matters for a per-user install)"
+fi
+
+# Which init system will be asked to run the service. The order matters: a
+# machine with systemd installed but booted under OpenRC has no
+# /run/systemd/system, and belongs in the second branch — the runtime directory
+# answers "what is running", which is the question, while `have systemctl` only
+# answers "what is installed". This is the same guard the package's postinst
+# uses.
+if [ -z "$INIT" ]; then
+	if [ -d /run/systemd/system ]; then
+		INIT=systemd
+	elif have rc-update && have rc-service; then
+		INIT=openrc
+	else
+		INIT=none
+	fi
+fi
+case "$INIT" in
+systemd) echo "  init: systemd" ;;
+openrc) echo "  init: OpenRC" ;;
+none) echo "  init: neither systemd nor OpenRC — the files go in, the service does not" ;;
+*) die "unknown init system $INIT: expected systemd, openrc or none" ;;
+esac
+
+# User services arrived in OpenRC 0.55 and stopped being experimental in 0.62.
+# Where they are missing there is no per-user supervisor at all, so a user
+# install installs the files and says how to run them.
+OPENRC_USER=no
+if [ "$INIT" = openrc ] && rc-update --help 2>&1 | grep -q -- '--user'; then
+	OPENRC_USER=yes
 fi
 echo ""
 
@@ -316,10 +353,21 @@ fi
 # ---------------------------------------------------------------- question 2
 
 if [ -z "$MODE" ]; then
-	cat >&2 <<-'TXT'
+	case "$INIT" in
+	systemd) user_service="a systemd --user service running as you" ;;
+	openrc)
+		if [ "$OPENRC_USER" = yes ]; then
+			user_service="an OpenRC user service running as you"
+		else
+			user_service="no service: this OpenRC is too old for user services"
+		fi
+		;;
+	*) user_service="no service: nothing here to run one" ;;
+	esac
+	cat >&2 <<-TXT
 		Where should it be installed?
 
-		  1. For you       ~/.local/bin, a systemd --user service running as you  (default)
+		  1. For you       ~/.local/bin, $user_service  (default)
 		  2. System-wide   /usr/bin, a system service running as a dedicated hexagon user
 	TXT
 	answer=$(ask "Which one" "1")
@@ -343,7 +391,7 @@ if [ "$MODE" = system ] && [ "$(id -u)" != 0 ]; then
 	fi
 	have sudo || die "a system install needs root: re-run this as root"
 	echo "Re-running the system install under sudo..."
-	set -- --system "--$( [ "$CONFIGURE" = now ] && echo configure-now || echo use-wizard )" --tarball "$ARCHIVE"
+	set -- --system --init "$INIT" "--$( [ "$CONFIGURE" = now ] && echo configure-now || echo use-wizard )" --tarball "$ARCHIVE"
 	if [ "$ASSUME_YES" = 1 ]; then set -- "$@" --yes; fi
 	sudo -- sh "$script" "$@"
 	exit $?
@@ -351,22 +399,181 @@ fi
 
 # ---------------------------------------------------------------- paths
 
+# Where the installation lives is decided by the mode; how the service is
+# described is decided by the init system. Everything below reads these, so a
+# third init system would be another case here and three cases in the service_*
+# functions, not a rewrite.
 if [ "$MODE" = system ]; then
 	BIN_PATH=/usr/bin/hexagon
 	CONFIG_DIR=/etc/hexagon
-	UNIT_PATH=/lib/systemd/system/hexagon.service
 	DATA_DEFAULT=/var/lib/hexagon
 	SERVICE_USER=hexagon
+	SERVICE_OWNER=hexagon:hexagon
+	UNIT_PATH=/lib/systemd/system/hexagon.service
+	RC_PATH=/etc/init.d/hexagon
+	RC_CONF=/etc/conf.d/hexagon
+	LOG_PATH=/var/log/hexagon.log
+	PID_PATH=/run/hexagon.pid
+	SERVICE_HOME=$DATA_DEFAULT
 	SYSTEMCTL="systemctl"
+	RC_UPDATE="rc-update"
+	RC_SERVICE="rc-service"
 else
 	BIN_PATH=$HOME/.local/bin/hexagon
 	CONFIG_DIR=$HOME/.config/hexagon
-	UNIT_PATH=$HOME/.config/systemd/user/hexagon.service
 	DATA_DEFAULT=$HOME/.local/share/hexagon
 	SERVICE_USER=$(id -un)
+	# A user service already runs as whoever starts it, and OpenRC's guide says
+	# command_user must stay unset there — so no owner is written either.
+	SERVICE_OWNER=
+	UNIT_PATH=$HOME/.config/systemd/user/hexagon.service
+	RC_PATH=${XDG_CONFIG_HOME:-$HOME/.config}/rc/init.d/hexagon
+	RC_CONF=${XDG_CONFIG_HOME:-$HOME/.config}/rc/conf.d/hexagon
+	LOG_PATH=${XDG_STATE_HOME:-$HOME/.local/state}/hexagon/hexagon.log
+	# Runtime data belongs in XDG_RUNTIME_DIR for a user service; /tmp is the
+	# fallback for a session that has none, where it is at least writable.
+	PID_PATH=${XDG_RUNTIME_DIR:-/tmp}/hexagon.pid
+	SERVICE_HOME=$HOME
 	SYSTEMCTL="systemctl --user"
+	RC_UPDATE="rc-update --user"
+	RC_SERVICE="rc-service --user"
 fi
 CONFIG_FILE=$CONFIG_DIR/config.json
+
+# ---------------------------------------------------------------- the service
+
+# Four functions with one case each, so nothing below this point names an init
+# system: adding a third one is a case in each, not a rewrite.
+
+service_install() {
+	case "$INIT" in
+	systemd)
+		if [ "$MODE" = system ]; then
+			install -D -m 0644 "$STAGE/lib/systemd/system/hexagon.service" "$UNIT_PATH"
+		else
+			# A user unit genuinely differs: no User=, no supplementary group,
+			# and paths under $HOME.
+			mkdir -p "$(dirname "$UNIT_PATH")"
+			cat >"$UNIT_PATH" <<-UNIT
+				[Unit]
+				Description=Hexagon: Claude Code sessions in Docker containers
+				Documentation=https://github.com/$REPO
+				After=network-online.target
+				Wants=network-online.target
+
+				[Service]
+				Environment=HEXAGON_CONFIG=$CONFIG_FILE
+				ExecStart=$BIN_PATH
+				Restart=on-failure
+				RestartSec=5
+
+				[Install]
+				WantedBy=default.target
+			UNIT
+		fi
+		echo "  $UNIT_PATH"
+		;;
+	openrc)
+		# Copied from the release rather than written here, and the same file in
+		# both modes: everything that differs is in the conf.d beside it, which
+		# OpenRC sources on its own.
+		_src=$STAGE/usr/share/doc/hexagon/examples/hexagon.openrc
+		[ -f "$_src" ] ||
+			die "this release carries no OpenRC init script, so it predates OpenRC support: install a newer release, or --init none to place the files only"
+		install -D -m 0755 "$_src" "$RC_PATH"
+		mkdir -p "$(dirname "$RC_CONF")"
+		# A user's runlevels are created when their OpenRC session first runs,
+		# and rc-update refuses a runlevel that is not there yet. Creating the
+		# three a session would have makes enabling work on an account that has
+		# never started one.
+		if [ "$MODE" = user ]; then
+			mkdir -p "${XDG_CONFIG_HOME:-$HOME/.config}"/rc/runlevels/boot \
+				"${XDG_CONFIG_HOME:-$HOME/.config}"/rc/runlevels/default \
+				"${XDG_CONFIG_HOME:-$HOME/.config}"/rc/runlevels/shutdown
+			# checkpath in the init script creates one directory, not a path:
+			# ~/.local/state may not exist at all on a fresh account.
+			mkdir -p "$(dirname "$LOG_PATH")"
+		fi
+		{
+			echo "# Written by install.sh: the paths $RC_PATH reads."
+			echo "HEXAGON_BIN=\"$BIN_PATH\""
+			echo "HEXAGON_HOME=\"$SERVICE_HOME\""
+			echo "HEXAGON_CONFIG=\"$CONFIG_FILE\""
+			echo "HEXAGON_LOG=\"$LOG_PATH\""
+			echo "HEXAGON_PIDFILE=\"$PID_PATH\""
+			# Left out of a user service on purpose: it already runs as whoever
+			# starts it, and OpenRC refuses to be told otherwise.
+			if [ -n "$SERVICE_OWNER" ]; then
+				echo "HEXAGON_USER=\"$SERVICE_OWNER\""
+				echo "HEXAGON_OWNER=\"$SERVICE_OWNER\""
+			fi
+		} >"$RC_CONF"
+		chmod 0644 "$RC_CONF"
+		echo "  $RC_PATH"
+		echo "  $RC_CONF"
+		;;
+	none)
+		echo "  no service registered: no init system to register it with"
+		;;
+	esac
+}
+
+# Enables the service and starts it. Non-zero when that did not work, so the
+# caller can fall back to telling the user how to run the server by hand.
+service_enable_start() {
+	case "$INIT" in
+	systemd)
+		$SYSTEMCTL daemon-reload 2>/dev/null &&
+			$SYSTEMCTL enable --now hexagon.service 2>/dev/null &&
+			echo "Service started: $SYSTEMCTL status hexagon"
+		;;
+	openrc)
+		$RC_UPDATE add hexagon default >/dev/null 2>&1 &&
+			$RC_SERVICE hexagon start &&
+			echo "Service started: $RC_SERVICE hexagon status"
+		;;
+	*) return 1 ;;
+	esac
+}
+
+service_enable_hint() {
+	case "$INIT" in
+	systemd) echo "  $SYSTEMCTL enable --now hexagon" ;;
+	openrc) echo "  $RC_UPDATE add hexagon default && $RC_SERVICE hexagon start" ;;
+	*) echo "  HEXAGON_CONFIG=$CONFIG_FILE $BIN_PATH" ;;
+	esac
+}
+
+# Where the first-time wizard's one-time password can be read. OpenRC has no
+# journal, so on OpenRC this is a file the init script points the server at.
+service_log_hint() {
+	case "$INIT" in
+	systemd)
+		if [ "$MODE" = system ]; then
+			echo "  journalctl -u hexagon | grep 'first-time setup'"
+		else
+			echo "  journalctl --user -u hexagon | grep 'first-time setup'"
+		fi
+		;;
+	openrc) echo "  grep 'first-time setup' $LOG_PATH" ;;
+	*) echo "  on the terminal you start the server from" ;;
+	esac
+}
+
+service_restart_command() {
+	case "$INIT" in
+	openrc) echo "rc-service hexagon restart" ;;
+	*) echo "systemctl restart hexagon" ;;
+	esac
+}
+
+# A user install on an OpenRC too old for user services has nowhere to put one.
+if [ "$INIT" = openrc ] && [ "$MODE" = user ] && [ "$OPENRC_USER" != yes ]; then
+	echo "This OpenRC has no user services (they need 0.55 or newer), so nothing will" >&2
+	echo "supervise Hexagon for you. Installing the files only; --system installs a service." >&2
+	echo "" >&2
+	INIT=none
+fi
 
 # ---------------------------------------------------------------- question 3+
 
@@ -411,9 +618,14 @@ case "$addr" in
 esac
 
 start_now=no
-if confirm "Enable and start the service now?" "Y"; then start_now=yes; fi
+if [ "$INIT" != none ]; then
+	if confirm "Enable and start the service now?" "Y"; then start_now=yes; fi
+fi
+# Lingering is systemd's; OpenRC keeps a user's services in that user's own
+# session, and what makes them survive a logout is a root command printed at the
+# end rather than anything this script can do.
 linger=no
-if [ "$MODE" = user ] && [ "$start_now" = yes ]; then
+if [ "$INIT" = systemd ] && [ "$MODE" = user ] && [ "$start_now" = yes ]; then
 	if confirm "Keep it running when you log out (loginctl enable-linger)?" "Y"; then linger=yes; fi
 fi
 echo ""
@@ -423,23 +635,35 @@ echo ""
 echo "Installing:"
 if [ "$MODE" = system ]; then
 	if ! getent passwd hexagon >/dev/null 2>&1; then
+		# Three ways to say the same thing. Debian's adduser is checked first
+		# because it is a different program from busybox's under the same name,
+		# and the flags are not interchangeable.
 		if have adduser && [ -f /etc/debian_version ]; then
 			adduser --system --group --home "$DATA_DEFAULT" --shell /usr/sbin/nologin \
 				--quiet --disabled-login hexagon
 		elif have useradd; then
-			useradd --system --home-dir "$DATA_DEFAULT" --shell /usr/sbin/nologin \
+			useradd --system --home-dir "$DATA_DEFAULT" --shell /sbin/nologin \
 				--user-group hexagon
+		elif have adduser && have addgroup; then
+			addgroup -S hexagon 2>/dev/null || true
+			adduser -S -D -H -h "$DATA_DEFAULT" -s /sbin/nologin -G hexagon hexagon
 		else
-			die "cannot create the hexagon account: neither adduser nor useradd is here"
+			die "cannot create the hexagon account: no adduser and no useradd here"
 		fi
 		echo "  created the hexagon user"
 	fi
 	if getent group docker >/dev/null 2>&1; then
-		if have usermod; then usermod -aG docker hexagon; else gpasswd -a hexagon docker >/dev/null; fi
+		if have usermod; then
+			usermod -aG docker hexagon
+		elif have gpasswd; then
+			gpasswd -a hexagon docker >/dev/null
+		else
+			addgroup hexagon docker
+		fi
 		echo "  added hexagon to the docker group"
 	else
 		echo "  no docker group yet. Once Docker is installed, run:"
-		echo "    sudo usermod -aG docker hexagon && sudo systemctl restart hexagon"
+		echo "    sudo usermod -aG docker hexagon && sudo $(service_restart_command)"
 	fi
 fi
 
@@ -447,30 +671,9 @@ install -D -m 0755 "$STAGE/usr/bin/hexagon" "$BIN_PATH"
 echo "  $BIN_PATH"
 
 if [ "$MODE" = system ]; then
-	install -D -m 0644 "$STAGE/lib/systemd/system/hexagon.service" "$UNIT_PATH"
 	(cd "$STAGE" && find usr/share/doc -type f -exec install -D -m 0644 "{}" "/{}" \;)
-else
-	# A user unit genuinely differs: no User=, no supplementary group, and paths
-	# under $HOME. Everything else the two modes do, they do identically.
-	mkdir -p "$(dirname "$UNIT_PATH")"
-	cat >"$UNIT_PATH" <<-UNIT
-		[Unit]
-		Description=Hexagon: Claude Code sessions in Docker containers
-		Documentation=https://github.com/$REPO
-		After=network-online.target
-		Wants=network-online.target
-
-		[Service]
-		Environment=HEXAGON_CONFIG=$CONFIG_FILE
-		ExecStart=$BIN_PATH
-		Restart=on-failure
-		RestartSec=5
-
-		[Install]
-		WantedBy=default.target
-	UNIT
 fi
-echo "  $UNIT_PATH"
+service_install
 
 mkdir -p "$CONFIG_DIR" "$data_dir"
 chmod 0700 "$data_dir"
@@ -531,19 +734,20 @@ echo ""
 # ---------------------------------------------------------------- start it
 
 if [ "$start_now" = yes ]; then
-	if $SYSTEMCTL daemon-reload 2>/dev/null && $SYSTEMCTL enable --now hexagon.service 2>/dev/null; then
-		echo "Service started: $SYSTEMCTL status hexagon"
-	else
-		echo "Could not start the service through systemd. Run it by hand with:" >&2
+	if ! service_enable_start; then
+		echo "Could not start the service. Run the server by hand with:" >&2
 		echo "  HEXAGON_CONFIG=$CONFIG_FILE $BIN_PATH" >&2
 	fi
 	if [ "$linger" = yes ]; then
 		loginctl enable-linger "$(id -un)" 2>/dev/null ||
 			echo "  could not enable lingering: the service stops when you log out" >&2
 	fi
+elif [ "$INIT" = none ]; then
+	echo "No service was registered. Run the server with:"
+	service_enable_hint
 else
 	echo "Not started. When you want it:"
-	echo "  $SYSTEMCTL enable --now hexagon"
+	service_enable_hint
 fi
 
 echo ""
@@ -551,14 +755,19 @@ if [ -n "$client_id" ]; then
 	echo "Open $public_url and sign in."
 else
 	echo "Open $public_url/setup and complete the first-time wizard."
-	echo "Its one-time password is in the service log:"
-	if [ "$MODE" = system ]; then
-		echo "  journalctl -u hexagon | grep 'first-time setup'"
-	else
-		echo "  journalctl --user -u hexagon | grep 'first-time setup'"
-	fi
+	echo "Its one-time password is printed once, when the server starts:"
+	service_log_hint
 fi
 echo "Callback URL to register on GitHub: $public_url/api/auth/callback"
+# OpenRC runs a user's services from that user's own session, which is started
+# by a service only root can add. This is the counterpart of enable-linger, and
+# it is printed rather than run because it is a change to the system.
+if [ "$INIT" = openrc ] && [ "$MODE" = user ]; then
+	echo ""
+	echo "To start it at boot and keep it running when you log out, once, as root:"
+	echo "  sudo ln -s user /etc/init.d/user.$(id -un)"
+	echo "  sudo rc-update add user.$(id -un) default"
+fi
 if [ "$MODE" = user ] && ! id -nG 2>/dev/null | tr ' ' '\n' | grep -qx docker; then
 	echo ""
 	echo "You are not in the docker group, so no session will start. Fix it with:"

@@ -1,0 +1,53 @@
+#!/sbin/openrc-run
+# Hexagon as an OpenRC service.
+#
+# One script serves both a system installation and a per-user one, because
+# everything that differs between them lives in the conf.d file OpenRC loads
+# beside it. A systemd unit cannot do that — a user unit must drop User= — which
+# is why install.sh writes that one by hand and copies this one as it is.
+description="Hexagon: Claude Code sessions in Docker containers"
+
+# The analogue of Restart=on-failure. supervise-daemon has been part of OpenRC
+# since 0.21, and it is what keeps the server up without a wrapper.
+supervisor=supervise-daemon
+respawn_delay=5
+respawn_max=0
+
+command="${HEXAGON_BIN:-/usr/bin/hexagon}"
+pidfile="${HEXAGON_PIDFILE:-/run/hexagon.pid}"
+# OpenRC has no journal, so the one place the first-time wizard's password can
+# be read from is this file. install.sh prints its path at the end.
+output_log="${HEXAGON_LOG:-/var/log/hexagon.log}"
+error_log="$output_log"
+
+# Set only for a system installation. A user service already runs as whoever
+# starts it, and OpenRC's own guide says command_user must stay unset there.
+if [ -n "${HEXAGON_USER:-}" ]; then
+	command_user="$HEXAGON_USER"
+fi
+
+# config.Load starts from os.UserHomeDir() and fails outright without HOME, the
+# same reason the systemd unit sets it explicitly.
+export HOME="${HEXAGON_HOME:-/var/lib/hexagon}"
+export HEXAGON_CONFIG="${HEXAGON_CONFIG:-/etc/hexagon/config.json}"
+
+depend() {
+	# Ordering, not a requirement: Docker can be absent, remote through
+	# DOCKER_HOST, or slow to arrive, and a daemon that is unreachable at
+	# startup is a warning in the log rather than a refusal to run.
+	use net docker
+	after net docker
+}
+
+start_pre() {
+	# The directory is only created when it is missing: for a system install it
+	# is /var/log, which exists and must not have its ownership rewritten.
+	log_dir=${output_log%/*}
+	if [ -n "${HEXAGON_OWNER:-}" ]; then
+		[ -d "$log_dir" ] || checkpath -d -m 0750 -o "$HEXAGON_OWNER" "$log_dir"
+		checkpath -f -m 0640 -o "$HEXAGON_OWNER" "$output_log"
+	else
+		[ -d "$log_dir" ] || checkpath -d -m 0700 "$log_dir"
+		checkpath -f -m 0600 "$output_log"
+	fi
+}

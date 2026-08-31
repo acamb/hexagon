@@ -69,13 +69,15 @@ internal/session/   orchestrator: provisioning, lifecycle, reconciliation
 internal/httpapi/   routes, middleware, handlers, terminal WebSocket, SPA serving
 web/                Vue 3 + Vite frontend
 deploy/images/base/ the reference session image
-packaging/          the systemd unit and the Debian package: control, debconf, maintainer scripts
+packaging/          the systemd unit, the OpenRC init script, and the Debian package
 plans/              milestone statements and their analyses (see below)
 ```
 
-`install.sh` and `uninstall.sh` at the root are the second installation method. The layout
-they produce is defined once, by `make install`: the package stages it, the release tarball
-is that stage rolled up, and the script unpacks it.
+`install.sh` and `uninstall.sh` at the root are the second installation method, and the only
+one that knows about more than one init system: they detect systemd or OpenRC and route
+through four `service_*` functions, so a third one is a case in each rather than a rewrite.
+The layout they produce is defined once, by `make install`: the package stages it, the
+release tarball is that stage rolled up, and the script unpacks it.
 
 Dependencies stay few and deliberate: `net/http.ServeMux` with method patterns
 instead of a router, OAuth written by hand instead of `golang.org/x/oauth2`,

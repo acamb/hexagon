@@ -77,6 +77,7 @@ install:
 	@test -x $(BIN) || { echo "make install: $(BIN) does not exist; run make build first" >&2; exit 1; }
 	install -D -m 0755 $(BIN) $(DESTDIR)$(PREFIX)/bin/hexagon
 	install -D -m 0644 packaging/hexagon.service $(DESTDIR)/lib/systemd/system/hexagon.service
+	install -D -m 0755 packaging/hexagon.openrc $(DESTDIR)$(PREFIX)/share/doc/hexagon/examples/hexagon.openrc
 	install -D -m 0644 packaging/deb/copyright $(DESTDIR)$(PREFIX)/share/doc/hexagon/copyright
 	install -D -m 0644 packaging/deb/changelog.Debian $(DESTDIR)$(PREFIX)/share/doc/hexagon/changelog.Debian
 	install -D -m 0644 README.md $(DESTDIR)$(PREFIX)/share/doc/hexagon/README.md
