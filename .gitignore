@@ -11,3 +11,6 @@ bin/
 # as root.
 deploy/proxy/certs/*
 !deploy/proxy/certs/.gitkeep
+
+# Release artifacts. Anchored, so it cannot swallow web/dist as well.
+/dist/

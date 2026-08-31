@@ -1,0 +1,34 @@
+#!/bin/sh
+set -e
+
+DATA_DIR=/var/lib/hexagon
+
+case "$1" in
+purge)
+	if [ -e /usr/share/debconf/confmodule ]; then
+		. /usr/share/debconf/confmodule
+		db_purge || true
+	fi
+	rm -rf /etc/hexagon
+	# Deliberately not a full purge, against Debian policy: /var/lib/hexagon/
+	# workspaces holds git clones of the user's repositories, which may carry
+	# commits that were never pushed. Deleting them silently is a worse failure
+	# than a directory left behind, and only the second one is recoverable.
+	rm -rf "$DATA_DIR"/hexagon.db "$DATA_DIR"/hexagon.db-shm "$DATA_DIR"/hexagon.db-wal \
+		"$DATA_DIR"/secret.key "$DATA_DIR"/claude-login "$DATA_DIR"/code-server
+	if [ -d "$DATA_DIR/workspaces" ]; then
+		echo "hexagon: session workspaces kept at $DATA_DIR/workspaces" >&2
+		echo "  remove them with: sudo rm -rf $DATA_DIR" >&2
+	else
+		rmdir "$DATA_DIR" 2>/dev/null || true
+	fi
+	deluser --quiet --system hexagon >/dev/null 2>&1 || true
+	;;
+remove)
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload || true
+	fi
+	;;
+esac
+
+exit 0

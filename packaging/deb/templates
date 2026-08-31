@@ -1,0 +1,56 @@
+Template: hexagon/configure-now
+Type: select
+Choices: Use the web wizard, Configure now
+Default: Use the web wizard
+Description: How should Hexagon be configured?
+ Hexagon can be configured now, or left empty so that the first-time wizard
+ configures it from the browser. The wizard prints a one-time password to the
+ service log and asks for the same values there, showing the exact callback URL
+ to register on GitHub.
+
+Template: hexagon/addr
+Type: string
+Default: 127.0.0.1:8080
+Description: Listen address:
+ The address the server binds. Whoever reaches this port controls the Docker
+ socket, so leaving it on loopback and putting a TLS reverse proxy in front is
+ the supported way to publish Hexagon.
+
+Template: hexagon/public-url
+Type: string
+Default: http://127.0.0.1:8080
+Description: Public URL:
+ The address you open in a browser. It is what the OAuth callback and the
+ same-origin check are built from, so it has to match what you actually type.
+
+Template: hexagon/client-id
+Type: string
+Description: GitHub OAuth client id:
+ From https://github.com/settings/developers. The callback URL to register
+ there is the public URL above followed by /api/auth/callback.
+ .
+ Leave it empty to let the first-time wizard ask for it instead.
+
+Template: hexagon/client-secret
+Type: password
+Description: GitHub OAuth client secret:
+ Stored in /etc/hexagon/config.json, which is created 0600 and owned by the
+ hexagon user. It is cleared from the debconf database once it has been
+ written there.
+
+Template: hexagon/allowed-users
+Type: string
+Description: GitHub logins allowed to sign in:
+ A comma-separated list. Nobody outside it can sign in, whatever the OAuth
+ application would allow.
+
+Template: hexagon/git-user-name
+Type: string
+Description: Git user name for sessions:
+ What commits made inside a session are authored as. Leave it empty to let
+ each session inherit whatever the image provides.
+
+Template: hexagon/git-user-email
+Type: string
+Description: Git email for sessions:
+ The email that goes with the name above.

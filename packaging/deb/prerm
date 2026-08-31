@@ -1,0 +1,15 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+remove | deconfigure)
+	if [ -d /run/systemd/system ]; then
+		# Disable before dpkg deletes the unit file, or the enablement symlinks
+		# outlive the package.
+		systemctl stop hexagon.service || true
+		systemctl disable hexagon.service || true
+	fi
+	;;
+esac
+
+exit 0

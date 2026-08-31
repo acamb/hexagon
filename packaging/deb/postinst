@@ -1,0 +1,137 @@
+#!/bin/sh
+# Everything here is idempotent rather than conditional on dpkg's version
+# argument: adduser on an existing account is a no-op, the configuration file is
+# only written when it is absent, and an already enabled unit is restarted
+# instead of enabled. That is what makes an upgrade safe.
+set -e
+
+. /usr/share/debconf/confmodule
+
+CONFIG_DIR=/etc/hexagon
+CONFIG_FILE=$CONFIG_DIR/config.json
+DATA_DIR=/var/lib/hexagon
+
+# Two answers are free text that lands in JSON. A git user name with an
+# apostrophe, or a path with a backslash, would otherwise produce a file the
+# server rejects at parse time.
+json_str() {
+	printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+# "alice, bob" -> "alice", "bob"
+json_list() {
+	printf '%s' "$1" | tr ',' '\n' |
+		sed 's/^[[:space:]]*//; s/[[:space:]]*$//; s/["\\]//g; /^$/d; s/.*/"&"/' |
+		paste -sd, -
+}
+
+case "$1" in
+configure)
+	adduser --system --group --home "$DATA_DIR" --shell /usr/sbin/nologin \
+		--quiet --disabled-login hexagon || true
+	mkdir -p "$DATA_DIR"
+	chown hexagon:hexagon "$DATA_DIR"
+	chmod 0700 "$DATA_DIR"
+
+	# Installing before Docker should not fail the install: say what to run
+	# once it is there, and carry on.
+	if getent group docker >/dev/null 2>&1; then
+		adduser --quiet hexagon docker || true
+	else
+		echo "hexagon: no docker group yet. Once Docker is installed, run:" >&2
+		echo "  sudo adduser hexagon docker && sudo systemctl restart hexagon" >&2
+	fi
+
+	db_get hexagon/configure-now || RET=""
+	mode=$RET
+	addr=127.0.0.1:8080
+	public_url=http://127.0.0.1:8080
+	client_id=
+	client_secret=
+	allowed=
+	git_name=
+	git_email=
+	if [ "$mode" = "Configure now" ]; then
+		answer() { RET=""; db_get "hexagon/$1" || true; printf '%s' "$RET"; }
+		a=$(answer addr)
+		if [ -n "$a" ]; then addr=$a; fi
+		a=$(answer public-url)
+		if [ -n "$a" ]; then public_url=$a; fi
+		client_id=$(answer client-id)
+		client_secret=$(answer client-secret)
+		allowed=$(answer allowed-users)
+		git_name=$(answer git-user-name)
+		git_email=$(answer git-user-email)
+	fi
+
+	mkdir -p "$CONFIG_DIR"
+	chown root:hexagon "$CONFIG_DIR"
+	chmod 0750 "$CONFIG_DIR"
+
+	# Never a conffile: the settings page and the first-time wizard rewrite this
+	# file at runtime, and a client secret cannot ship inside a package. It has
+	# to exist because the unit names it in HEXAGON_CONFIG, and a path named
+	# explicitly must be there or the server refuses to start.
+	if [ ! -e "$CONFIG_FILE" ]; then
+		umask 077
+		{
+			printf '{\n'
+			printf '  "addr": "%s",\n' "$(json_str "$addr")"
+			printf '  "publicUrl": "%s",\n' "$(json_str "$public_url")"
+			printf '  "dataDir": "%s"' "$DATA_DIR"
+			if [ -n "$client_id$client_secret$allowed" ]; then
+				printf ',\n  "github": {\n'
+				# Only keys that got a value are emitted: an unknown key is a
+				# hard error for the server, and an empty one is not the same
+				# thing as an absent one. The sed puts the commas in, so the
+				# last entry never carries one.
+				{
+					if [ -n "$client_id" ]; then printf '    "clientId": "%s"\n' "$(json_str "$client_id")"; fi
+					if [ -n "$client_secret" ]; then printf '    "clientSecret": "%s"\n' "$(json_str "$client_secret")"; fi
+					if [ -n "$allowed" ]; then printf '    "allowedUsers": [%s]\n' "$(json_list "$allowed")"; fi
+				} | sed '$ ! s/$/,/'
+				printf '  }'
+			fi
+			if [ -n "$git_name$git_email" ]; then
+				printf ',\n  "git": {\n'
+				{
+					if [ -n "$git_name" ]; then printf '    "userName": "%s"\n' "$(json_str "$git_name")"; fi
+					if [ -n "$git_email" ]; then printf '    "userEmail": "%s"\n' "$(json_str "$git_email")"; fi
+				} | sed '$ ! s/$/,/'
+				printf '  }'
+			fi
+			printf '\n}\n'
+		} >"$CONFIG_FILE"
+		chown hexagon:hexagon "$CONFIG_FILE"
+		chmod 0600 "$CONFIG_FILE"
+	fi
+
+	# The secret's home is that 0600 file. A second copy sitting in a database
+	# that outlives the package is not something to leave behind.
+	db_set hexagon/client-secret "" || true
+
+	if [ -d /run/systemd/system ]; then
+		systemctl daemon-reload || true
+		if systemctl is-enabled hexagon.service >/dev/null 2>&1; then
+			systemctl restart hexagon.service || true
+		else
+			systemctl enable --now hexagon.service || true
+		fi
+	fi
+
+	echo ""
+	echo "Hexagon is installed. Configuration: $CONFIG_FILE"
+	if [ -n "$client_id" ]; then
+		echo "  Open $public_url and sign in."
+	else
+		echo "  Open $public_url/setup and complete the first-time wizard."
+		echo "  Its one-time password is in the service log:"
+		echo "    journalctl -u hexagon | grep 'first-time setup'"
+	fi
+	echo "  Callback URL to register on GitHub: $public_url/api/auth/callback"
+	echo ""
+	;;
+abort-upgrade | abort-remove | abort-deconfigure) ;;
+esac
+
+exit 0

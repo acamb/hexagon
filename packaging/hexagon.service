@@ -1,0 +1,36 @@
+[Unit]
+Description=Hexagon: Claude Code sessions in Docker containers
+Documentation=https://github.com/acamb/hexagon
+# Ordering only. Docker may be absent, remote through DOCKER_HOST, or simply
+# slow to come up; a daemon that is unreachable at startup is a warning in the
+# log, not a reason to refuse to boot.
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+User=hexagon
+Group=hexagon
+# The process drives the Docker socket. Membership in the group is what makes
+# that possible, and it is root-equivalent by construction — no amount of
+# hardening below changes that.
+SupplementaryGroups=docker
+# Set explicitly rather than left to systemd's account lookup: config.Load
+# starts from os.UserHomeDir() and fails outright without HOME.
+Environment=HOME=/var/lib/hexagon
+Environment=HEXAGON_CONFIG=/etc/hexagon/config.json
+ExecStart=/usr/bin/hexagon
+Restart=on-failure
+RestartSec=5
+
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+# /etc/hexagon is writable because the settings page and the first-time wizard
+# write the configuration file back through the running server.
+ReadWritePaths=/var/lib/hexagon /etc/hexagon
+# Safe only because session workspaces live under /var/lib/hexagon and never in
+# /tmp.
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

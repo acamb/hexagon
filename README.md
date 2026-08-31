@@ -185,37 +185,72 @@ saved without you on it.
 
 ### Requirements
 
-Docker, and a GitHub account. Building from source additionally needs Go 1.26 and Node 22.
+Docker, and a GitHub account. The released binary is static and needs nothing else at
+runtime except `git`, which the package pulls in for you. Building from source needs Go 1.26
+and Node 22.
 
-### 1. Register a GitHub OAuth App
+### 1. Install
 
-At <https://github.com/settings/developers> → **New OAuth App**:
+**Debian and Ubuntu.** Take the `.deb` from the
+[latest release](https://github.com/acamb/hexagon/releases/latest) and install it with
+`apt`, which pulls its dependencies in — `dpkg -i` would leave the package half-configured:
 
-| Field | Value |
-|---|---|
-| Application name | Hexagon |
-| Homepage URL | `http://localhost:5173` |
-| Authorization callback URL | `http://localhost:5173/api/auth/callback` |
+```sh
+curl -fsSLO https://github.com/acamb/hexagon/releases/download/v0.1.0/hexagon_0.1.0_amd64.deb
+sudo apt install ./hexagon_0.1.0_amd64.deb
+```
 
-Then **Generate a new client secret**. The callback URL has to match exactly: GitHub
-compares it verbatim against what the server sends.
+It installs `/usr/bin/hexagon`, a system service running as a dedicated `hexagon` user, and
+`/etc/hexagon/config.json`. Under `DEBIAN_FRONTEND=noninteractive` every answer is its
+default, which is the wizard below.
 
-You can skip this step entirely and let Hexagon ask you — see [First run](#first-run).
+**Anywhere else with systemd.** The installer downloads the latest release, checks it
+against the release's `SHA256SUMS`, and sets up a service. Download and run it.
 
-### 2. Run it
+```sh
+curl -fsSLO https://raw.githubusercontent.com/acamb/hexagon/master/install.sh
+sh install.sh
+```
+
+It installs for **you** by default — `~/.local/bin`, a `systemd --user` service running as
+your account, with your `~/.claude` and your docker group — and offers a system-wide install:
+ `sh install.sh --system`, `--yes` for every default, and
+`--version v0.1.0` to pin a release. Piping it into `sh` works too and takes every default,
+which is the unattended form.
+
+**From source**, which is also how you work on Hexagon:
 
 ```sh
 make build && ./bin/hexagon
 ```
 
-The binary serves everything itself on `http://127.0.0.1:8080`. Set `HEXAGON_PUBLIC_URL` to
-the address you actually open in the browser, and register the matching callback URL on
-GitHub.
+`make dev` runs the Go server on `:8080` and the Vite dev server on `:5173`, which proxies
+the API to it. Open <http://localhost:5173> — **not** `127.0.0.1:5173`: the origin check
+compares hostnames, and the two are different origins. [AGENTS.md](AGENTS.md) has the
+conventions.
 
-For working on Hexagon itself, `make dev` runs the Go server on `:8080` and the Vite dev
-server on `:5173`, which proxies the API to it. Open <http://localhost:5173> — **not**
-`127.0.0.1:5173`: the origin check compares hostnames, and the two are different origins.
-[AGENTS.md](AGENTS.md) has the conventions.
+Whichever path you took, **the account the server runs as must be in the `docker` group** —
+the package puts the `hexagon` user there, and the installer tells you if you are not. It is
+root-equivalent access to the machine, which is what running containers requires.
+
+Both installers ask, as their first question, whether to configure Hexagon now or leave it
+to the wizard. The default is the wizard, and the rest of this section assumes it.
+
+### 2. Register a GitHub OAuth App
+
+You can skip this: the first-time wizard asks for these values in the browser and shows the
+exact callback URL for the public URL you gave it. Doing it first, at
+<https://github.com/settings/developers> → **New OAuth App**:
+
+| Field | Value |
+|---|---|
+| Application name | Hexagon |
+| Homepage URL | `http://127.0.0.1:8080` |
+| Authorization callback URL | `http://127.0.0.1:8080/api/auth/callback` |
+
+Then **Generate a new client secret**. The callback URL has to match exactly: GitHub
+compares it verbatim against what the server sends, so it has to be built from the address
+you actually open — `http://localhost:5173/api/auth/callback` when you run `make dev`.
 
 Signing in asks GitHub for the `repo` scope, because that is what Claude Code needs to clone
 and push.
@@ -226,18 +261,36 @@ Started with no GitHub client id and secret, Hexagon does not refuse to run. It 
 like
 
 ```
-WARN first-time setup is open until somebody signs in url=http://localhost:5173/setup password=K7QX-4M2A-...
+WARN first-time setup is open until somebody signs in url=http://127.0.0.1:8080/setup password=K7QX-4M2A-...
 ```
 
-and serves a wizard at that address which asks for the password, then for the client id, the
-client secret and the accounts allowed to sign in. It shows the exact callback URL to
-register on GitHub, writes everything into the configuration file — creating it with mode
+As a service that line is in the journal rather than on a terminal:
+
+```sh
+journalctl -u hexagon | grep 'first-time setup'          # the package, or --system
+journalctl --user -u hexagon | grep 'first-time setup'   # the installer's default
+```
+
+The server serves a wizard at that address which asks for the password, then for the client
+id, the client secret and the accounts allowed to sign in. It shows the exact callback URL
+to register on GitHub, writes everything into the configuration file — creating it with mode
 `600` if it is not there — and reconfigures the running server, so signing in works without
 a restart.
 
 The password lives only in that process's memory: a restart prints a new one and retires the
 old. The wizard stays open until somebody signs in successfully, so a client secret with a
 typo can be fixed from the same page. After the first sign-in it closes for good.
+
+### Uninstalling
+
+```sh
+sudo apt remove hexagon    # or: sudo apt purge hexagon
+sh uninstall.sh            # what install.sh put there; --system for a system install
+```
+
+Both keep the session workspaces — git clones that may carry commits nobody pushed — and
+print where they are. `apt purge` also removes `/etc/hexagon` and the database, and the
+installer asks about both, defaulting to keeping them.
 
 ### Publishing it
 
@@ -288,7 +341,9 @@ file, which wins over the defaults.**
 
 [config.example.json](config.example.json) is a complete one. Copy it to
 `~/.config/hexagon/config.json`, or keep it anywhere and point `-config` at it. The server
-looks for `-config`, then `HEXAGON_CONFIG`, then the default path.
+looks for `-config`, then `HEXAGON_CONFIG`, then the default path. A packaged install is
+told about `/etc/hexagon/config.json` through `HEXAGON_CONFIG` in its unit, and the
+examples land in `/usr/share/doc/hexagon/examples/`.
 
 Four things are worth knowing:
 

@@ -24,7 +24,23 @@ make build        # frontend, then the binary into bin/hexagon
 make test         # go test ./...
 make fmt          # go fmt ./...
 make vet          # go vet ./...
+make install      # the installed layout into DESTDIR, with PREFIX
+make deb          # one .deb for one architecture, built inside Debian
+make release      # every release artifact into dist/, plus SHA256SUMS
 ```
+
+Cutting a release is three steps, and the version is the `VERSION` file and nothing else —
+bump it first, because the binary, the package and the asset names all come from it:
+
+```sh
+make test && make vet && make release
+git tag -a v0.1.0 -m 'hexagon 0.1.0' && git push --tags
+gh release create v0.1.0 --title 'hexagon 0.1.0' --notes '...' dist/*
+```
+
+`install.sh` finds a release by following the redirect from `/releases/latest` and builds
+the asset name from the tag, so **renaming an asset breaks every future install of every
+past version**. [plans/installer.md](plans/installer.md) is the reasoning.
 
 Always go through the Makefile for tests. The server embeds `web/dist`, so
 `go test ./...` fails on a tree that has never been built; `make test` creates
@@ -53,8 +69,13 @@ internal/session/   orchestrator: provisioning, lifecycle, reconciliation
 internal/httpapi/   routes, middleware, handlers, terminal WebSocket, SPA serving
 web/                Vue 3 + Vite frontend
 deploy/images/base/ the reference session image
+packaging/          the systemd unit and the Debian package: control, debconf, maintainer scripts
 plans/              milestone statements and their analyses (see below)
 ```
+
+`install.sh` and `uninstall.sh` at the root are the second installation method. The layout
+they produce is defined once, by `make install`: the package stages it, the release tarball
+is that stage rolled up, and the script unpacks it.
 
 Dependencies stay few and deliberate: `net/http.ServeMux` with method patterns
 instead of a router, OAuth written by hand instead of `golang.org/x/oauth2`,

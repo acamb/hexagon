@@ -1,0 +1,23 @@
+#!/bin/sh
+# Asked by debconf before the package is unpacked, which is what lets apt
+# collect every question up front instead of stopping halfway through an
+# install. Reading stdin from postinst instead would break dpkg -i in a script,
+# in an image build, and under any apt frontend.
+set -e
+
+. /usr/share/debconf/confmodule
+
+db_input high hexagon/configure-now || true
+db_go || true
+
+db_get hexagon/configure-now
+if [ "$RET" != "Configure now" ]; then
+	# The default answer is the web wizard, and it needs nothing else: the
+	# generated file names the daemon's paths and stops there.
+	exit 0
+fi
+
+for q in addr public-url client-id client-secret allowed-users git-user-name git-user-email; do
+	db_input high "hexagon/$q" || true
+done
+db_go || true

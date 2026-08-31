@@ -1,0 +1,15 @@
+Package: hexagon
+Version: @VERSION@
+Architecture: @ARCH@
+Installed-Size: @SIZE@
+Maintainer: Andrea Cambieri <andrea.cambieri@gmail.com>
+Section: devel
+Priority: optional
+Homepage: https://github.com/acamb/hexagon
+Depends: git, adduser, ca-certificates, debconf (>= 0.5) | debconf-2.0
+Recommends: docker.io | docker-ce, docker-compose-plugin
+Suggests: nginx
+Description: web UI for running Claude Code sessions in Docker containers
+ Hexagon clones a repository on the host, starts a container with that clone
+ mounted inside, runs tmux in it, and renders that terminal on a web page.
+ It is one binary: a Go server with the frontend built into it.

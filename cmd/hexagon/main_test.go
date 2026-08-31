@@ -3,7 +3,10 @@ package main
 import (
 	"context"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"regexp"
+	"strings"
 	"testing"
 	"time"
 
@@ -108,5 +111,28 @@ func TestOpenSetupIsClosedOnceAUserExists(t *testing.T) {
 	}
 	if deps.Setup != nil {
 		t.Error("the first-time wizard is open on a server somebody has signed in to")
+	}
+}
+
+// The version the Makefile stamps comes from the VERSION file, and the package
+// takes its own version from the same place. A release is the one moment the
+// drift between them would show, which is far too late to find out that the
+// file says something a build cannot use.
+func TestVersionMatchesTheVersionFile(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "VERSION"))
+	if err != nil {
+		t.Fatalf("read VERSION: %v", err)
+	}
+	if strings.HasSuffix(strings.TrimSuffix(string(raw), "\n"), "\n") {
+		t.Fatalf("VERSION = %q, want a single line: it is passed to -X, to dpkg-deb and into asset names", raw)
+	}
+	file := strings.TrimSpace(string(raw))
+	if !regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+$`).MatchString(file) {
+		t.Errorf("VERSION = %q, want MAJOR.MINOR.PATCH: dpkg and the release tag both parse it", file)
+	}
+	// An unstamped test binary reports "dev"; one built through the Makefile
+	// reports the file. Anything else means the two have been set apart.
+	if version != "dev" && version != file {
+		t.Errorf("version = %q, want %q (from VERSION) or %q", version, file, "dev")
 	}
 }

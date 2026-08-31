@@ -1,0 +1,10 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: hexagon
+Source: https://github.com/acamb/hexagon
+
+Files: *
+Copyright: 2026 Andrea Cambieri
+License: proprietary
+ All rights reserved. No licence has been granted for this software yet;
+ the repository carries no LICENSE file, and this file says what is true
+ today rather than choosing one on its behalf.

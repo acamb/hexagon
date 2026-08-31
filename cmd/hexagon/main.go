@@ -32,9 +32,20 @@ import (
 
 const shutdownTimeout = 10 * time.Second
 
+// version is stamped at build time from the VERSION file at the root of the
+// repository, with -X main.version. An unstamped build says "dev", which is how
+// a binary from `go build ./cmd/hexagon` is told apart from a released one.
+var version = "dev"
+
 func main() {
 	configPath := flag.String("config", "", "path to a JSON configuration file")
+	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Println("hexagon", version)
+		return
+	}
 
 	if err := run(*configPath); err != nil {
 		fmt.Fprintln(os.Stderr, "hexagon:", err)
