@@ -63,6 +63,11 @@ func (f *fakeCompose) Up(context.Context, composex.Project) error {
 	return f.err
 }
 
+func (f *fakeCompose) Create(context.Context, composex.Project) error {
+	f.calls = append(f.calls, "create")
+	return f.err
+}
+
 func (f *fakeCompose) Start(context.Context, composex.Project) error {
 	f.calls = append(f.calls, "start")
 	return f.err

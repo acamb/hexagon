@@ -33,6 +33,10 @@ Two divergences from the statement, decided with the user:
   property of a container, fixed when it is created — the same reasoning
   `vscode` and `propagateToken` already carry in `store.Session`, and the same
   consequence: there is no setter, and changing it means a new session.
+
+  *Revised after implementation, at the user's request: still no setter, but a
+  new container rather than a new session. See "Changing the ports of a stopped
+  session" at the end of this document.*
 - **The host side is Docker's to choose.** The statement asks to show the user
   "container port / host port", and showing is what this does: Hexagon publishes
   on loopback with the host port left to the daemon and reports the pair. A host
@@ -179,7 +183,8 @@ fails to start.
 `sessions` gains `ports TEXT NOT NULL DEFAULT ''`, the container ports separated
 by commas, and `compose INTEGER NOT NULL DEFAULT 0`. Both are set at creation
 and never edited, for the reason `vscode` already carries: a container keeps the
-port bindings it was created with.
+port bindings it was created with. (`ports` and `port_address` became editable
+later, by rebuilding that container; `compose` did not.)
 
 Nothing new is needed under them. `ContainerSpec.Ports` already publishes on
 loopback with a host port Docker chooses, and `ContainerState.Ports` already
@@ -407,3 +412,70 @@ implementation is wrong:
 This widens what a session can expose, and it is a deliberate widening: the
 warning under the field, the coloured badge on the session page and the README
 paragraph are what make it a choice rather than a surprise.
+
+## Changing the ports of a stopped session
+
+*Added after the point was implemented, at the user's request: from the sessions
+list it must be possible to change, or switch on, the port mapping of a session
+that is down.*
+
+The decision at the top of this document — the ports belong to the session, and
+there is no setter, so changing them means a new session — was right about the
+constraint and wrong about the conclusion. A port binding really is a property of
+a container, fixed when it is created; but a session is not its container. The
+work is the clone and the home directory, and both are directories on the host
+that a second container mounts as happily as the first. So the answer is to
+rebuild the container, not to throw the session away.
+
+That makes this a lifecycle operation rather than a settings change, and it is
+built as one:
+
+- **`PUT /api/sessions/{id}/ports`, not a field on `PATCH`.** `handleUpdateSession`
+  already says why `propagateToken` is not a setting: the only honest way to
+  honour it would be to build another container. This is the route that does
+  exactly that, so it fails the way `start` and `stop` fail rather than the way a
+  validation error does.
+- **Only while the session is stopped.** A running container cannot take new
+  bindings, and rebuilding one out from under a terminal would end a live
+  session's work. The handler reconciles against Docker before it decides, so a
+  container somebody started from outside Hexagon is not rebuilt underneath them
+  on the strength of a stale row.
+- **The row is written before the container is built.** If the rebuild then
+  fails, the session claims a binding it does not have — the UI warns about an
+  address nothing is published on. The other order fails the other way: a session
+  shown as loopback while its container answers the network. Only one of those is
+  safe to be wrong about.
+- **A rebuild that loses its container leaves the session `gone`.** Removing the
+  old container has to come first, because it holds the name; between that and
+  the new one there is a moment with none. `gone` is what that state already
+  means, and it is recoverable — the workspace is untouched — where a row
+  pointing at a container id that no longer exists is not.
+- **The compose path rewrites the project and lets compose recreate it.**
+  `compose create`, not `up`: the containers whose definition changed are
+  replaced and nothing is started. The user's half of the project is read back
+  from the workspace rather than from the image, because that file is what this
+  project was validated and brought up with and the image behind it may have been
+  edited since — and it is validated again, which is also what names the services
+  the overlay depends on.
+
+Two consequences worth stating plainly, because the UI has to say them:
+
+- **The container is rebuilt from its image.** Whatever was installed inside the
+  old one by hand is gone; the clone, the home directory and everything under
+  them are not. The dialog says this above the save button.
+- **The rebuilt container carries today's credentials.** The environment is
+  assembled again from the sealed values, so a session whose account has been
+  reconnected since picks up the new token, and one whose account is gone fails
+  the rebuild instead of quietly becoming a container that cannot authenticate.
+
+`vscode` and `propagateToken` stay where they are. The same rebuild would serve
+them, but the VS Code mount and the token in the environment are not what the
+user asked for, and each is a decision of its own with its own warning to write.
+
+Verification is in `internal/httpapi`, in the `testEnv` style: a stopped session
+takes new ports and a new container while the running one refuses with 409; the
+refusals the create path applies are applied here too, and a refused request
+rebuilds nothing; a rebuild that cannot create leaves the session `gone` with an
+explanation; and a compose session goes through `compose create` with the new
+port in the generated file. `internal/composex` covers the new subcommand's
+arguments.

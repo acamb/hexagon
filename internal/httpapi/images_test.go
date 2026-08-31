@@ -486,9 +486,33 @@ func (f *fakeCompose) Up(_ context.Context, p composex.Project) error {
 	if err := f.record("up"); err != nil {
 		return err
 	}
-	overlay, err := os.ReadFile(filepath.Join(p.Dir, "hexagon.yaml"))
+	return f.registerAgent(p, true)
+}
+
+// Create is Up without starting anything, which is what the real `compose
+// create` does: the agent container exists and is down.
+func (f *fakeCompose) Create(_ context.Context, p composex.Project) error {
+	if err := f.record("create"); err != nil {
+		return err
+	}
+	return f.registerAgent(p, false)
+}
+
+func (f *fakeCompose) registerAgent(p composex.Project, running bool) error {
+	name, err := f.agentName(p)
 	if err != nil {
 		return err
+	}
+	f.docker.addNamedContainer(name, running)
+	return nil
+}
+
+// agentName reads the container name out of the file Hexagon generated, which
+// is how the real compose learns it too.
+func (f *fakeCompose) agentName(p composex.Project) (string, error) {
+	overlay, err := os.ReadFile(filepath.Join(p.Dir, "hexagon.yaml"))
+	if err != nil {
+		return "", err
 	}
 	var file struct {
 		Services map[string]struct {
@@ -496,14 +520,33 @@ func (f *fakeCompose) Up(_ context.Context, p composex.Project) error {
 		} `json:"services"`
 	}
 	if err := json.Unmarshal(overlay, &file); err != nil {
-		return err
+		return "", err
 	}
-	f.docker.addNamedContainer(file.Services["hexagon"].ContainerName, true)
-	return nil
+	return file.Services["hexagon"].ContainerName, nil
 }
 
-func (f *fakeCompose) Start(_ context.Context, _ composex.Project) error { return f.record("start") }
-func (f *fakeCompose) Stop(_ context.Context, _ composex.Project) error  { return f.record("stop") }
+// Start and Stop move the agent container the way the real ones do. The state
+// the daemon reports is what the server reconciles against, so a fake that only
+// recorded the call would leave a stopped project looking like a running one.
+func (f *fakeCompose) Start(_ context.Context, p composex.Project) error {
+	return f.setAgentRunning(p, "start", true)
+}
+
+func (f *fakeCompose) Stop(_ context.Context, p composex.Project) error {
+	return f.setAgentRunning(p, "stop", false)
+}
+
+func (f *fakeCompose) setAgentRunning(p composex.Project, call string, running bool) error {
+	if err := f.record(call); err != nil {
+		return err
+	}
+	name, err := f.agentName(p)
+	if err != nil {
+		return err
+	}
+	f.docker.setContainerRunning(name, running)
+	return nil
+}
 
 func (f *fakeCompose) Down(_ context.Context, _ composex.Project, _ bool) error {
 	return f.record("down")

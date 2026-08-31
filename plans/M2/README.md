@@ -24,4 +24,6 @@ wrong value in either cannot be corrected from the page afterwards.
 Point 3 is two features on one page: a second shape of image, where a compose
 file describes the services beside the one the Dockerfile builds, and published
 ports, which belong to the session rather than to the image because a port
-binding is a property of a container.
+binding is a property of a container. Its analysis has since been extended twice
+at the user's request, and both additions are at the end of it: the interface a
+port binds, and changing the ports of a session that is stopped.

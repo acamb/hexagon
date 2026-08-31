@@ -115,7 +115,11 @@ warning under the field is the whole point of it: on `0.0.0.0` those ports are o
 anyone who can reach the machine, with nothing in front of them — no password, and not
 Hexagon's own sign-in. Use `127.0.0.1` to keep them local.
 
-Ports are fixed when the container is created and cannot be added later.
+Ports can be changed later, but only while the session is stopped: **Ports** on its card in
+the sessions list, or on the session page, edits the list and the address. A container keeps
+the bindings it was created with, so saving builds a new container from the same image over
+the same workspace. The clone and the session's home directory survive — they are directories
+on this machine — and anything installed inside the old container by hand does not.
 
 ### VS Code in the browser
 
@@ -124,8 +128,8 @@ Tick the box when you create a session and its page gets a **VS Code** button th
 release is downloaded into the data directory the first time a session asks for it, and
 shared by all of them.
 
-Like ports, this is a creation-time choice — the mount and the port are part of the
-container.
+Unlike the ports above, this is a creation-time choice and stays one: the mount is part of
+the container, and there is no equivalent of the rebuild for it.
 
 ### Accounts
 

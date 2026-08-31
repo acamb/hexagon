@@ -59,10 +59,11 @@ type Session struct {
 	// the release bind mounted. Set at creation only: a container keeps the
 	// mounts and the port bindings it was created with, so there is no setter.
 	VSCode bool
-	// Ports are the container ports this session publishes. Set at creation
-	// only, for the same reason as VSCode above; the host port Docker picked
-	// for each is never stored, because Docker picks a new one every time the
-	// container starts.
+	// Ports are the container ports this session publishes. A container keeps
+	// the bindings it was created with, so changing these means building
+	// another container — which is why they are editable while the session is
+	// stopped and not while it runs. The host port Docker picked for each is
+	// never stored: Docker picks a new one every time the container starts.
 	Ports []int
 	// PortAddress is the host interface those ports are bound to. Empty means
 	// loopback, which is what every session created before the column had.
@@ -237,6 +238,28 @@ func (s *Store) SetSessionAutoClaude(ctx context.Context, userID, id string, aut
 		auto, formatTime(time.Now()), id, userID)
 	if err != nil {
 		return fmt.Errorf("set session auto claude: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetSessionPorts records the ports a session publishes and the interface they
+// bind. Unlike the other setters this one describes a container that is about
+// to be rebuilt, not one that exists: the caller writes the row first, so a
+// failed rebuild leaves a session claiming a binding it does not have rather
+// than one publishing a binding it does not admit to.
+func (s *Store) SetSessionPorts(ctx context.Context, userID, id string, ports []int, address string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET ports = ?, port_address = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
+		formatPorts(ports), address, formatTime(time.Now()), id, userID)
+	if err != nil {
+		return fmt.Errorf("set session ports: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {

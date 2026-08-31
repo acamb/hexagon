@@ -3,6 +3,7 @@ import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppHeader from '../components/AppHeader.vue'
 import NewSessionDialog from '../components/NewSessionDialog.vue'
+import SessionPortsDialog from '../components/SessionPortsDialog.vue'
 import Spinner from '../components/Spinner.vue'
 import StatusDot from '../components/StatusDot.vue'
 import { ApiError, api, providerNames, type Session } from '../api'
@@ -19,6 +20,10 @@ const dialogOpen = ref(false)
 const confirming = ref<string | null>(null)
 const purge = ref(false)
 const busy = ref<string | null>(null)
+// The session whose published ports are being edited. Only a stopped one can
+// be: honouring a change rebuilds the container, and this list is the only page
+// a stopped session can be reached from.
+const editingPorts = ref<Session | null>(null)
 
 async function refresh() {
   try {
@@ -59,6 +64,13 @@ async function remove(session: Session) {
   } finally {
     busy.value = null
   }
+}
+
+// The response carries the session as it now is, but the list is a listing:
+// re-reading it keeps every card in step, including the one behind the dialog.
+function portsChanged() {
+  editingPorts.value = null
+  refresh()
 }
 
 function open(session: Session) {
@@ -154,6 +166,14 @@ onUnmounted(() => window.clearInterval(timer))
             <Spinner v-if="busy === session.id" />Start
           </button>
           <span v-else-if="isProvisioning(session.status)" class="spacer" />
+          <button
+            v-if="session.status === 'stopped'"
+            type="button"
+            :disabled="busy === session.id"
+            @click="editingPorts = session"
+          >
+            Ports
+          </button>
           <button type="button" class="danger" @click="armDelete(session)">Delete</button>
         </div>
       </li>
@@ -164,6 +184,12 @@ onUnmounted(() => window.clearInterval(timer))
     </p>
 
     <NewSessionDialog v-if="dialogOpen" @close="dialogOpen = false" @created="created" />
+    <SessionPortsDialog
+      v-if="editingPorts"
+      :session="editingPorts"
+      @close="editingPorts = null"
+      @updated="portsChanged"
+    />
   </main>
 </template>
 

@@ -324,7 +324,7 @@ func (m *Manager) provision(session *store.Session, composeFile string, credenti
 }
 
 func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, composeFile string, credentials provider.GitAuth, claude claudex.Credential) error {
-	homeDir := filepath.Join(session.WorkspaceDir, "home")
+	homeDir := sessionHome(session)
 	// The container runs as the host user with HOME here, and Claude Code wants
 	// somewhere to keep its own state.
 	if err := os.MkdirAll(filepath.Join(homeDir, ".claude"), 0o700); err != nil {
@@ -459,6 +459,51 @@ func seedClaudeConfig(homeDir string) error {
 		return fmt.Errorf("write claude config: %w", err)
 	}
 	return nil
+}
+
+// sessionHome is the directory bind mounted as the container's HOME. It is
+// derived from the workspace rather than stored, and it is a function because
+// two paths need it: provisioning, which creates it, and rebuilding the
+// container of a session that already has one.
+func sessionHome(session *store.Session) string {
+	return filepath.Join(session.WorkspaceDir, "home")
+}
+
+// rebuildSpec assembles the container specification of a session that already
+// exists, gathering again everything provisioning gathered the first time.
+//
+// The credentials are re-read rather than remembered, which is the part worth
+// knowing: a rebuilt container carries whatever the user's accounts hold now,
+// not what they held when the session was created. That is the only honest
+// answer — the sealed values are the only ones there are — and it is why a
+// disconnected account fails the rebuild instead of quietly producing a
+// container that cannot authenticate.
+func (m *Manager) rebuildSpec(ctx context.Context, session *store.Session) (dockerx.ContainerSpec, error) {
+	var credentials provider.GitAuth
+	if session.Provider != "" {
+		var err error
+		credentials, err = m.credentials.GitCredentials(ctx, session.UserID, provider.Kind(session.Provider))
+		if err != nil {
+			return dockerx.ContainerSpec{}, fmt.Errorf("read the stored %s credentials: %w", session.Provider, err)
+		}
+	}
+	claude, err := m.credentials.ClaudeCredential(ctx, session.UserID)
+	if err != nil {
+		return dockerx.ContainerSpec{}, fmt.Errorf("read the stored claude credential: %w", err)
+	}
+
+	var vscodeDir string
+	if session.VSCode {
+		if m.vscode == nil {
+			return dockerx.ContainerSpec{}, ErrVSCodeUnavailable
+		}
+		dir, err := m.vscode.Ensure(ctx)
+		if err != nil {
+			return dockerx.ContainerSpec{}, fmt.Errorf("prepare vscode: %w", err)
+		}
+		vscodeDir = dir
+	}
+	return m.containerSpec(session, sessionHome(session), vscodeDir, credentials, claude), nil
 }
 
 // containerSpec is the whole contract between Hexagon and a session container.

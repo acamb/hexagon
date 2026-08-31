@@ -68,6 +68,16 @@ func (r *Runner) Up(ctx context.Context, p Project) error {
 	return err
 }
 
+// Create makes the project's containers without starting them, recreating the
+// ones whose definition has changed since they were made. It is how a stopped
+// session takes a container built to a new specification: compose owns these
+// containers, so replacing one by hand would leave the project describing
+// something that is no longer there.
+func (r *Runner) Create(ctx context.Context, p Project) error {
+	_, err := r.run(ctx, "create", p.Dir, nil, append(r.projectArgs(p), "create")...)
+	return err
+}
+
 // Start brings a stopped project's containers back up. It does not create
 // anything: the containers are the ones Up made.
 func (r *Runner) Start(ctx context.Context, p Project) error {

@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -910,6 +911,132 @@ func TestSessionPublishesThePortsItAskedFor(t *testing.T) {
 	}
 }
 
+// A container keeps the port bindings it was created with, so changing them
+// means building another container. That is allowed while the session is
+// stopped, and what it costs — the container, not the workspace — is the reason
+// it is not allowed while it runs.
+func TestSessionPortsAreChangedWhileItIsStopped(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	json := map[string]string{"Content-Type": "application/json"}
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions",
+		fmt.Sprintf(`{"imageId":%q,"ports":[3000]}`, image.ID)), &created)
+	running := env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+	first, _ := env.containerOf(running.ID)
+
+	// While it runs the change is refused, and the container is untouched.
+	if resp := env.sendJSON(http.MethodPut, "/api/sessions/"+running.ID+"/ports",
+		`{"ports":[8080]}`); resp.StatusCode != http.StatusConflict {
+		t.Fatalf("status = %d for a running session, want 409", resp.StatusCode)
+	}
+
+	env.do(http.MethodPost, "/api/sessions/"+running.ID+"/stop", json)
+
+	var changed sessionResponse
+	resp := env.sendJSON(http.MethodPut, "/api/sessions/"+running.ID+"/ports",
+		`{"ports":[8080,5173],"portAddress":"0.0.0.0"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	env.decode(resp, &changed)
+	if len(changed.Ports) != 2 || changed.Ports[0].Container != 8080 || changed.Ports[1].Container != 5173 {
+		t.Errorf("ports = %+v, want the two that were asked for", changed.Ports)
+	}
+	if changed.PortAddress != "0.0.0.0" {
+		t.Errorf("portAddress = %q, want the address that was asked for", changed.PortAddress)
+	}
+	// Still stopped: a port change is not a way to start a session.
+	if changed.Status != store.SessionStatusStopped {
+		t.Errorf("status = %q, want the session left stopped", changed.Status)
+	}
+
+	second, spec := env.containerOf(running.ID)
+	if second == first {
+		t.Fatalf("container %s was reused, want it rebuilt for the new bindings", first)
+	}
+	if !contains(env.docker.removedContainers, first) {
+		t.Errorf("removed containers = %v, want the old one among them", env.docker.removedContainers)
+	}
+	want := []dockerx.PortPublication{{Container: 8080, Address: "0.0.0.0"}, {Container: 5173, Address: "0.0.0.0"}}
+	if !slices.Equal(spec.Ports, want) {
+		t.Errorf("container ports = %v, want %v", spec.Ports, want)
+	}
+
+	// The rebuilt container is the one the rest of the server acts on.
+	var started sessionResponse
+	env.decode(env.do(http.MethodPost, "/api/sessions/"+running.ID+"/start", json), &started)
+	if started.Status != store.SessionStatusRunning {
+		t.Errorf("status after start = %q, want the rebuilt container started", started.Status)
+	}
+}
+
+// A request that asks for what the session already publishes rebuilds nothing.
+// The browser sends back the 127.0.0.1 the API answered with, where the row
+// holds the empty string that means it, and the two are the same binding.
+func TestSessionPortsChangeToWhatIsAlreadyThereRebuildsNothing(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	json := map[string]string{"Content-Type": "application/json"}
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions",
+		fmt.Sprintf(`{"imageId":%q,"ports":[3000]}`, image.ID)), &created)
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+	env.do(http.MethodPost, "/api/sessions/"+created.ID+"/stop", json)
+	before, _ := env.containerOf(created.ID)
+
+	resp := env.sendJSON(http.MethodPut, "/api/sessions/"+created.ID+"/ports",
+		`{"ports":[3000],"portAddress":"127.0.0.1"}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if after, _ := env.containerOf(created.ID); after != before {
+		t.Errorf("container %s was rebuilt for a request that changed nothing", after)
+	}
+}
+
+// The same refusals the create path applies, applied again here: this route
+// builds a container too, and a check that only guarded creation would be a
+// check the user can walk around.
+func TestSessionPortsChangeRefusesPortsItCannotHonour(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	json := map[string]string{"Content-Type": "application/json"}
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions",
+		fmt.Sprintf(`{"imageId":%q,"vscode":true}`, image.ID)), &created)
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+	env.do(http.MethodPost, "/api/sessions/"+created.ID+"/stop", json)
+	before, _ := env.containerOf(created.ID)
+
+	for _, body := range []string{
+		`{"ports":[3000,3000]}`,
+		`{"ports":[70000]}`,
+		`{"ports":[3000],"portAddress":"not-an-address"}`,
+		fmt.Sprintf(`{"ports":[%d]}`, dockerx.VSCodePort),
+	} {
+		resp := env.sendJSON(http.MethodPut, "/api/sessions/"+created.ID+"/ports", body)
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Errorf("status = %d for %s, want 400", resp.StatusCode, body)
+		}
+	}
+
+	if after, _ := env.containerOf(created.ID); after != before {
+		t.Errorf("container %s was rebuilt for a request that was refused", after)
+	}
+	var unchanged sessionResponse
+	env.decode(env.do(http.MethodGet, "/api/sessions/"+created.ID, nil), &unchanged)
+	if len(unchanged.Ports) != 0 {
+		t.Errorf("ports = %+v, want none: every request was refused", unchanged.Ports)
+	}
+}
+
 // The VS Code integration publishes a port of its own. A session that took it
 // for something else would leave the editor's button broken for a reason nobody
 // could find, so the request is refused instead.
@@ -989,6 +1116,88 @@ func TestSessionFromAComposeImageWithoutCompose(t *testing.T) {
 	resp := env.postJSON("/api/sessions", fmt.Sprintf(`{"imageId":%q}`, image.ID))
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %d, want 503", resp.StatusCode)
+	}
+}
+
+// Rebuilding replaces a container, and between removing the old one and
+// creating the new one there is a moment with none. If the second half fails
+// the session has nothing behind it, and the row has to say so: anything else
+// leaves it pointing at a container id that no longer exists.
+func TestSessionPortsChangeThatCannotRebuildLeavesTheSessionGone(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	json := map[string]string{"Content-Type": "application/json"}
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(`{"imageId":%q}`, image.ID)), &created)
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+	env.do(http.MethodPost, "/api/sessions/"+created.ID+"/stop", json)
+
+	env.docker.mu.Lock()
+	env.docker.createErr = errors.New("no room for another container")
+	env.docker.mu.Unlock()
+
+	resp := env.sendJSON(http.MethodPut, "/api/sessions/"+created.ID+"/ports", `{"ports":[3000]}`)
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want 500", resp.StatusCode)
+	}
+
+	var after sessionResponse
+	env.decode(env.do(http.MethodGet, "/api/sessions/"+created.ID, nil), &after)
+	if after.Status != store.SessionStatusGone {
+		t.Errorf("status = %q, want %q: the container was removed and not replaced",
+			after.Status, store.SessionStatusGone)
+	}
+	if after.Error == "" {
+		t.Error("the session carries no explanation of what happened to its container")
+	}
+}
+
+// A compose session takes new ports the same way, except that compose owns the
+// containers: Hexagon rewrites its half of the project and lets `compose
+// create` replace what changed.
+func TestComposeSessionPortsAreChangedThroughTheProject(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	json := map[string]string{"Content-Type": "application/json"}
+
+	var image imageResponse
+	env.decode(env.postJSON("/api/images", `{"name":"advanced","sourceType":"compose",
+		"dockerfile":"FROM busybox","compose":"services:\n  db:\n    image: postgres:16\n"}`), &image)
+	env.waitForImageStatus(image.ID, store.ImageStatusReady)
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(`{"imageId":%q}`, image.ID)), &created)
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+	env.do(http.MethodPost, "/api/sessions/"+created.ID+"/stop", json)
+
+	resp := env.sendJSON(http.MethodPut, "/api/sessions/"+created.ID+"/ports", `{"ports":[3000]}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	env.compose.mu.Lock()
+	calls := append([]string(nil), env.compose.calls...)
+	env.compose.mu.Unlock()
+	if !slices.Contains(calls, "create") {
+		t.Errorf("compose calls = %v, want the project asked to recreate what changed", calls)
+	}
+	// Not `up`: a stopped session stays stopped while it takes a new container.
+	if slices.Contains(calls[slices.Index(calls, "stop"):], "up") {
+		t.Errorf("compose calls = %v, want nothing started after the stop", calls)
+	}
+	// No container was created outside the project either.
+	if n := env.docker.createdContainers(); n != 0 {
+		t.Errorf("created %d containers outside the project, want none", n)
+	}
+
+	overlay, err := os.ReadFile(filepath.Join(env.workspaces, created.ID, "compose", "hexagon.yaml"))
+	if err != nil {
+		t.Fatalf("read the generated compose file: %v", err)
+	}
+	if !strings.Contains(string(overlay), "127.0.0.1::3000") {
+		t.Errorf("the generated file does not publish the new port:\n%s", overlay)
 	}
 }
 

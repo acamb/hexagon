@@ -87,6 +87,7 @@ func TestProjectCommandsCarryBothFilesAndTheProjectName(t *testing.T) {
 		want []string
 	}{
 		{"up", func(r *Runner) error { return r.Up(context.Background(), project) }, []string{"up", "--detach"}},
+		{"create", func(r *Runner) error { return r.Create(context.Background(), project) }, []string{"create"}},
 		{"start", func(r *Runner) error { return r.Start(context.Background(), project) }, []string{"start"}},
 		{"stop", func(r *Runner) error { return r.Stop(context.Background(), project) }, []string{"stop"}},
 		{"down", func(r *Runner) error { return r.Down(context.Background(), project, false) }, []string{"down"}},

@@ -16,6 +16,10 @@ import (
 // ErrNoContainer reports a session that never got as far as having one.
 var ErrNoContainer = errors.New("session has no container")
 
+// ErrSessionNotStopped reports a change that can only be made to a session that
+// is down, asked of one that is not.
+var ErrSessionNotStopped = errors.New("session is not stopped")
+
 // VSCodeEndpoint returns the base URL of the code-server this session's
 // container publishes. It is looked up rather than stored: Docker picks a new
 // host port every time the container starts.
@@ -68,6 +72,143 @@ func (m *Manager) PublishedPorts(ctx context.Context, session *store.Session) ma
 		}
 	}
 	return out
+}
+
+// SetPorts changes what a stopped session publishes, and where.
+//
+// It is a lifecycle operation and not a settings change, which is the whole
+// reason it lives here. A container keeps the port bindings it was created
+// with, so the only way to publish something else is to build another container
+// from the same image over the same workspace — which is why the session has to
+// be stopped, and why what was installed inside the old container by hand does
+// not survive. The workspace and the home directory do: they are bind mounts on
+// the host, and they are where a session's work actually is.
+func (m *Manager) SetPorts(ctx context.Context, session *store.Session, ports []int, address string) error {
+	if session.Status != store.SessionStatusStopped {
+		return ErrSessionNotStopped
+	}
+	if session.ContainerID == "" {
+		return ErrNoContainer
+	}
+	if err := checkPorts(ports, address, session.VSCode); err != nil {
+		return err
+	}
+	// Nothing to rebuild for a request that asks for what is already there, and
+	// rebuilding anyway would throw away a container for no reason at all. The
+	// addresses are compared as Docker would be given them: a session that named
+	// none holds the empty string, and the browser sends back the 127.0.0.1 the
+	// API answered with, which is the same binding written differently.
+	if samePorts(session.Ports, ports) && publishAddress(session.PortAddress) == publishAddress(address) {
+		return nil
+	}
+
+	previousPorts, previousAddress := session.Ports, session.PortAddress
+	session.Ports, session.PortAddress = ports, address
+	spec, err := m.rebuildSpec(ctx, session)
+	if err != nil {
+		session.Ports, session.PortAddress = previousPorts, previousAddress
+		return err
+	}
+
+	// The row is written before the container is built, deliberately. If the
+	// rebuild then fails, the session claims a binding its container does not
+	// have, and the UI warns about an address nothing is published on; the other
+	// order would show a session bound to loopback while its container answered
+	// the network.
+	if err := m.store.SetSessionPorts(ctx, session.UserID, session.ID, ports, address); err != nil {
+		session.Ports, session.PortAddress = previousPorts, previousAddress
+		return err
+	}
+	return m.rebuildContainer(ctx, session, spec)
+}
+
+// samePorts reports whether two port lists ask for the same thing. Order is
+// part of the answer: it is the order the user typed, and reordering it is a
+// change to the row rather than to the container.
+func samePorts(a, b []int) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// rebuildContainer replaces a stopped session's container with one built to
+// spec, leaving it stopped.
+//
+// The new container takes the name the old one had, because everything that
+// finds a session container — the terminal, the bootstrap, the VS Code proxy —
+// finds it by the id recorded here, and compose finds it by that name.
+func (m *Manager) rebuildContainer(ctx context.Context, session *store.Session, spec dockerx.ContainerSpec) error {
+	if session.Compose {
+		return m.rebuildProject(ctx, session, spec)
+	}
+	// The old container holds the name, so it has to go before the new one can
+	// take it. One that has already disappeared is not a failure: what this has
+	// to leave behind is a container matching the spec, and there being none is
+	// the state it starts from.
+	if err := m.docker.RemoveContainer(ctx, session.ContainerID, true); err != nil &&
+		!errors.Is(err, dockerx.ErrContainerNotFound) {
+		return fmt.Errorf("remove the container to rebuild it: %w", err)
+	}
+
+	containerID, err := m.docker.CreateContainer(ctx, spec)
+	if err != nil {
+		// The old container is gone and the new one was not made: the session
+		// has nothing behind it, which is exactly what `gone` says. Leaving the
+		// row pointing at a container id that no longer exists would make every
+		// later action fail with a message about a container instead.
+		m.applyStatus(session, store.SessionStatusGone,
+			"the container was removed to change its published ports and could not be created again: "+err.Error())
+		return fmt.Errorf("create the rebuilt container: %w", err)
+	}
+	session.ContainerID = containerID
+	return m.store.SetSessionContainer(ctx, session.ID, containerID)
+}
+
+// rebuildProject does the same for a compose session, by rewriting Hexagon's
+// half of the project and letting compose recreate what changed.
+//
+// The user's half is read back from the workspace rather than from the image it
+// came from: that file is what this project was validated and brought up with,
+// and the image behind it may have been edited or deleted since. It is checked
+// again all the same, for the reason createProject gives — what is checked and
+// what is run must be the same text — and because the check is what names the
+// services the overlay has to label and depend on.
+func (m *Manager) rebuildProject(ctx context.Context, session *store.Session, spec dockerx.ContainerSpec) error {
+	if m.compose == nil {
+		return ErrComposeUnavailable
+	}
+	project := m.composeProject(session)
+	userFile, err := os.ReadFile(filepath.Join(project.Dir, "user.yaml"))
+	if err != nil {
+		return fmt.Errorf("read the compose file of the session: %w", err)
+	}
+	services, err := m.compose.Validate(ctx, string(userFile))
+	if err != nil {
+		return err
+	}
+	if err := writeComposeFiles(project.Dir, string(userFile), spec, services); err != nil {
+		return err
+	}
+
+	// `create` and not `up`: compose recreates the agent container because its
+	// definition changed, and the session stays down until somebody starts it.
+	if err := m.compose.Create(ctx, project); err != nil {
+		return err
+	}
+	// The container is a new one with a new id, and compose named it; the name
+	// is what finds it, exactly as at provisioning.
+	state, err := m.docker.InspectContainer(ctx, spec.Name)
+	if err != nil {
+		return fmt.Errorf("find the agent container of the project: %w", err)
+	}
+	session.ContainerID = state.ID
+	return m.store.SetSessionContainer(ctx, session.ID, state.ID)
 }
 
 // Start brings a stopped session back up and makes sure tmux is running in it.

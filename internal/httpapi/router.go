@@ -162,6 +162,7 @@ func New(deps Deps) http.Handler {
 		"POST /api/sessions":              s.handleCreateSession,
 		"GET /api/sessions/{id}":          s.handleGetSession,
 		"PATCH /api/sessions/{id}":        s.handleUpdateSession,
+		"PUT /api/sessions/{id}/ports":    s.handleUpdateSessionPorts,
 		"POST /api/sessions/{id}/start":   s.handleStartSession,
 		"POST /api/sessions/{id}/stop":    s.handleStopSession,
 		"DELETE /api/sessions/{id}":       s.handleDeleteSession,

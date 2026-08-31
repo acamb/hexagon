@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppHeader from '../components/AppHeader.vue'
+import SessionPortsDialog from '../components/SessionPortsDialog.vue'
 import Spinner from '../components/Spinner.vue'
 import StatusDot from '../components/StatusDot.vue'
 import TerminalPane from '../components/TerminalPane.vue'
@@ -23,6 +24,9 @@ const running = ref<'start' | 'stop' | 'autoClaude' | null>(null)
 // command, so the change is only visible after a restart.
 const pending = ref(false)
 const cheatsheetOpen = ref(false)
+// Whether the published ports are being edited, which only a stopped session
+// allows: honouring the change rebuilds its container.
+const portsOpen = ref(false)
 
 // Why the session runs without credentials, which is a different sentence for a
 // session that has an account it was refused and one that has no account at all.
@@ -30,6 +34,13 @@ const cheatsheetOpen = ref(false)
 // to report before that, and Docker picks a new host port at every start.
 const publishedPorts = computed(() =>
   session.value?.status === 'running' ? session.value.ports : [],
+)
+
+// The container ports the session is set up to publish, whether or not anything
+// is up to publish them. It is what the stopped notice names, so the numbers in
+// the dialog and the numbers in the page are the same list.
+const portList = computed(() =>
+  (session.value?.ports ?? []).map((port) => port.container).join(', '),
 )
 
 // Whether the session's ports reach beyond the machine running Hexagon, which
@@ -86,6 +97,11 @@ async function setAutoClaude(auto: boolean) {
   } finally {
     running.value = null
   }
+}
+
+function portsChanged(updated: Session) {
+  session.value = updated
+  portsOpen.value = false
 }
 
 async function start() {
@@ -204,6 +220,14 @@ onUnmounted(() => window.clearTimeout(timer))
             </a>
             <span v-else :title="portWarning">{{ port.container }} → not published yet</span>
           </span>
+          <button
+            v-if="session.status === 'stopped'"
+            type="button"
+            :disabled="running !== null"
+            @click="portsOpen = true"
+          >
+            Ports
+          </button>
           <button type="button" @click="cheatsheetOpen = true">tmux keys</button>
           <button type="button" @click="router.push({ name: 'sessions' })">All sessions</button>
         </div>
@@ -224,6 +248,13 @@ onUnmounted(() => window.clearTimeout(timer))
         <p v-else-if="session.status === 'stopped'" class="hint">
           The workspace is still on disk at <code>{{ session.repoDir }}</code>. Starting the
           session brings the container back, with a fresh tmux.
+          <template v-if="session.ports.length">
+            It publishes <code>{{ portList }}</code> on <code>{{ session.portAddress }}</code>,
+            and that is editable from here while it is down.
+          </template>
+          <template v-else>
+            It publishes no ports, which is editable from here while it is down.
+          </template>
         </p>
         <p v-else-if="session.status === 'gone'" class="hint">
           The container behind this session no longer exists. The workspace is still at
@@ -235,6 +266,12 @@ onUnmounted(() => window.clearTimeout(timer))
     <div v-else class="notice">Loading…</div>
 
     <TmuxCheatsheet v-if="cheatsheetOpen" @close="cheatsheetOpen = false" />
+    <SessionPortsDialog
+      v-if="portsOpen && session"
+      :session="session"
+      @close="portsOpen = false"
+      @updated="portsChanged"
+    />
   </div>
 </template>
 

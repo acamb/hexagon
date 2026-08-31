@@ -221,7 +221,9 @@ export interface Session {
   vscode: boolean
   // The ports the session publishes. `host` is absent until the container is
   // running: Docker picks a new host port every time it starts, so there is
-  // nothing to report before then and nothing to store afterwards.
+  // nothing to report before then and nothing to store afterwards. The
+  // container side can be changed while the session is stopped — see
+  // sessions.setPorts.
   ports: SessionPort[]
   // The host interface those ports are bound to, "127.0.0.1" for a session that
   // named none. Anything else means they are reachable from off this machine.
@@ -251,8 +253,9 @@ export interface NewSession {
   // Off by default, unlike the two above: it costs a mount and a published
   // port, and a session that never opens the editor should carry neither.
   vscode?: boolean
-  // Container ports to publish. The host side is Docker's to choose. Settable
-  // only here: a container keeps the port bindings it was created with.
+  // Container ports to publish. The host side is Docker's to choose. A
+  // container keeps the bindings it was created with, so changing these later
+  // rebuilds it, and only while the session is stopped.
   ports?: number[]
   // The host interface they bind. Omitted means loopback: the server gives the
   // closed answer to a client that does not ask, and it is the dialog that
@@ -264,6 +267,14 @@ export interface NewSession {
 // are left alone.
 export interface SessionSettings {
   autoClaude?: boolean
+}
+
+// What a stopped session publishes. Both fields replace what is there: the
+// whole list, and the interface it binds. Honouring them means rebuilding the
+// container, which is why this is not part of SessionSettings.
+export interface SessionPorts {
+  ports: number[]
+  portAddress: string
 }
 
 // The providers this build knows. The value is what the API sends and stores,
@@ -353,6 +364,10 @@ export const api = {
       request<Session>('/sessions', { method: 'POST', body: JSON.stringify(session) }),
     update: (id: string, settings: SessionSettings) =>
       request<Session>(`/sessions/${id}`, { method: 'PATCH', body: JSON.stringify(settings) }),
+    // Only while the session is stopped: the server rebuilds its container to
+    // publish anything else, and refuses with 409 while it runs.
+    setPorts: (id: string, ports: SessionPorts) =>
+      request<Session>(`/sessions/${id}/ports`, { method: 'PUT', body: JSON.stringify(ports) }),
     start: (id: string) => request<Session>(`/sessions/${id}/start`, { method: 'POST' }),
     stop: (id: string) => request<Session>(`/sessions/${id}/stop`, { method: 'POST' }),
     remove: (id: string, purge: boolean) =>

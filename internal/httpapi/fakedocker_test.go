@@ -131,6 +131,17 @@ func (f *fakeDocker) addNamedContainer(name string, running bool) {
 	f.containers[name] = &fakeContainer{running: running}
 }
 
+// setContainerRunning is what compose does to a container it owns: the project
+// starts and stops it, and the daemon reports the result. It is a no-op for a
+// container the fake has never heard of, the way a project with nothing up is.
+func (f *fakeDocker) setContainerRunning(name string, running bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if container, ok := f.containers[name]; ok {
+		container.running = running
+	}
+}
+
 // setContainerPort makes InspectContainer report a host binding for one of a
 // container's published ports, the way a running container would once Docker
 // has picked one.

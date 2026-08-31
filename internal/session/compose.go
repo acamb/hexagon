@@ -21,6 +21,10 @@ type Compose interface {
 	// not be able to have, and returns the names of the services it describes.
 	Validate(ctx context.Context, content string) ([]string, error)
 	Up(ctx context.Context, p composex.Project) error
+	// Create rebuilds the containers whose definition changed, without
+	// starting them: a stopped session that publishes different ports needs a
+	// different agent container and has to stay stopped while it gets one.
+	Create(ctx context.Context, p composex.Project) error
 	Start(ctx context.Context, p composex.Project) error
 	Stop(ctx context.Context, p composex.Project) error
 	Down(ctx context.Context, p composex.Project, volumes bool) error

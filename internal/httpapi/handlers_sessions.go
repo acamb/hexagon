@@ -39,8 +39,9 @@ type sessionResponse struct {
 	// the container, and there is no way to add them to one that exists.
 	VSCode bool `json:"vscode"`
 	// Ports pairs each container port the session publishes with the host port
-	// Docker gave it. Reported and never updated, for the same reason as VSCode
-	// above.
+	// Docker gave it. Unlike VSCode above these can be changed, but only while
+	// the session is stopped and only by rebuilding its container — see
+	// handleUpdateSessionPorts.
 	Ports []sessionPort `json:"ports"`
 	// PortAddress is the host interface those ports are bound to, "127.0.0.1"
 	// for a session that named none. It is reported separately as well as on
@@ -156,8 +157,9 @@ type createSessionRequest struct {
 	// binding are the container, and there is no way to add them afterwards.
 	VSCode *bool `json:"vscode"`
 	// Ports are container ports to publish, with the host side left to Docker.
-	// Only settable here, like VSCode above: a container keeps the port
-	// bindings it was created with.
+	// A container keeps the bindings it was created with, so changing them
+	// later means building another one: PUT /api/sessions/{id}/ports does that,
+	// and only while the session is stopped.
 	Ports []int `json:"ports"`
 	// PortAddress is the host interface they bind. Absent means loopback, which
 	// exposes nothing beyond this machine — the browser proposes 0.0.0.0 with a
@@ -321,7 +323,9 @@ type updateSessionRequest struct {
 // propagateToken is deliberately not here. It is part of the container's
 // environment, which Docker cannot change once the container exists, so the
 // only honest way to flip it would be to build another container — a lifecycle
-// operation, not a settings change.
+// operation, not a settings change. That is exactly why the published ports,
+// which have the same problem, have a route of their own instead of a field
+// here: see handleUpdateSessionPorts.
 func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	found, ok := s.sessionOr404(w, r)
 	if !ok {
@@ -345,6 +349,59 @@ func (s *Server) handleUpdateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	found.AutoClaude = *req.AutoClaude
 	s.writeSession(w, r, http.StatusOK, s.sessions.Refresh(r.Context(), found))
+}
+
+type sessionPortsRequest struct {
+	// Ports replaces the whole list rather than adding to it: the field is what
+	// the session publishes, and an empty list is the meaningful answer "no
+	// longer anything".
+	Ports []int `json:"ports"`
+	// PortAddress is the host interface they bind. Absent means loopback, the
+	// same closed answer a create request without one gets.
+	PortAddress string `json:"portAddress"`
+}
+
+// handleUpdateSessionPorts changes what a stopped session publishes.
+//
+// It is a POST-shaped operation under its own path rather than a field on
+// PATCH: a container keeps the port bindings it was created with, so honouring
+// this means building another container, which is a lifecycle operation and can
+// fail for the reasons the other lifecycle routes fail for.
+func (s *Server) handleUpdateSessionPorts(w http.ResponseWriter, r *http.Request) {
+	found, ok := s.sessionOr404(w, r)
+	if !ok {
+		return
+	}
+
+	var req sessionPortsRequest
+	if err := decodeJSON(w, r, maxSessionRequestBody, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+
+	// Reconciled first: the row saying stopped is what Hexagon last did, and a
+	// container somebody started from the outside must not have its ports
+	// rebuilt underneath it.
+	found = s.sessions.Refresh(r.Context(), found)
+	err := s.sessions.SetPorts(r.Context(), found, req.Ports, strings.TrimSpace(req.PortAddress))
+	switch {
+	case errors.Is(err, session.ErrInvalidPorts):
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	case errors.Is(err, session.ErrSessionNotStopped):
+		writeError(w, http.StatusConflict, "published ports can only be changed while the session is stopped")
+		return
+	case errors.Is(err, session.ErrComposeUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "this server has no docker compose to rebuild the project with")
+		return
+	case err != nil:
+		s.reportLifecycleError(w, "change the ports of", found, err)
+		return
+	}
+
+	s.log.Info("session ports changed", "session", found.ID,
+		"ports", found.Ports, "address", found.PortAddress)
+	s.writeSession(w, r, http.StatusOK, found)
 }
 
 // handleStartSession brings a stopped session back up.
