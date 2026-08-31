@@ -5,6 +5,9 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -168,7 +171,7 @@ func TestDefaultImageReportsWhyABuildFailed(t *testing.T) {
 // for the input that triggers it.
 func TestContainerPassesThePromptThroughTheEnvironment(t *testing.T) {
 	docker := &fakeDocker{execOutput: `{"is_error":false,"result":"{\"dockerfile\":\"FROM alpine\",\"summary\":\"swapped the base\"}"}`}
-	runner := NewContainer(docker, readyImage(t, docker), "1000:1000", "opus", slog.New(slog.DiscardHandler))
+	runner := NewContainer(docker, readyImage(t, docker), "1000:1000", "", "opus", slog.New(slog.DiscardHandler))
 
 	edit, err := runner.Edit(context.Background(), Credential{Kind: KindAPIKey, Secret: "sk-test"},
 		SourceDockerfile, "FROM debian", `use alpine, and mind the "quotes"`)
@@ -209,12 +212,61 @@ func TestContainerPassesThePromptThroughTheEnvironment(t *testing.T) {
 	}
 }
 
+// The case this mount exists for: a user who signed in through the browser has
+// no pasted credential, and the login lives in a file on the host — the same one
+// every session mounts. Without it the editor answers "Not logged in" for an
+// account whose sessions work.
+func TestContainerFallsBackToTheLoginOnThisMachine(t *testing.T) {
+	credentials := filepath.Join(t.TempDir(), ".credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"token":"x"}`), 0o600); err != nil {
+		t.Fatalf("write credentials: %v", err)
+	}
+	docker := &fakeDocker{execOutput: `{"is_error":false,"result":"ok"}`}
+	runner := NewContainer(docker, readyImage(t, docker), "1000:1000", credentials, "",
+		slog.New(slog.DiscardHandler))
+
+	if err := runner.Check(context.Background(), Credential{}); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	specs, execs, _ := docker.calls()
+	want := credentials + ":" + credentialsMount + ":ro"
+	if len(specs) != 1 || !slices.Contains(specs[0].Binds, want) {
+		t.Fatalf("binds = %v, want the host login mounted read-only as %q", specs[0].Binds, want)
+	}
+	// Copied into place rather than used where it is mounted: the CLI rewrites
+	// this file to refresh a token, and what it writes must not be the host's.
+	script := strings.Join(execs[0], " ")
+	if !strings.Contains(script, "cp "+credentialsMount) {
+		t.Errorf("the mounted login is never copied into the container's home:\n%s", script)
+	}
+}
+
+// A pasted credential is what the user chose most recently, so it wins and the
+// file is not mounted at all: two logins in one container is one too many.
+func TestContainerPrefersAPastedCredentialOverTheFile(t *testing.T) {
+	credentials := filepath.Join(t.TempDir(), ".credentials.json")
+	if err := os.WriteFile(credentials, []byte(`{"token":"x"}`), 0o600); err != nil {
+		t.Fatalf("write credentials: %v", err)
+	}
+	docker := &fakeDocker{execOutput: `{"is_error":false,"result":"ok"}`}
+	runner := NewContainer(docker, readyImage(t, docker), "1000:1000", credentials, "",
+		slog.New(slog.DiscardHandler))
+
+	if err := runner.Check(context.Background(), Credential{Kind: KindAPIKey, Secret: "sk-test"}); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if specs, _, _ := docker.calls(); len(specs[0].Binds) != 0 {
+		t.Errorf("binds = %v, want none: the credential was handed over directly", specs[0].Binds)
+	}
+}
+
 // The daemon folds an exec's two streams into one, so the diagnostics go to a
 // file and are read back only when the call failed. Without that, a warning
 // printed beside a good answer would make it unparseable.
 func TestContainerReadsTheDiagnosticsOfAFailedCall(t *testing.T) {
 	docker := &fakeDocker{execCode: 1, stderr: "Invalid API key\nfollowed by a stack trace"}
-	runner := NewContainer(docker, readyImage(t, docker), "1000:1000", "", slog.New(slog.DiscardHandler))
+	runner := NewContainer(docker, readyImage(t, docker), "1000:1000", "", "", slog.New(slog.DiscardHandler))
 
 	err := runner.Check(context.Background(), Credential{Kind: KindAPIKey, Secret: "nope"})
 	if err == nil {
@@ -242,7 +294,7 @@ func TestContainerPrefersTheCLIsOwnWordsOverItsExitStatus(t *testing.T) {
 		execOutput: `{"is_error":true,"result":"Not logged in · Please run /login"}`,
 		stderr:     "",
 	}
-	runner := NewContainer(docker, readyImage(t, docker), "1000:1000", "", slog.New(slog.DiscardHandler))
+	runner := NewContainer(docker, readyImage(t, docker), "1000:1000", "", "", slog.New(slog.DiscardHandler))
 
 	err := runner.Check(context.Background(), Credential{})
 	if err == nil {
@@ -266,7 +318,7 @@ func TestContainerSaysWhenTheImageIsNotReadyYet(t *testing.T) {
 	t.Cleanup(func() { close(blocked) })
 	slow := &slowDocker{fakeDocker: docker, block: blocked}
 	image := NewDefaultImage(slow, "FROM busybox\n", slog.New(slog.DiscardHandler))
-	runner := NewContainer(slow, image, "1000:1000", "", slog.New(slog.DiscardHandler))
+	runner := NewContainer(slow, image, "1000:1000", "", "", slog.New(slog.DiscardHandler))
 
 	err := runner.Check(context.Background(), Credential{})
 	if err == nil {

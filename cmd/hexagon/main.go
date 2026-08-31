@@ -270,7 +270,7 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 	} else {
 		log.Info("no claude binary: image sources will be edited through a container", "err", err)
 		deps.Editor = claudex.NewContainer(docker, defaultImage,
-			fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), cfg.ClaudeModel, log)
+			fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), cfg.ClaudeCredentials, cfg.ClaudeModel, log)
 		deps.EditorInContainer = true
 	}
 

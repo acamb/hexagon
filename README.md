@@ -96,6 +96,11 @@ The call runs with every built-in tool removed, so it is a pure text transformat
 shell, no file access, no network of its own. A compose file it writes goes through exactly
 the same refusals as one you typed by hand.
 
+It signs in the way a session does, and with the same order of preference: the credential you
+pasted on the Accounts page, then the key the server was configured with, then the login on
+the machine itself — the file a browser login writes. Configure Claude once and both halves
+of Hexagon use it.
+
 The call needs the Claude Code CLI, and where the server has no `claude` binary of its own —
 a packaged install has none: the service user has no home to install one into — it runs the
 CLI in a container instead, from the same image the browser login uses. That is the same

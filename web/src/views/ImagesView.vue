@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import AppHeader from '../components/AppHeader.vue'
+import Notice from '../components/Notice.vue'
 import AskClaude from '../components/AskClaude.vue'
 import Spinner from '../components/Spinner.vue'
 import StatusDot from '../components/StatusDot.vue'
@@ -70,7 +71,6 @@ const building = computed(() => images.value.some((i) => i.status === 'building'
 async function refresh() {
   try {
     images.value = await api.images.list()
-    error.value = null
   } catch (e) {
     error.value = message(e)
   }
@@ -180,7 +180,7 @@ onUnmounted(() => window.clearInterval(timer))
       bind mount on <code>/workspace</code>.
     </p>
 
-    <p v-if="error" class="error">{{ error }}</p>
+    <Notice v-if="error" kind="error" :message="error" class="alert" @dismiss="error = null" />
 
     <form class="form" @submit.prevent="create">
       <label class="field">
@@ -303,6 +303,12 @@ h1 {
 .intro {
   margin: 0 0 2rem;
   color: var(--text-muted);
+}
+
+/* Scoped styles reach a child component's root element, which is how a page
+   whose blocks stack with margins spaces a notice of its own. */
+.alert {
+  margin: 1rem 0;
 }
 
 .error {

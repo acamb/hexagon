@@ -86,8 +86,9 @@ feeling slow.
   non-interactive call is an answer that never arrives. The session containers
   already do this, for the same reason.
 - **The container runs as the host user**, like everything else Hexagon starts.
-  It has no bind mounts, no ports and no name, and it is removed as soon as the
-  one exec returns — including when that exec failed.
+  It has no ports and no name, its only mount is the read-only one described at
+  the end of this document, and it is removed as soon as the one exec returns —
+  including when that exec failed.
 
 ## Verified
 
@@ -106,6 +107,39 @@ code generates, with a prompt full of quotes, dollars and backticks, reaching
 Claude Code intact and coming back as the parseable envelope. The one thing not
 exercised that way is a successful authenticated call, which needs somebody's
 credential.
+
+## The half that was still missing
+
+*Added the same day, from the next thing the user hit.*
+
+> ora pero' configuro claude su accounts, ma se faccio "ask claude" mi dice
+> "claude code reported an error: Not logged in · Please run /login". se avvio
+> una sessione invece claude e' loggato correttamente
+
+The container ran, and had nothing to run *as*. The editor was handed the
+credential this user had pasted and nothing else, while a session container has
+three ways to be authenticated and takes the first that is there: the pasted
+credential, the key the server was configured with, and — the one that matters
+here — the host's own credentials file, bind mounted read-only, which is exactly
+what the browser login on the Accounts page writes.
+
+So a user who signed in through the browser had a working session and an editor
+that said "Not logged in", for the same account, on the same server, minutes
+apart. The host runner hid this on a developer machine: it inherits the server
+user's environment and home, so it finds that same file by accident.
+
+The fix is to stop improvising in two places. `httpapi.editorCredential` resolves
+the same order of preference `session.containerSpec` does, and the container
+runner mounts the credentials file when it is handed no credential at all — read
+only, and copied into the container's throwaway home before use, because the CLI
+rewrites that file to refresh an expiring token and what it writes belongs to a
+container that is about to be removed rather than to the host's own login.
+
+Verified by hand as well as in tests: with a deliberately invalid credentials
+file mounted, the CLI in the container answers "Failed to authenticate: OAuth
+session expired" instead of "Not logged in · Please run /login". The message
+changing is the proof that the file is being found and read; a valid one is the
+same path with a different answer.
 
 ## What was deliberately left alone
 

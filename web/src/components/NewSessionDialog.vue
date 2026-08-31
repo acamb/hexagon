@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import Spinner from './Spinner.vue'
+import Notice from './Notice.vue'
 import {
   ApiError,
   api,
@@ -195,7 +196,7 @@ onMounted(() => load())
         <button type="button" class="icon" @click="emit('close')" aria-label="Close">×</button>
       </header>
 
-      <p v-if="error" class="error">{{ error }}</p>
+      <Notice v-if="error" kind="error" :message="error" @dismiss="error = null" />
 
       <p v-if="loading" class="hint">Loading your repositories…</p>
 

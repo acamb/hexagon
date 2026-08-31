@@ -2,6 +2,7 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppHeader from '../components/AppHeader.vue'
+import Notice from '../components/Notice.vue'
 import SessionPortsDialog from '../components/SessionPortsDialog.vue'
 import Spinner from '../components/Spinner.vue'
 import StatusDot from '../components/StatusDot.vue'
@@ -80,7 +81,6 @@ const noToken = computed(() => {
 async function refresh() {
   try {
     session.value = await api.sessions.get(sessionId)
-    error.value = null
   } catch (e) {
     error.value = message(e)
   }
@@ -152,9 +152,9 @@ onUnmounted(() => window.clearTimeout(timer))
   <div class="layout">
     <AppHeader />
 
-    <div v-if="error && !session" class="notice error">{{ error }}</div>
+    <Notice v-if="error" kind="error" :message="error" class="banner" @dismiss="error = null" />
 
-    <template v-else-if="session">
+    <template v-if="session">
       <div class="meta">
         <div class="identity">
           <strong>{{ session.title }}</strong>
@@ -263,7 +263,10 @@ onUnmounted(() => window.clearTimeout(timer))
       </div>
     </template>
 
-    <div v-else class="notice">Loading…</div>
+    <!-- Only while nothing has failed: a session that could not be loaded has
+         its reason on the screen already, and "Loading…" under it would be a
+         second, wrong answer. -->
+    <div v-else-if="!error" class="notice">Loading…</div>
 
     <TmuxCheatsheet v-if="cheatsheetOpen" @close="cheatsheetOpen = false" />
     <SessionPortsDialog
@@ -407,8 +410,10 @@ a.button:hover {
   max-width: 42rem;
 }
 
-.notice.error {
-  color: var(--error);
+/* Scoped styles reach a child component's root element. The layout is a flex
+   column with no gap, so the banner brings its own room. */
+.banner {
+  margin: 0.75rem 1.5rem;
 }
 
 .error.inline {

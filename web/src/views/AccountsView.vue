@@ -7,6 +7,7 @@
 // page rather than a new one with a single card on it.
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import AppHeader from '../components/AppHeader.vue'
+import Notice from '../components/Notice.vue'
 import Spinner from '../components/Spinner.vue'
 import TerminalPane from '../components/TerminalPane.vue'
 import {
@@ -34,7 +35,6 @@ const busy = ref<ProviderKind | null>(null)
 async function refresh() {
   try {
     accounts.value = await api.accounts.list()
-    error.value = null
   } catch (e) {
     error.value = message(e)
   } finally {
@@ -100,7 +100,6 @@ const effectiveLabel: Record<ClaudeSource, string> = {
 async function refreshClaude() {
   try {
     claudeStatus.value = await api.claude.status()
-    claudeError.value = null
   } catch (e) {
     claudeError.value = message(e)
   }
@@ -211,7 +210,7 @@ onUnmounted(() => window.clearTimeout(defaultImageTimer))
       the container gets them so Claude Code can push.
     </p>
 
-    <p v-if="error" class="error">{{ error }}</p>
+    <Notice v-if="error" kind="error" :message="error" class="alert" @dismiss="error = null" />
 
     <ul class="list">
       <li v-for="account in accounts" :key="account.provider">
@@ -290,7 +289,7 @@ onUnmounted(() => window.clearTimeout(defaultImageTimer))
       subscription in a terminal that writes this machine's own Claude Code login.
     </p>
 
-    <p v-if="claudeError" class="error">{{ claudeError }}</p>
+    <Notice v-if="claudeError" kind="error" :message="claudeError" class="alert" @dismiss="claudeError = null" />
 
     <div v-if="claudeStatus" class="card">
       <p class="effective">
@@ -577,6 +576,12 @@ button:disabled {
   margin: 0;
   color: var(--text-muted);
   font-size: 0.9rem;
+}
+
+/* Scoped styles reach a child component's root element, which is how this page
+   spaces a notice its own layout stacks with margins. */
+.alert {
+  margin: 0 0 1rem;
 }
 
 .error {

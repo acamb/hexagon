@@ -6,6 +6,7 @@
 // and the page says which is which rather than pretending.
 import { computed, onMounted, reactive, ref } from 'vue'
 import AppHeader from '../components/AppHeader.vue'
+import Notice from '../components/Notice.vue'
 import Spinner from '../components/Spinner.vue'
 import { ApiError, api, type Settings, type SettingsUpdate } from '../api'
 
@@ -189,7 +190,7 @@ function message(e: unknown): string {
       settings are the exception and take effect immediately.
     </p>
 
-    <p v-if="error" class="error">{{ error }}</p>
+    <Notice v-if="error" kind="error" :message="error" class="alert" @dismiss="error = null" />
     <p v-if="!loaded" class="hint"><Spinner />Loading…</p>
 
     <template v-if="settings">
@@ -589,6 +590,12 @@ input:disabled {
 }
 
 .notice,
+/* Scoped styles reach a child component's root element, which is how this page
+   spaces a notice its own layout stacks with margins. */
+.alert {
+  margin: 0 0 1.25rem;
+}
+
 .error {
   margin: 0 0 1.25rem;
   padding: 0.7rem 0.9rem;

@@ -5,6 +5,7 @@
 // costs is worth saying before it happens.
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import Spinner from './Spinner.vue'
+import Notice from './Notice.vue'
 import { ApiError, api, type Session } from '../api'
 
 const props = defineProps<{ session: Session }>()
@@ -109,7 +110,7 @@ onUnmounted(() => window.removeEventListener('keydown', onKeydown))
           is up.
         </p>
 
-        <p v-if="error" class="error">{{ error }}</p>
+        <Notice v-if="error" kind="error" :message="error" @dismiss="error = null" />
 
         <footer>
           <button type="button" :disabled="saving" @click="emit('close')">Cancel</button>

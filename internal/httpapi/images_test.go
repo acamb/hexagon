@@ -601,12 +601,16 @@ type fakeEditor struct {
 	content     string
 	instruction string
 	checked     []claudex.Credential
+	// edited is the credential each Edit was given, which is what says the
+	// editor authenticates the way a session does.
+	edited []claudex.Credential
 }
 
-func (f *fakeEditor) Edit(_ context.Context, _ claudex.Credential, kind, content, instruction string) (claudex.Edit, error) {
+func (f *fakeEditor) Edit(_ context.Context, cred claudex.Credential, kind, content, instruction string) (claudex.Edit, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.kind, f.content, f.instruction = kind, content, instruction
+	f.edited = append(f.edited, cred)
 	if f.err != nil {
 		return claudex.Edit{}, f.err
 	}

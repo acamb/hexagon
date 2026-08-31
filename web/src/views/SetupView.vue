@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
+import Notice from '../components/Notice.vue'
 import { ApiError, api, type SetupStatus } from '../api'
 
 const router = useRouter()
@@ -94,7 +95,7 @@ function message(e: unknown): string {
     <p class="tagline">First-time setup.</p>
 
     <p v-if="loading" class="muted">Loading…</p>
-    <p v-if="error" class="error">{{ error }}</p>
+    <Notice v-if="error" kind="error" :message="error" class="alert" @dismiss="error = ''" />
 
     <template v-if="!loading && status">
       <p v-if="status.writable === false" class="warning">
@@ -252,7 +253,12 @@ textarea {
   color: var(--text-muted);
 }
 
-.error,
+/* Scoped styles reach a child component's root element, which is how this page
+   spaces a notice its own layout stacks with margins. */
+.alert {
+  margin-bottom: 1.5rem;
+}
+
 .warning {
   margin-bottom: 1.5rem;
   padding: 0.75rem 1rem;

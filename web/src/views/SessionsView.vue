@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 import AppHeader from '../components/AppHeader.vue'
+import Notice from '../components/Notice.vue'
 import NewSessionDialog from '../components/NewSessionDialog.vue'
 import SessionPortsDialog from '../components/SessionPortsDialog.vue'
 import Spinner from '../components/Spinner.vue'
@@ -28,7 +29,6 @@ const editingPorts = ref<Session | null>(null)
 async function refresh() {
   try {
     sessions.value = await api.sessions.list()
-    error.value = null
   } catch (e) {
     error.value = message(e)
   } finally {
@@ -106,7 +106,7 @@ onUnmounted(() => window.clearInterval(timer))
       <button type="button" class="primary" @click="dialogOpen = true">New session</button>
     </div>
 
-    <p v-if="error" class="error">{{ error }}</p>
+    <Notice v-if="error" kind="error" :message="error" class="alert" @dismiss="error = null" />
 
     <ul v-if="sessions.length" class="grid">
       <li v-for="session in sessions" :key="session.id" class="card">
@@ -330,6 +330,12 @@ button:disabled {
 .danger:hover:not(:disabled) {
   border-color: var(--error);
   color: var(--error);
+}
+
+/* Scoped styles reach a child component's root element, which is how this page
+   spaces a notice its own layout stacks with margins. */
+.alert {
+  margin: 1rem 0;
 }
 
 .error {

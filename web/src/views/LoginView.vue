@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
+import Notice from '../components/Notice.vue'
 import { api } from '../api'
 import { signIn } from '../session'
 
@@ -16,6 +17,11 @@ const messages: Record<string, string> = {
   not_allowed: 'That GitHub account is not allowed to use this Hexagon instance.',
   server_error: 'Something went wrong while signing you in.',
 }
+
+// The message explains a redirect rather than a request this page made, so it
+// does not go away on its own. Dismissing it is local: the query string it comes
+// from is still there.
+const dismissed = ref(false)
 
 const error = computed(() => {
   const code = route.query.error
@@ -52,7 +58,7 @@ onMounted(async () => {
     </h1>
     <p class="tagline">Claude Code sessions, one container each.</p>
 
-    <p v-if="error" class="error">{{ error }}</p>
+    <Notice v-if="error && !dismissed" kind="error" :message="error" class="alert" @dismiss="dismissed = true" />
 
     <button type="button" class="signin" @click="signIn">Sign in with GitHub</button>
 
@@ -86,12 +92,10 @@ h1 img {
   color: var(--text-muted);
 }
 
-.error {
+/* Scoped styles reach a child component's root element. The page centres its
+   text; a message long enough to wrap reads better left aligned. */
+.alert {
   margin-bottom: 1.5rem;
-  padding: 0.75rem 1rem;
-  border: 1px solid var(--error);
-  border-radius: 6px;
-  color: var(--error);
   text-align: left;
 }
 

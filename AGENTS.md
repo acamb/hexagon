@@ -208,8 +208,13 @@ an error, so a setting that is not in `config.file` cannot be configured at all.
 - Server state is the only authority: the router guard asks `/api/auth/me`, and
   provisioning views poll (`setInterval` on mount, cleared on unmount) rather
   than guessing.
-- Errors surface as text in the view, from a local `message(e)` helper that
-  understands `ApiError`.
+- What a request answered goes in a `Notice`, error or success, from a local
+  `message(e)` helper that understands `ApiError`. A notice stays until the user
+  dismisses it: a view's polling must never clear one, because a refresh that did
+  took the message off the screen a second after it arrived. Clearing when the
+  user starts the action again is right; clearing because a background request
+  succeeded is not. Text that reports what something *is* — a failed image's
+  reason, a session that has gone — is state and stays in the view.
 - Styling is plain CSS. Shared tokens and element defaults in `src/style.css`
   (with the dark-mode block), everything else in the component's `<style scoped>`.
   No CSS framework.

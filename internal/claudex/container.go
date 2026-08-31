@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -167,14 +168,19 @@ type Container struct {
 	image  *DefaultImage
 	// user is the uid:gid the container runs as, the same one sessions use:
 	// nothing Hexagon starts runs as root.
-	user  string
-	model string
-	log   *slog.Logger
+	user string
+	// credentials is the host file a browser login writes, and the same one
+	// every session mounts. It is what this runs as when the user has pasted no
+	// credential of its own; empty means there is none to fall back to.
+	credentials string
+	model       string
+	log         *slog.Logger
 }
 
 // NewContainer wires the container runner.
-func NewContainer(docker Docker, image *DefaultImage, user, model string, log *slog.Logger) *Container {
-	return &Container{docker: docker, image: image, user: user, model: model, log: log}
+func NewContainer(docker Docker, image *DefaultImage, user, credentials, model string, log *slog.Logger) *Container {
+	return &Container{docker: docker, image: image, user: user,
+		credentials: credentials, model: model, log: log}
 }
 
 // Edit and Check are the same calls the binary makes, run somewhere else.
@@ -198,6 +204,11 @@ const (
 	promptEnv     = "HEXAGON_PROMPT"
 	schemaEnv     = "HEXAGON_SCHEMA"
 	modelEnv      = "HEXAGON_MODEL"
+	// credentialsMount is where the host's credentials file is bind mounted,
+	// outside $HOME on purpose. Mounted straight at $HOME/.claude/... it would
+	// have Docker create that directory as root, in a home the container's own
+	// user has to be able to write; the script copies it into place instead.
+	credentialsMount = "/tmp/hexagon-claude-credentials.json"
 	// stderrFile keeps the CLI's diagnostics out of its answer. The daemon
 	// folds an exec's two output streams into one, and the answer is parsed as
 	// a JSON document: a warning printed beside it would make a good reply
@@ -232,12 +243,26 @@ func (c *Container) run(ctx context.Context, cred Credential, in invocation) ([]
 	// The credential last, so it wins over anything of the same name above.
 	env = append(env, cred.Env()...)
 
+	// With no credential to hand over, the login on this machine is what is
+	// left — the file a browser login wrote, which is exactly what every
+	// session authenticates with. Without this the two disagree: a session
+	// signs in and the editor reports "Not logged in", for the same user, on
+	// the same server, five minutes apart.
+	var binds []string
+	if cred.Secret == "" && c.credentials != "" {
+		if _, err := os.Stat(c.credentials); err == nil {
+			// Read-only: the container gets to use the login, not to change it.
+			binds = append(binds, c.credentials+":"+credentialsMount+":ro")
+		}
+	}
+
 	id, err := c.docker.CreateContainer(ctx, dockerx.ContainerSpec{
 		Image: image.Ref,
 		// The container is a place to run one exec in, and it is removed as
 		// soon as that exec returns.
 		Cmd:        []string{"sleep", "infinity"},
 		Env:        env,
+		Binds:      binds,
 		WorkingDir: "/tmp",
 		User:       c.user,
 		Labels:     map[string]string{dockerx.LabelRole: containerRole},
@@ -284,8 +309,16 @@ func (c *Container) run(ctx context.Context, cred Credential, in invocation) ([]
 // a non-interactive call is an answer that never comes.
 func (c *Container) script(in invocation) string {
 	script := "set -e\n" +
-		"mkdir -p " + containerHome + "\n" +
+		"mkdir -p " + containerHome + "/.claude\n" +
 		`printf '%s' '{"hasCompletedOnboarding":true}' > ` + containerHome + "/.claude.json\n" +
+		// A copy rather than the mount itself: the CLI refreshes an expiring
+		// token by rewriting this file, and what it writes belongs to a
+		// container that is about to be removed — never to the host's own
+		// login, which this call has no business changing.
+		"if [ -f " + credentialsMount + " ]; then\n" +
+		"  cp " + credentialsMount + " " + containerHome + "/.claude/.credentials.json\n" +
+		"  chmod 600 " + containerHome + "/.claude/.credentials.json\n" +
+		"fi\n" +
 		`claude -p "$` + promptEnv + `" --safe-mode --strict-mcp-config --tools '' --output-format json`
 	if in.schema != "" {
 		script += ` --json-schema "$` + schemaEnv + `"`

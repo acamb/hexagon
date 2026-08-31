@@ -112,6 +112,27 @@ func (s *Server) claudeStatus(ctx context.Context, userID string) (claudeStatusR
 	return status, nil
 }
 
+// editorCredential is what the source editor authenticates Claude Code with,
+// and it is deliberately the same order of preference a session container
+// carries: the credential this user pasted, then the key the server was
+// configured with, then nothing — which leaves the login on this machine, the
+// file a browser login wrote and every session mounts.
+//
+// It exists because the two used to disagree. The editor was handed the stored
+// credential and nothing else, so a user who had signed in through the browser
+// got a working session and an editor that answered "Not logged in", for the
+// same account, on the same server.
+func (s *Server) editorCredential(ctx context.Context, userID string) (claudex.Credential, error) {
+	stored, err := s.auth.ClaudeCredential(ctx, userID)
+	if err != nil {
+		return claudex.Credential{}, err
+	}
+	if stored.Secret == "" && s.cfg.AnthropicAPIKey != "" {
+		return claudex.Credential{Kind: claudex.KindAPIKey, Secret: s.cfg.AnthropicAPIKey}, nil
+	}
+	return stored, nil
+}
+
 // handleClaudeStatus reports the Claude login this user has configured, and
 // what a new session will actually authenticate with.
 func (s *Server) handleClaudeStatus(w http.ResponseWriter, r *http.Request) {

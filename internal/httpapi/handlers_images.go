@@ -171,7 +171,7 @@ func (s *Server) handleEditSource(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	cred, err := s.auth.ClaudeCredential(r.Context(), s.user(r).ID)
+	cred, err := s.editorCredential(r.Context(), s.user(r).ID)
 	if err != nil {
 		s.log.Error("read claude credential", "err", err)
 		writeError(w, http.StatusInternalServerError, "cannot read the stored claude credential")

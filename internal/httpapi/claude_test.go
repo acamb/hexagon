@@ -274,6 +274,49 @@ func TestClaudeLoginSaysTheDefaultImageIsNotReadyYet(t *testing.T) {
 	}
 }
 
+// The editor authenticates the way a session container does, and for the same
+// reason: a user who configured Claude once should not find that half of Hexagon
+// signed in and the other half not.
+func TestAskingClaudeUsesTheSameCredentialASessionWould(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	// Nothing pasted and no key configured: the credential is empty, which
+	// leaves the login on this machine — the file both a session and the editor
+	// fall back to.
+	env.postJSON("/api/images/source", `{"kind":"dockerfile","content":"FROM busybox","instruction":"add curl"}`)
+
+	// A key in the server's configuration is the next thing a session would
+	// use, so it is what the editor gets too.
+	env.cfg.AnthropicAPIKey = "sk-from-the-configuration"
+	env.postJSON("/api/images/source", `{"kind":"dockerfile","content":"FROM busybox","instruction":"add curl"}`)
+
+	// And a pasted credential outranks both.
+	env.editor.mu.Lock()
+	env.editor.checkErr = nil
+	env.editor.mu.Unlock()
+	env.sendJSON(http.MethodPut, "/api/claude/credential", `{"kind":"api_key","secret":"sk-pasted"}`)
+	env.postJSON("/api/images/source", `{"kind":"dockerfile","content":"FROM busybox","instruction":"add curl"}`)
+
+	env.editor.mu.Lock()
+	defer env.editor.mu.Unlock()
+	if len(env.editor.edited) != 3 {
+		t.Fatalf("edited = %+v, want three calls", env.editor.edited)
+	}
+	if env.editor.edited[0].Secret != "" {
+		t.Errorf("secret = %q, want none: nothing was configured yet",
+			env.editor.edited[0].Secret)
+	}
+	if env.editor.edited[1].Secret != "sk-from-the-configuration" {
+		t.Errorf("secret = %q, want the key the server was configured with",
+			env.editor.edited[1].Secret)
+	}
+	if env.editor.edited[2].Secret != "sk-pasted" {
+		t.Errorf("secret = %q, want the pasted credential to outrank the configured key",
+			env.editor.edited[2].Secret)
+	}
+}
+
 // The Accounts page has to be able to say what it is waiting for, and whether
 // asking Claude anything on this server goes through a container.
 func TestClaudeStatusReportsTheDefaultImageAndWhereTheCLIRuns(t *testing.T) {

@@ -8,6 +8,7 @@
 // instruction, its own summary and its own undo buffer, which is exactly the
 // state a component holds.
 import { ref } from 'vue'
+import Notice from './Notice.vue'
 import Spinner from './Spinner.vue'
 import { ApiError, api, type SourceKind } from '../api'
 
@@ -58,6 +59,14 @@ function undo() {
   summary.value = ''
 }
 
+// Dismissing the summary is keeping the answer: there is nowhere to undo from
+// once the notice is gone, so the buffer goes with it rather than being held for
+// a button that is no longer on the screen.
+function keep() {
+  summary.value = ''
+  previous.value = null
+}
+
 function message(e: unknown): string {
   if (e instanceof ApiError) return e.message
   return e instanceof Error ? e.message : String(e)
@@ -82,10 +91,9 @@ function message(e: unknown): string {
     a little slower. The first one also waits for that container's image to be built.
   </p>
 
-  <p v-if="summary" class="summary">
-    {{ summary }}
+  <Notice v-if="summary" kind="success" :message="summary" @dismiss="keep">
     <button v-if="previous !== null" type="button" class="link" @click="undo">undo</button>
-  </p>
+  </Notice>
 </template>
 
 <style scoped>
@@ -128,12 +136,6 @@ button:disabled {
   margin: 0;
   color: var(--text-muted);
   font-size: 0.85rem;
-}
-
-.summary {
-  margin: 0;
-  color: var(--text-muted);
-  font-size: 0.9rem;
 }
 
 .link {
