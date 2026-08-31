@@ -10,14 +10,45 @@ set -e
 db_input high hexagon/configure-now || true
 db_go || true
 
+# Asked whichever way the rest is configured. The wizard is a page in a browser,
+# so it can only be reached at the address the server binds: a Hexagon left on
+# loopback on a remote machine has a first-time wizard nobody can open, and
+# nothing in the browser can move it — the address is read when the process
+# starts, from the file this package writes.
+for q in addr public-url; do
+	db_input high "hexagon/$q" || true
+done
+db_go || true
+
+# The refusal the server makes at startup, asked about here instead: a listen
+# address open to the network with a public URL that is not https would produce
+# a package that installs and a service that never comes up. It is a question
+# because plaintext on a private network is a real deployment, and the default
+# is no, so an install nobody answers fails closed.
+db_get hexagon/addr || RET=""
+addr=$RET
+db_get hexagon/public-url || RET=""
+public_url=$RET
+case "$addr" in
+127.* | localhost:* | "[::1]"* | "::1"*) ;;
+*)
+	case "$public_url" in
+	https://*) ;;
+	*)
+		db_input high hexagon/insecure-http || true
+		db_go || true
+		;;
+	esac
+	;;
+esac
+
 db_get hexagon/configure-now
 if [ "$RET" != "Configure now" ]; then
-	# The default answer is the web wizard, and it needs nothing else: the
-	# generated file names the daemon's paths and stops there.
+	# The rest is what the wizard collects from the browser.
 	exit 0
 fi
 
-for q in addr public-url client-id client-secret allowed-users git-user-name git-user-email; do
+for q in client-id client-secret allowed-users git-user-name git-user-email; do
 	db_input high "hexagon/$q" || true
 done
 db_go || true

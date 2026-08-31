@@ -112,16 +112,22 @@ func (s *Server) handleImageLog(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleImageTemplate hands the UI the files to start a new image from, and
-// says what this server can do besides building one: with no Claude Code binary
-// there is no ask-Claude control, and with no `docker compose` there is no
+// says what this server can do besides building one: with no way to run Claude
+// Code there is no ask-Claude control, and with no `docker compose` there is no
 // advanced mode. Both are left out of the page rather than offered as buttons
 // that always fail.
+//
+// askInContainer is the honest half of that. A server with no claude binary can
+// still offer the control, by running the CLI in a container — but that is
+// slower, and the first call waits for an image to be built, so the page says so
+// instead of looking merely sluggish.
 func (s *Server) handleImageTemplate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"dockerfile": s.baseDockerfile,
-		"compose":    s.baseCompose,
-		"canAsk":     s.editor != nil,
-		"canCompose": s.compose != nil,
+		"dockerfile":     s.baseDockerfile,
+		"compose":        s.baseCompose,
+		"canAsk":         s.editor != nil,
+		"askInContainer": s.editorInContainer,
+		"canCompose":     s.compose != nil,
 	})
 }
 

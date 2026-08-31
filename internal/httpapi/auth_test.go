@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/andrea/hexagon/internal/auth"
+	"github.com/andrea/hexagon/internal/claudex"
 	"github.com/andrea/hexagon/internal/config"
 	"github.com/andrea/hexagon/internal/github"
 	"github.com/andrea/hexagon/internal/gitops"
@@ -62,6 +63,7 @@ type testEnv struct {
 	editor        *fakeEditor
 	compose       *fakeCompose
 	vscode        *fakeVSCode
+	defaultImage  *fakeDefaultImage
 	// deps is what the running server was built from, so a test can rebuild it
 	// with an optional collaborator left out, and newSessions rebuilds the
 	// orchestrator the same way.
@@ -69,6 +71,26 @@ type testEnv struct {
 	newSessions func(session.Compose) *session.Manager
 	// workspaces is the root the session manager provisions into.
 	workspaces string
+}
+
+// fakeDefaultImage stands in for the image Hexagon builds for itself. A test
+// that cares sets the state; every other one gets an image that is ready, which
+// is what a server that has been up for a minute has.
+type fakeDefaultImage struct {
+	mu    sync.Mutex
+	state claudex.State
+}
+
+func (f *fakeDefaultImage) State() claudex.State {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state
+}
+
+func (f *fakeDefaultImage) set(state claudex.State) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.state = state
 }
 
 // fakeVSCode stands in for a code-server release: Ensure just reports a fixed
@@ -168,6 +190,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	editor := &fakeEditor{}
 	compose := &fakeCompose{docker: docker}
 	vscode := &fakeVSCode{dir: "/vscode-release"}
+	defaultImage := &fakeDefaultImage{state: claudex.State{Ref: "hexagon-default:test", Ready: true}}
 
 	// A closure rather than a value, so a test can rebuild the orchestrator
 	// without `docker compose`: the manager captures its collaborators, and
@@ -221,6 +244,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		BaseDockerfile: "FROM scratch\n",
 		BaseCompose:    "services: {}\n",
 		Editor:         editor,
+		DefaultImage:   defaultImage,
 		Compose:        compose,
 		Frontend:       fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}},
 		Log:            slog.New(slog.DiscardHandler),
@@ -249,6 +273,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		cloner:        cloner,
 		editor:        editor,
 		compose:       compose,
+		defaultImage:  defaultImage,
 		vscode:        vscode,
 		deps:          deps,
 		newSessions:   newSessions,

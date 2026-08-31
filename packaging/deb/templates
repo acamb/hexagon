@@ -7,6 +7,9 @@ Description: How should Hexagon be configured?
  configures it from the browser. The wizard prints a one-time password to the
  service log and asks for the same values there, showing the exact callback URL
  to register on GitHub.
+ .
+ The listen address and the public URL are asked either way: the wizard is a
+ page in a browser, so it can only be reached where the server binds.
 
 Template: hexagon/addr
 Type: string
@@ -15,6 +18,10 @@ Description: Listen address:
  The address the server binds. Whoever reaches this port controls the Docker
  socket, so leaving it on loopback and putting a TLS reverse proxy in front is
  the supported way to publish Hexagon.
+ .
+ On a machine you reach over the network, the default is unusable and cannot be
+ corrected from the browser: it is read when the server starts, and the pages
+ that could change it are behind it.
 
 Template: hexagon/public-url
 Type: string
@@ -22,6 +29,18 @@ Default: http://127.0.0.1:8080
 Description: Public URL:
  The address you open in a browser. It is what the OAuth callback and the
  same-origin check are built from, so it has to match what you actually type.
+
+Template: hexagon/insecure-http
+Type: boolean
+Default: false
+Description: Serve Hexagon over plain http on that address?
+ The listen address accepts traffic from the network and the public URL is not
+ https, so the session cookie that opens the Docker socket would travel in the
+ clear. Say yes only on a network where that is acceptable.
+ .
+ Saying no leaves the setting off, and the server then refuses to start until
+ the two addresses agree: bind loopback and put a TLS reverse proxy in front,
+ or give the public URL an https scheme.
 
 Template: hexagon/client-id
 Type: string

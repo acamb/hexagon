@@ -32,9 +32,26 @@ type claudeStatusResponse struct {
 	// CanLogin is false when no credentials path is configured: there would be
 	// nowhere for a browser login to write.
 	CanLogin bool `json:"canLogin"`
-	// CanVerify is false without a host claude binary, in which case a
-	// credential is stored unchecked — the canAsk rule from the Images page.
+	// CanVerify is false when there is no way to run the CLI at all, in which
+	// case a credential is stored unchecked — the canAsk rule from the Images
+	// page.
 	CanVerify bool `json:"canVerify"`
+	// InContainer says the CLI runs in a container because this server has no
+	// claude binary. It is slower, and the pages that use it say so rather than
+	// leaving a user to wonder.
+	InContainer bool `json:"inContainer"`
+	// DefaultImage is the image Hexagon builds for itself, which is what the
+	// browser login runs in when the user has built none of their own. Absent
+	// when there is no Docker to build one with.
+	DefaultImage *defaultImageResponse `json:"defaultImage,omitempty"`
+}
+
+// defaultImageResponse is the state of that image: usable now, being built, or
+// failed with a reason.
+type defaultImageResponse struct {
+	Ready    bool   `json:"ready"`
+	Building bool   `json:"building"`
+	Error    string `json:"error,omitempty"`
 }
 
 type claudeCredentialResponse struct {
@@ -52,8 +69,19 @@ type claudeFileResponse struct {
 // has one response to render, whichever endpoint produced it.
 func (s *Server) claudeStatus(ctx context.Context, userID string) (claudeStatusResponse, error) {
 	status := claudeStatusResponse{
-		CanLogin:  s.cfg.ClaudeCredentials != "",
-		CanVerify: s.editor != nil,
+		CanLogin:    s.cfg.ClaudeCredentials != "",
+		CanVerify:   s.editor != nil,
+		InContainer: s.editorInContainer,
+	}
+	// Asking for the state is what starts the build, so this is also where a
+	// server that has never needed the image begins to make one: the Accounts
+	// page is where a user goes to log in to Claude Code, and the login needs a
+	// container to run in.
+	if s.defaultImage != nil {
+		image := s.defaultImage.State()
+		status.DefaultImage = &defaultImageResponse{
+			Ready: image.Ready, Building: image.Building, Error: image.Error,
+		}
 	}
 
 	stored, err := s.store.ClaudeCredential(ctx, userID)
@@ -170,23 +198,56 @@ func (s *Server) handleForgetClaudeCredential(w http.ResponseWriter, r *http.Req
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// loginImage resolves what the browser login runs in, and answers the request
+// itself when there is nothing to run it in.
+//
+// A request that names no image gets Hexagon's own, which is the whole point:
+// the login needs a container with Claude Code in it, and on a fresh install the
+// user has not built one yet — that used to be a dialog with an empty menu and
+// no way forward.
+func (s *Server) loginImage(w http.ResponseWriter, r *http.Request) (string, bool) {
+	id := strings.TrimSpace(r.URL.Query().Get("image"))
+	if id == "" {
+		if s.defaultImage == nil {
+			writeError(w, http.StatusServiceUnavailable,
+				"this server has no docker to build the default image with: build an image first")
+			return "", false
+		}
+		switch image := s.defaultImage.State(); {
+		case image.Ready:
+			return image.Ref, true
+		case image.Error != "":
+			writeError(w, http.StatusServiceUnavailable, "the default image could not be built: "+image.Error)
+		default:
+			writeError(w, http.StatusConflict,
+				"the default image is still being built — try again in a minute, or pick one of your own")
+		}
+		return "", false
+	}
+
+	img, err := s.store.ImageByID(r.Context(), s.user(r).ID, id)
+	switch {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "no such image")
+	case err != nil:
+		s.log.Error("load image", "id", id, "err", err)
+		writeError(w, http.StatusInternalServerError, "cannot load image")
+	case img.Status != store.ImageStatusReady:
+		writeError(w, http.StatusConflict, fmt.Sprintf("image is %s, not ready", img.Status))
+	default:
+		return img.ImageRef, true
+	}
+	return "", false
+}
+
 // handleClaudeLoginTerminal bridges a browser WebSocket to a container running
 // only for the length of the browser login: `claude` inside it writes the host
 // credentials file directly, which is the mechanism the whole feature rests on.
 func (s *Server) handleClaudeLoginTerminal(w http.ResponseWriter, r *http.Request) {
 	user := s.user(r)
 
-	img, err := s.store.ImageByID(r.Context(), user.ID, r.URL.Query().Get("image"))
-	switch {
-	case errors.Is(err, store.ErrNotFound):
-		writeError(w, http.StatusNotFound, "no such image")
-		return
-	case err != nil:
-		s.log.Error("load image", "id", r.URL.Query().Get("image"), "err", err)
-		writeError(w, http.StatusInternalServerError, "cannot load image")
-		return
-	case img.Status != store.ImageStatusReady:
-		writeError(w, http.StatusConflict, fmt.Sprintf("image is %s, not ready", img.Status))
+	imageRef, ok := s.loginImage(w, r)
+	if !ok {
 		return
 	}
 
@@ -198,7 +259,7 @@ func (s *Server) handleClaudeLoginTerminal(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	containerID, err := s.sessions.StartClaudeLogin(r.Context(), user.ID, img.ImageRef)
+	containerID, err := s.sessions.StartClaudeLogin(r.Context(), user.ID, imageRef)
 	switch {
 	case errors.Is(err, session.ErrClaudeLoginUnavailable):
 		writeError(w, http.StatusConflict, "no claude credentials path is configured")

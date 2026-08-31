@@ -51,12 +51,18 @@ configure)
 	allowed=
 	git_name=
 	git_email=
+	answer() { RET=""; db_get "hexagon/$1" || true; printf '%s' "$RET"; }
+
+	# Both are asked whichever way the rest is configured, because the wizard
+	# runs at this address and cannot change it: a default of loopback on a
+	# remote machine is a wizard nobody can open.
+	a=$(answer addr)
+	if [ -n "$a" ]; then addr=$a; fi
+	a=$(answer public-url)
+	if [ -n "$a" ]; then public_url=$a; fi
+	insecure_http=$(answer insecure-http)
+
 	if [ "$mode" = "Configure now" ]; then
-		answer() { RET=""; db_get "hexagon/$1" || true; printf '%s' "$RET"; }
-		a=$(answer addr)
-		if [ -n "$a" ]; then addr=$a; fi
-		a=$(answer public-url)
-		if [ -n "$a" ]; then public_url=$a; fi
 		client_id=$(answer client-id)
 		client_secret=$(answer client-secret)
 		allowed=$(answer allowed-users)
@@ -64,20 +70,31 @@ configure)
 		git_email=$(answer git-user-email)
 	fi
 
+	# Owned by hexagon, not by root: the settings page and the first-time
+	# wizard replace config.json by writing a temporary file beside it and
+	# renaming it over the old one, and both of those need write permission on
+	# the directory rather than on the file. Group hexagon and nothing for
+	# anybody else, because the file inside holds the OAuth client secret.
 	mkdir -p "$CONFIG_DIR"
-	chown root:hexagon "$CONFIG_DIR"
+	chown hexagon:hexagon "$CONFIG_DIR"
 	chmod 0750 "$CONFIG_DIR"
 
 	# Never a conffile: the settings page and the first-time wizard rewrite this
 	# file at runtime, and a client secret cannot ship inside a package. It has
 	# to exist because the unit names it in HEXAGON_CONFIG, and a path named
 	# explicitly must be there or the server refuses to start.
+	wrote_config=no
 	if [ ! -e "$CONFIG_FILE" ]; then
+		wrote_config=yes
 		umask 077
 		{
 			printf '{\n'
 			printf '  "addr": "%s",\n' "$(json_str "$addr")"
 			printf '  "publicUrl": "%s",\n' "$(json_str "$public_url")"
+			# Only written when it was asked for and agreed to: the key is the
+			# difference between a server that refuses to publish itself in
+			# plaintext and one that was told to.
+			if [ "$insecure_http" = true ]; then printf '  "insecureHttp": true,\n'; fi
 			printf '  "dataDir": "%s"' "$DATA_DIR"
 			if [ -n "$client_id$client_secret$allowed" ]; then
 				printf ',\n  "github": {\n'
@@ -104,6 +121,25 @@ configure)
 		} >"$CONFIG_FILE"
 		chown hexagon:hexagon "$CONFIG_FILE"
 		chmod 0600 "$CONFIG_FILE"
+	fi
+
+	# Said out loud because the alternative is a service that never comes up with
+	# the reason only in the journal. Only for a file this run wrote: on an
+	# upgrade the answers above are not what the server is running on.
+	if [ "$wrote_config" = yes ] && [ "$insecure_http" != true ]; then
+		case "$addr" in
+		127.* | localhost:* | "[::1]"* | "::1"*) ;;
+		*)
+			case "$public_url" in
+			https://*) ;;
+			*)
+				echo "hexagon: $addr accepts traffic from the network but $public_url is not" >&2
+				echo "  https, so the server refuses to start. Bind loopback and put a TLS reverse" >&2
+				echo "  proxy in front, or add \"insecureHttp\": true to $CONFIG_FILE and restart." >&2
+				;;
+			esac
+			;;
+		esac
 	fi
 
 	# The secret's home is that 0600 file. A second copy sitting in a database

@@ -35,8 +35,12 @@ func (e *testEnv) dialClaudeLogin(imageID, origin string) (*websocket.Conn, *htt
 	if origin != "" {
 		header.Set("Origin", origin)
 	}
-	target := strings.Replace(e.server.URL, "http://", "ws://", 1) +
-		"/api/claude/login/terminal?image=" + url.QueryEscape(imageID)
+	// An empty id is not an id that fails to match: it is a request that names
+	// no image, which is what asks for Hexagon's own.
+	target := strings.Replace(e.server.URL, "http://", "ws://", 1) + "/api/claude/login/terminal"
+	if imageID != "" {
+		target += "?image=" + url.QueryEscape(imageID)
+	}
 	return websocket.Dial(context.Background(), target, &websocket.DialOptions{
 		HTTPClient: e.client,
 		HTTPHeader: header,
@@ -215,6 +219,74 @@ func TestClaudeLoginTerminalRefusesAnImageThatIsNotReady(t *testing.T) {
 	}
 	if resp == nil || resp.StatusCode != http.StatusConflict {
 		t.Errorf("status = %v, want 409", statusOf(resp))
+	}
+}
+
+// A fresh install has no images, and the login has to run in one. Naming none
+// gets Hexagon's own, which is the difference between a dialog with a way
+// forward and one with an empty menu.
+func TestClaudeLoginRunsInTheDefaultImageWhenNoneIsNamed(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	conn, _, err := env.dialClaudeLogin("", testOrigin)
+	if err != nil {
+		t.Fatalf("dial claude login: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+
+	env.docker.containerSide(t)
+
+	for _, spec := range env.docker.containerSpecs() {
+		if spec.Labels[dockerx.LabelRole] == "claude-login" {
+			if spec.Image != "hexagon-default:test" {
+				t.Errorf("image = %q, want the default image", spec.Image)
+			}
+			return
+		}
+	}
+	t.Fatal("no login container was created")
+}
+
+// The image is built once, in the background, and a login that arrives first is
+// told to wait rather than being held on a socket for as long as a build.
+func TestClaudeLoginSaysTheDefaultImageIsNotReadyYet(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	env.defaultImage.set(claudex.State{Ref: "hexagon-default:test", Building: true})
+
+	_, resp, err := env.dialClaudeLogin("", testOrigin)
+	if err == nil {
+		t.Fatal("the handshake succeeded with no image to run in")
+	}
+	if resp == nil || resp.StatusCode != http.StatusConflict {
+		t.Errorf("status = %v, want 409", statusOf(resp))
+	}
+
+	// And a build that failed says why, rather than "not yet" forever.
+	env.defaultImage.set(claudex.State{Ref: "hexagon-default:test", Error: "no space left on device"})
+	_, resp, err = env.dialClaudeLogin("", testOrigin)
+	if err == nil {
+		t.Fatal("the handshake succeeded after a failed build")
+	}
+	if resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
+		t.Errorf("status = %v, want 503", statusOf(resp))
+	}
+}
+
+// The Accounts page has to be able to say what it is waiting for, and whether
+// asking Claude anything on this server goes through a container.
+func TestClaudeStatusReportsTheDefaultImageAndWhereTheCLIRuns(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	var status claudeStatusResponse
+	env.decode(env.do(http.MethodGet, "/api/claude", nil), &status)
+	if status.DefaultImage == nil || !status.DefaultImage.Ready {
+		t.Errorf("defaultImage = %+v, want the ready image the fake reports", status.DefaultImage)
+	}
+	if status.InContainer {
+		t.Error("inContainer = true, want false: the test server has an editor of its own")
 	}
 }
 

@@ -175,6 +175,10 @@ export interface ImageTemplate {
   dockerfile: string
   compose: string
   canAsk: boolean
+  // Whether asking Claude goes through a container because the server has no
+  // claude binary. It works, and it is slower: the page says so rather than
+  // looking merely sluggish.
+  askInContainer: boolean
   canCompose: boolean
 }
 
@@ -337,6 +341,18 @@ export interface ClaudeStatus {
   effective: ClaudeSource
   canLogin: boolean
   canVerify: boolean
+  // Whether the CLI runs in a container on this server, which is what happens
+  // when there is no claude binary on it.
+  inContainer: boolean
+  // The image Hexagon builds for itself, which is what the browser login runs
+  // in when you have built none of your own. Absent with no Docker to build it.
+  defaultImage?: DefaultImage
+}
+
+export interface DefaultImage {
+  ready: boolean
+  building: boolean
+  error?: string
 }
 
 export const api = {
@@ -395,7 +411,12 @@ export const api = {
     stopLogin: () => request<null>('/claude/login', { method: 'DELETE' }),
     // The terminal is a WebSocket, so it is a path for TerminalPane rather than
     // a fetch.
-    loginTerminal: (imageId: string) => `/api/claude/login/terminal?image=${encodeURIComponent(imageId)}`,
+    // An empty id asks for Hexagon's own image, which is what a browser with no
+    // image of its own to offer sends.
+    loginTerminal: (imageId: string) =>
+      imageId
+        ? `/api/claude/login/terminal?image=${encodeURIComponent(imageId)}`
+        : '/api/claude/login/terminal',
   },
 
   images: {

@@ -96,8 +96,16 @@ The call runs with every built-in tool removed, so it is a pure text transformat
 shell, no file access, no network of its own. A compose file it writes goes through exactly
 the same refusals as one you typed by hand.
 
-Without a `claude` binary on the server the box is simply not shown, and the editors work by
-hand.
+The call needs the Claude Code CLI, and where the server has no `claude` binary of its own —
+a packaged install has none: the service user has no home to install one into — it runs the
+CLI in a container instead, from the same image the browser login uses. That is the same
+answer a little slower, plus a wait for that image the first time, and the box says which of
+the two you are getting rather than leaving you to wonder why it is thinking. What it needs
+either way is a Claude Code credential, from the card on the Accounts page.
+
+Installing `claude` on the server is still worth it if you use this a lot: put it on the
+`PATH` of the account the server runs as, or name it with `claude.binary`, and the box uses
+it instead.
 
 ### Published ports
 
@@ -167,6 +175,11 @@ or press **Log in** to get a real terminal running `claude auth login`.
 A pasted credential reaches sessions created after it was stored, and outranks the key the
 server was started with. A browser login reaches an existing session the next time it
 starts. The card says which of the two a new session will actually use.
+
+The login runs `claude` in a throwaway container, which means it needs an image with Claude
+Code in it. On a machine where you have not built one yet it uses Hexagon's own — the same
+reference image the Images page starts from, built the first time something asks for it. The
+dialog says so while that build is running, and offers your own images once you have any.
 
 Inside a session, `claude` opens straight into the repository: each session gets its own
 `$HOME/.claude.json` marked as already onboarded and already trusting `/workspace`, so it
@@ -253,6 +266,16 @@ root-equivalent access to the machine, which is what running containers requires
 
 Both installers ask, as their first question, whether to configure Hexagon now or leave it
 to the wizard. The default is the wizard, and the rest of this section assumes it.
+
+They ask for the **listen address** and the **public URL** either way, because the wizard is
+a page in a browser and can only be reached where the server binds: the default,
+`127.0.0.1:8080`, is unusable on a machine you reach over the network, and nothing in the
+browser can move it — the address is read when the server starts. If the pair you give would
+publish Hexagon in plaintext (an address open to the network and a public URL that is not
+https) they ask once more, because whoever reaches that port controls the Docker socket and
+the session cookie would travel in the clear. Saying yes writes `insecureHttp`; saying no
+leaves the server refusing to start until the two agree, which is the same refusal it makes
+on its own.
 
 ### 2. Register a GitHub OAuth App
 
@@ -347,7 +370,7 @@ file, which wins over the defaults.**
 | `HEXAGON_DEBUG` | `debug` | — | Set to anything for debug logging |
 | `HEXAGON_CLAUDE_CREDENTIALS` | `claude.credentials` | `~/.claude/.credentials.json` | Mounted read-only into session containers. Empty disables the mount. Also the file a browser login writes |
 | `ANTHROPIC_API_KEY` | `claude.anthropicApiKey` | — | Handed to session containers when no credential is configured in the UI |
-| `HEXAGON_CLAUDE_BINARY` | `claude.binary` | `claude` on `PATH`, then `~/.local/bin/claude` | Rewrites a Dockerfile or a compose file from the Images page |
+| `HEXAGON_CLAUDE_BINARY` | `claude.binary` | `claude` on `PATH`, then `~/.local/bin/claude` | Rewrites a Dockerfile or a compose file from the Images page. Without one, that runs in a container instead |
 | `HEXAGON_CLAUDE_MODEL` | `claude.model` | — | Model for that call; empty leaves the choice to the CLI |
 | `HEXAGON_GIT_USER_NAME` | `git.userName` | — | Git identity for clones and for commits made inside containers |
 | `HEXAGON_GIT_USER_EMAIL` | `git.userEmail` | — | |
@@ -367,13 +390,18 @@ looks for `-config`, then `HEXAGON_CONFIG`, then the default path. A packaged in
 told about `/etc/hexagon/config.json` through `HEXAGON_CONFIG` in its unit, and the
 examples land in `/usr/share/doc/hexagon/examples/`.
 
-Four things are worth knowing:
+Five things are worth knowing:
 
 - **A file named with `-config` or `HEXAGON_CONFIG` must exist.** Ignoring a path you asked
   for would start the server configured by accident. The default location is optional.
 - **It must not be readable by other users.** It can hold the OAuth client secret, an API
   key and the key that seals stored tokens, so the server refuses a file with wider
   permissions than `600`.
+- **The directory has to be writable too**, for the Settings page and the first-time wizard
+  to save: the file is replaced by writing a new one beside it and renaming it, which never
+  leaves a half-written configuration or a moment with wider permissions. The packages give
+  `/etc/hexagon` to the `hexagon` user for exactly this. Both pages say so when they find it
+  otherwise, rather than failing at the save.
 - **An unknown key is an error.** A misspelled `allowedUsers` would otherwise be dropped in
   silence, and a dropped allowlist is an authentication bypass.
 - **`claude.credentials` is the one key where an empty string means something**: mount

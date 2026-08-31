@@ -216,10 +216,20 @@ source of truth this whole section exists to avoid.
 created at install time, not shipped:
 
 ```
-/etc/hexagon/            root:hexagon 0750
+/etc/hexagon/            hexagon:hexagon 0750
 /etc/hexagon/config.json hexagon:hexagon 0600
 /var/lib/hexagon/        hexagon:hexagon 0700    (dataDir, and $HOME)
 ```
+
+The directory belongs to the service user and not to root, which is a correction
+made after the first installs: `config.Update` replaces the file by writing a
+candidate beside it and renaming it over the old one — never a half-written
+configuration, never a moment at wider permissions — and both halves of that need
+write permission on the *directory*. Owned by root at `0750` the file was
+writable and the directory was not, so the settings page and the wizard failed at
+the save with `permission denied` on a temporary file. `config.Writable`, which
+is what those two pages ask before offering a form at all, was wrong the same
+way: it probed the file. It probes the directory now.
 
 A `make install` target with `PREFIX` and `DESTDIR` lays out the first block and
 nothing else. The package's build script calls it with `DESTDIR=<stage>`, and so
@@ -248,8 +258,7 @@ that a server is never configured by accident.
 
 ### The first question
 
-Both installers ask this before anything else, and ask nothing further if the
-answer is the default:
+Both installers ask this before anything else:
 
 > Hexagon can be configured now, or left empty so that the first-time wizard
 > configures it from the browser. The wizard prints a one-time password to the
@@ -289,6 +298,34 @@ from the public URL just answered — `<publicUrl>/api/auth/callback`. It is the
 value GitHub compares verbatim, and the one nobody reconstructs correctly from
 memory.
 
+#### The address is asked either way
+
+*Revised after the installers shipped, at the user's request.* The two address
+questions were originally part of *configure now*, and the wizard path took the
+defaults. That was wrong, and the reason is the wizard itself: it is a page in a
+browser, so it can only be reached at the address the server binds. A Hexagon
+installed on a remote machine and left on `127.0.0.1:8080` has a first-time
+wizard nobody can open — and nothing in the browser can move it, because the
+listen address is read when the process starts and the pages that could change
+it are behind it. The one setting the wizard cannot recover from is therefore the
+one the installer must not assume.
+
+So the listen address and the public URL are asked before the branch, and only
+the GitHub and git answers are behind it. The generated file is unchanged in
+shape; it simply carries the values that were given.
+
+Asking them of every install brings the pair's own refusal forward with it.
+`config.checkTransport` rejects an address open to the network with a public URL
+that is not `https`, which until now was a corner of *configure now* and is now
+the ordinary answer for a machine on a LAN. Both installers therefore ask one
+more question when the pair meets that description — plaintext, deliberately? —
+and write `insecureHttp` only when it is answered yes. Answering no fails: the
+script stops with what to do instead, and the package writes the file, says the
+server will refuse to start and names the two ways out. Neither installer sets
+the key on its own, and the debconf default is `false`, so an unattended install
+that nobody answered fails closed rather than publishing a Docker socket in the
+clear.
+
 ### In the package: debconf
 
 `packaging/deb/templates` and `packaging/deb/config`, with `debconf` added to
@@ -299,10 +336,13 @@ memory.
   `Type: password`, which is what keeps it out of `config.dat` and in
   `passwords.dat` (0600, root) instead.
 - `config` is the script debconf runs *before* unpacking: it sources
-  `/usr/share/debconf/confmodule`, asks the first question, and asks the rest
-  only when the answer was *configure now*. Asking from `config` rather than
-  from `postinst` is what lets `apt` collect every question up front instead of
-  stopping halfway through an install.
+  `/usr/share/debconf/confmodule`, asks the first question, then the two
+  addresses, and asks the rest only when the answer was *configure now*. It
+  evaluates the address pair itself — the same `case` the server's
+  `checkTransport` makes — to decide whether `hexagon/insecure-http` is worth
+  asking at all. Asking from `config` rather than from `postinst` is what lets
+  `apt` collect every question up front instead of stopping halfway through an
+  install.
 - `postinst` reads the answers with `db_get`, writes the configuration file, and
   then clears the secret with `db_set … ""`. The secret's home is a `0600` file
   owned by `hexagon`; a second copy sitting in a database that outlives the

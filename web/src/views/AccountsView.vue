@@ -5,7 +5,7 @@
 // account — the model sessions run as, not a source of repositories — but this
 // is still where a signed-in user configures things, so it lives on the same
 // page rather than a new one with a single card on it.
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import AppHeader from '../components/AppHeader.vue'
 import Spinner from '../components/Spinner.vue'
 import TerminalPane from '../components/TerminalPane.vue'
@@ -137,9 +137,22 @@ async function forgetClaudeCredential() {
 // whose $HOME/.claude is this machine's own, so /login writes the file every
 // session already mounts.
 const loginOpen = ref(false)
+// The image the login container is built from. The empty string is not "none
+// chosen": it is Hexagon's own image, which is what a machine where nothing has
+// been built yet has to use — and the default, since the login needs a container
+// with Claude Code in it before there is any reason to have built one.
 const loginImageId = ref('')
 const images = ref<Image[]>([])
 const readyImages = computed(() => images.value.filter((img) => img.status === 'ready'))
+
+// The default image is built the first time something asks for it, so a dialog
+// opened on a fresh server waits for it. Polling the status is what starts that
+// build as well as what follows it.
+const defaultImage = computed(() => claudeStatus.value?.defaultImage)
+const waitingForDefault = computed(
+  () => loginImageId.value === '' && !defaultImage.value?.ready,
+)
+let defaultImageTimer: number | undefined
 
 async function openLogin() {
   claudeError.value = null
@@ -151,10 +164,23 @@ async function openLogin() {
   }
   loginImageId.value = readyImages.value[0]?.id ?? ''
   loginOpen.value = true
+  followDefaultImage()
+}
+
+// While the dialog waits on Hexagon's own image, ask again every few seconds:
+// the answer changes on its own, when the build finishes.
+function followDefaultImage() {
+  window.clearTimeout(defaultImageTimer)
+  if (!loginOpen.value || !waitingForDefault.value) return
+  defaultImageTimer = window.setTimeout(async () => {
+    await refreshClaude()
+    followDefaultImage()
+  }, 4000)
 }
 
 async function closeLogin() {
   loginOpen.value = false
+  window.clearTimeout(defaultImageTimer)
   try {
     await api.claude.stopLogin()
   } catch (e) {
@@ -171,6 +197,8 @@ onMounted(() => {
   refresh()
   refreshClaude()
 })
+
+onUnmounted(() => window.clearTimeout(defaultImageTimer))
 </script>
 
 <template>
@@ -301,8 +329,12 @@ onMounted(() => {
           An API key comes from the Anthropic Console. A long-lived token comes from running
           <code>claude setup-token</code> on a machine with an active subscription.
           <span v-if="!claudeStatus.canVerify">
-            This server has no Claude Code binary, so the credential is stored without being
+            This server has no way to run Claude Code, so the credential is stored without being
             checked first.
+          </span>
+          <span v-else-if="claudeStatus.inContainer">
+            Claude Code is not installed on this server, so checking the credential runs it in a
+            container: it works, it just takes longer.
           </span>
         </p>
 
@@ -334,13 +366,29 @@ onMounted(() => {
 
         <label class="field">
           <span>Image</span>
-          <select v-model="loginImageId">
+          <select v-model="loginImageId" @change="followDefaultImage">
+            <option value="">Hexagon's own image</option>
             <option v-for="img in readyImages" :key="img.id" :value="img.id">{{ img.name }}</option>
           </select>
         </label>
-        <p v-if="!readyImages.length" class="hint">No image is ready to run the login in.</p>
+        <p v-if="!readyImages.length" class="hint">
+          You have built no image yet, so this runs in the one Hexagon keeps for itself — the
+          same reference image the Images page starts from.
+        </p>
 
-        <TerminalPane v-if="loginImageId" :key="loginImageId" :url="api.claude.loginTerminal(loginImageId)" class="terminal" />
+        <p v-if="waitingForDefault && defaultImage?.error" class="error">
+          That image could not be built: {{ defaultImage.error }}
+        </p>
+        <p v-else-if="waitingForDefault" class="hint">
+          <Spinner />Building that image. It happens once, and takes a few minutes.
+        </p>
+
+        <TerminalPane
+          v-else
+          :key="loginImageId"
+          :url="api.claude.loginTerminal(loginImageId)"
+          class="terminal"
+        />
 
         <div class="buttons">
           <button type="button" class="primary" @click="closeLogin">Done</button>

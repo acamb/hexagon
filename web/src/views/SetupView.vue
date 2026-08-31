@@ -98,8 +98,10 @@ function message(e: unknown): string {
 
     <template v-if="!loading && status">
       <p v-if="status.writable === false" class="warning">
-        <strong>{{ status.configPath }}</strong> cannot be written by the server. Fix its
-        permissions, or configure Hexagon by hand and restart it.
+        <strong>{{ status.configPath }}</strong> cannot be written by the server. Saving replaces
+        it with a new file written beside it, so the directory it is in has to be writable by the
+        user Hexagon runs as — not only the file. Fix that, or configure Hexagon by hand and
+        restart it.
       </p>
 
       <form v-if="step === 'password'" @submit.prevent="toSettings">

@@ -194,8 +194,10 @@ function message(e: unknown): string {
 
     <template v-if="settings">
       <p v-if="!settings.writable" class="error">
-        <strong>{{ settings.configPath }}</strong> cannot be written by the server. Fix its
-        permissions, or edit it by hand and restart.
+        <strong>{{ settings.configPath }}</strong> cannot be written by the server. Saving
+        replaces it with a new file written beside it, so the directory it is in has to be
+        writable by the user Hexagon runs as — not only the file. Fix that, or edit it by hand
+        and restart.
       </p>
       <p v-else-if="saved && settings.restartRequired" class="notice">
         Saved. Some of it is waiting for a restart — the settings marked below are still

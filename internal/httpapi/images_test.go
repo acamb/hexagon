@@ -438,10 +438,28 @@ func TestImageTemplateIsTheBaseDockerfile(t *testing.T) {
 	env := newTestEnv(t, "alice")
 	env.signIn()
 
-	var body struct{ Dockerfile string }
+	var body struct {
+		Dockerfile     string
+		CanAsk         bool
+		AskInContainer bool
+	}
 	env.decode(env.do(http.MethodGet, "/api/images/template", nil), &body)
 	if !strings.HasPrefix(body.Dockerfile, "FROM scratch") {
 		t.Errorf("template = %q, want the configured base Dockerfile", body.Dockerfile)
+	}
+	if !body.CanAsk || body.AskInContainer {
+		t.Errorf("canAsk/askInContainer = %v/%v, want a server that runs the CLI directly",
+			body.CanAsk, body.AskInContainer)
+	}
+
+	// A server that has to run the CLI in a container still offers the control,
+	// and says which of the two it is: the container path is slower, and a page
+	// that hid the difference would look merely sluggish.
+	env.without(func(d *Deps) { d.EditorInContainer = true })
+	env.decode(env.do(http.MethodGet, "/api/images/template", nil), &body)
+	if !body.CanAsk || !body.AskInContainer {
+		t.Errorf("canAsk/askInContainer = %v/%v, want the container path reported",
+			body.CanAsk, body.AskInContainer)
 	}
 }
 

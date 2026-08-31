@@ -252,13 +252,26 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		Log:            log,
 	}
 
-	// Optional: without a claude binary the Images page can still be edited by
-	// hand, so a missing one is a note in the log rather than a refusal to run.
-	// The interface is left nil in that case, which is what the UI asks about.
-	if runner, err := claudex.New(cfg.ClaudeBinary); err != nil {
-		log.Info("no claude binary: image sources can only be edited by hand", "err", err)
-	} else {
+	// The image Hexagon builds for itself, and the two things that need it: the
+	// browser login on a machine where the user has built no image, and the
+	// source editor on a machine with no claude binary. Nothing is built here —
+	// the first page that asks for the image starts that.
+	defaultImage := claudex.NewDefaultImage(docker, hexagon.BaseDockerfile, log)
+	deps.DefaultImage = defaultImage
+
+	// The binary is preferred wherever there is one: it answers in seconds,
+	// where the container path pays for a container on every call and for an
+	// image build on the first. A packaged install has no binary — the service
+	// user has no npm and no home to install one into — and that used to leave
+	// the feature silently absent, which is the reason for the fallback and for
+	// telling the UI which of the two it got.
+	if runner, err := claudex.New(cfg.ClaudeBinary); err == nil {
 		deps.Editor = runner.WithModel(cfg.ClaudeModel)
+	} else {
+		log.Info("no claude binary: image sources will be edited through a container", "err", err)
+		deps.Editor = claudex.NewContainer(docker, defaultImage,
+			fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()), cfg.ClaudeModel, log)
+		deps.EditorInContainer = true
 	}
 
 	gate := auth.NewGate(nil, nil)

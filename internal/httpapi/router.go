@@ -30,6 +30,15 @@ type SourceEditor interface {
 	Check(ctx context.Context, cred claudex.Credential) error
 }
 
+// DefaultImage reports the image Hexagon builds for itself, and starts building
+// it when asked for one that is not there yet. It is what the browser login runs
+// in when the user has no image of their own, and what the source editor runs in
+// on a server with no claude binary. Nil when there is no Docker to build it
+// with, which is a state the UI is told about rather than a startup failure.
+type DefaultImage interface {
+	State() claudex.State
+}
+
 // ComposeValidator refuses a compose file that asks for something a session
 // must not be able to have. It is nil when the server has no `docker compose`,
 // and the Images page then does not offer advanced images at all rather than
@@ -62,6 +71,12 @@ type Deps struct {
 	BaseCompose    string
 	// Editor is optional: without it the Images page only edits by hand.
 	Editor SourceEditor
+	// EditorInContainer says the editor above is the container one, which is
+	// slower and worth warning about: the pages that offer it explain why it is
+	// not the binary.
+	EditorInContainer bool
+	// DefaultImage is optional in the same way the editor is.
+	DefaultImage DefaultImage
 	// Compose is optional too: without it advanced images are not offered.
 	Compose  ComposeValidator
 	Frontend fs.FS
@@ -70,23 +85,25 @@ type Deps struct {
 
 // Server carries the dependencies shared by the handlers.
 type Server struct {
-	cfg            *config.Config
-	store          *store.Store
-	auth           *auth.Service
-	gate           *auth.Gate
-	setup          *auth.Setup
-	github         auth.UserFetcher
-	providers      provider.Registry
-	repos          *provider.Lister
-	docker         dockerx.API
-	sessions       *session.Manager
-	baseDockerfile string
-	baseCompose    string
-	editor         SourceEditor
-	compose        ComposeValidator
-	log            *slog.Logger
-	frontend       fs.FS
-	started        time.Time
+	cfg               *config.Config
+	store             *store.Store
+	auth              *auth.Service
+	gate              *auth.Gate
+	setup             *auth.Setup
+	github            auth.UserFetcher
+	providers         provider.Registry
+	repos             *provider.Lister
+	docker            dockerx.API
+	sessions          *session.Manager
+	baseDockerfile    string
+	baseCompose       string
+	editor            SourceEditor
+	editorInContainer bool
+	defaultImage      DefaultImage
+	compose           ComposeValidator
+	log               *slog.Logger
+	frontend          fs.FS
+	started           time.Time
 	// limiter bounds what one address can ask of the routes that answer without
 	// a session.
 	limiter *ipLimiter
@@ -95,24 +112,26 @@ type Server struct {
 // New builds the router.
 func New(deps Deps) http.Handler {
 	s := &Server{
-		cfg:            deps.Config,
-		store:          deps.Store,
-		auth:           deps.Auth,
-		gate:           deps.Gate,
-		setup:          deps.Setup,
-		github:         deps.GitHub,
-		providers:      deps.Providers,
-		repos:          deps.Repos,
-		docker:         deps.Docker,
-		sessions:       deps.Sessions,
-		baseDockerfile: deps.BaseDockerfile,
-		baseCompose:    deps.BaseCompose,
-		editor:         deps.Editor,
-		compose:        deps.Compose,
-		log:            deps.Log,
-		frontend:       deps.Frontend,
-		started:        time.Now(),
-		limiter:        newIPLimiter(deps.Config.PublicRatePerMinute),
+		cfg:               deps.Config,
+		store:             deps.Store,
+		auth:              deps.Auth,
+		gate:              deps.Gate,
+		setup:             deps.Setup,
+		github:            deps.GitHub,
+		providers:         deps.Providers,
+		repos:             deps.Repos,
+		docker:            deps.Docker,
+		sessions:          deps.Sessions,
+		baseDockerfile:    deps.BaseDockerfile,
+		baseCompose:       deps.BaseCompose,
+		editor:            deps.Editor,
+		editorInContainer: deps.EditorInContainer,
+		defaultImage:      deps.DefaultImage,
+		compose:           deps.Compose,
+		log:               deps.Log,
+		frontend:          deps.Frontend,
+		started:           time.Now(),
+		limiter:           newIPLimiter(deps.Config.PublicRatePerMinute),
 	}
 
 	mux := http.NewServeMux()

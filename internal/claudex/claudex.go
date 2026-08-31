@@ -221,63 +221,145 @@ type result struct {
 	Result  string `json:"result"`
 }
 
-// Edit asks for content with instruction applied to it. kind is SourceDockerfile
-// or SourceCompose; cred is the credential to authenticate with, or the zero
-// value to inherit the server's own login.
-func (r *Runner) Edit(ctx context.Context, cred Credential, kind, content, instruction string) (Edit, error) {
+// invocation is one call to the CLI: the shape the answer has to take, and the
+// prompt that asks for it.
+//
+// It exists because there are two ways to run that call — the binary on this
+// machine, and a container built for the purpose — and everything except the
+// running is the same for both. What the two disagree about is how a prompt and
+// a schema reach the process, which is why they are carried here as values
+// rather than as command-line arguments already rendered.
+type invocation struct {
+	// schema is the JSON schema the answer must satisfy, or empty for a call
+	// whose answer is not read.
+	schema string
+	prompt string
+}
+
+// cli is one way of running Claude Code. Both implementations are in this
+// package: Runner, which executes the binary, and Container, which runs the CLI
+// inside a container on a server that has no binary at all.
+type cli interface {
+	// run performs one invocation and returns the CLI's standard output, or an
+	// error already worded for somebody who will read it in a browser.
+	run(ctx context.Context, cred Credential, in invocation) ([]byte, error)
+}
+
+// edit is Edit for either runner: it builds the prompt, runs the call, and
+// reads the file out of the answer.
+func edit(ctx context.Context, c cli, cred Credential, kind, content, instruction string) (Edit, error) {
 	spec, ok := editKinds[kind]
 	if !ok {
 		return Edit{}, fmt.Errorf("claudex: no such editable file: %q", kind)
 	}
 
-	args := []string{
-		"-p",
-		// The developer's own Claude Code setup — CLAUDE.md, skills, plugins,
-		// hooks, MCP servers — must not change what a Hexagon request does.
-		"--safe-mode",
-		"--strict-mcp-config",
-		// No tools at all: there is nothing to run, read or fetch here.
-		"--tools", "",
-		"--output-format", "json",
-		"--json-schema", spec.schema,
+	stdout, err := c.run(ctx, cred, invocation{
+		schema: spec.schema,
+		prompt: fmt.Sprintf(spec.prompt, instruction, content),
+	})
+	if err != nil {
+		return Edit{}, err
 	}
-	if r.model != "" {
-		args = append(args, "--model", r.model)
-	}
-
-	cmd := exec.CommandContext(ctx, r.binary, args...)
-	cmd.Stdin = strings.NewReader(fmt.Sprintf(spec.prompt, instruction, content))
-	cmd.Env = environment(cred)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return Edit{}, fmt.Errorf("claude code took too long: %w", ctx.Err())
-		}
-		return Edit{}, fmt.Errorf("claude code failed: %w: %s", err, firstLine(stderr.String()))
-	}
-
-	var res result
-	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-		return Edit{}, fmt.Errorf("claude code returned something unreadable: %w", err)
-	}
-	if res.IsError {
-		return Edit{}, fmt.Errorf("claude code reported an error: %s", firstLine(res.Result))
+	result, err := answerOf(stdout)
+	if err != nil {
+		return Edit{}, err
 	}
 
 	// With --json-schema the answer is a JSON document inside the envelope's
 	// result string, with the file under the kind's own name. An answer that
 	// carries a different kind is one for a question that was not asked.
 	answer := map[string]string{}
-	if err := json.Unmarshal([]byte(res.Result), &answer); err != nil {
+	if err := json.Unmarshal([]byte(result), &answer); err != nil {
 		return Edit{}, fmt.Errorf("claude code did not answer with a %s: %w", kind, err)
 	}
-	edit := Edit{Content: answer[kind], Summary: answer["summary"]}
-	if strings.TrimSpace(edit.Content) == "" {
+	out := Edit{Content: answer[kind], Summary: answer["summary"]}
+	if strings.TrimSpace(out.Content) == "" {
 		return Edit{}, fmt.Errorf("claude code answered with an empty %s", kind)
 	}
-	return edit, nil
+	return out, nil
+}
+
+// check is Check for either runner.
+func check(ctx context.Context, c cli, cred Credential) error {
+	stdout, err := c.run(ctx, cred, invocation{prompt: checkPrompt})
+	if err != nil {
+		return err
+	}
+	_, err = answerOf(stdout)
+	return err
+}
+
+// checkPrompt is the cheapest question that still proves the credential works.
+const checkPrompt = "Reply with the single word: ok"
+
+// answerOf unwraps the envelope --output-format json arrives in and returns the
+// answer inside it.
+func answerOf(stdout []byte) (string, error) {
+	var res result
+	if err := json.Unmarshal(stdout, &res); err != nil {
+		return "", fmt.Errorf("claude code returned something unreadable: %w", err)
+	}
+	if res.IsError {
+		return "", fmt.Errorf("claude code reported an error: %s", firstLine(res.Result))
+	}
+	return res.Result, nil
+}
+
+// flags are the arguments every invocation carries, whichever way it is run.
+//
+// All of these are what makes the call safe rather than what makes it work:
+// --safe-mode and --strict-mcp-config so the machine's own Claude Code setup —
+// CLAUDE.md, skills, plugins, hooks, MCP servers — cannot change what a Hexagon
+// request does, --tools so there is nothing to run, read or fetch, and
+// --output-format json so the answer arrives in a document rather than in prose.
+func (in invocation) flags(model string) []string {
+	args := []string{"-p", "--safe-mode", "--strict-mcp-config", "--tools", "", "--output-format", "json"}
+	if in.schema != "" {
+		args = append(args, "--json-schema", in.schema)
+	}
+	if model != "" {
+		args = append(args, "--model", model)
+	}
+	return args
+}
+
+// Edit asks for content with instruction applied to it. kind is SourceDockerfile
+// or SourceCompose; cred is the credential to authenticate with, or the zero
+// value to inherit the server's own login.
+func (r *Runner) Edit(ctx context.Context, cred Credential, kind, content, instruction string) (Edit, error) {
+	return edit(ctx, r, cred, kind, content, instruction)
+}
+
+// run executes the binary, with the prompt on its standard input.
+func (r *Runner) run(ctx context.Context, cred Credential, in invocation) ([]byte, error) {
+	cmd := exec.CommandContext(ctx, r.binary, in.flags(r.model)...)
+	cmd.Stdin = strings.NewReader(in.prompt)
+	cmd.Env = environment(cred)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+
+	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("claude code took too long: %w", ctx.Err())
+		}
+		// A refused credential is reported twice: in the exit status, and in an
+		// answer that says which of the several things went wrong. Where there
+		// is an answer it is the half worth reading — "Not logged in" beats
+		// "exit status 1" — so it is handed on and read by the caller.
+		if isEnvelope(stdout.Bytes()) {
+			return stdout.Bytes(), nil
+		}
+		return nil, fmt.Errorf("claude code failed: %w: %s", err, firstLine(stderr.String()))
+	}
+	return stdout.Bytes(), nil
+}
+
+// isEnvelope reports whether output is the document --output-format json
+// produces, rather than whatever a process that failed before it got that far
+// left behind.
+func isEnvelope(output []byte) bool {
+	var res result
+	return json.Unmarshal(output, &res) == nil
 }
 
 // Check reports whether the CLI can authenticate with cred. It is the cheapest
@@ -289,38 +371,7 @@ func (r *Runner) Edit(ctx context.Context, cred Credential, kind, content, instr
 // from an unreachable API in its exit status, and a distinction invented here
 // would send the user off to check the wrong thing.
 func (r *Runner) Check(ctx context.Context, cred Credential) error {
-	args := []string{
-		"-p",
-		"--safe-mode",
-		"--strict-mcp-config",
-		"--tools", "",
-		"--output-format", "json",
-	}
-	if r.model != "" {
-		args = append(args, "--model", r.model)
-	}
-
-	cmd := exec.CommandContext(ctx, r.binary, args...)
-	cmd.Stdin = strings.NewReader("Reply with the single word: ok")
-	cmd.Env = environment(cred)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-
-	if err := cmd.Run(); err != nil {
-		if ctx.Err() != nil {
-			return fmt.Errorf("claude code took too long: %w", ctx.Err())
-		}
-		return fmt.Errorf("claude code failed: %w: %s", err, firstLine(stderr.String()))
-	}
-
-	var res result
-	if err := json.Unmarshal(stdout.Bytes(), &res); err != nil {
-		return fmt.Errorf("claude code returned something unreadable: %w", err)
-	}
-	if res.IsError {
-		return fmt.Errorf("claude code reported an error: %s", firstLine(res.Result))
-	}
-	return nil
+	return check(ctx, r, cred)
 }
 
 // firstLine keeps an error message to one line: these end up in a JSON error

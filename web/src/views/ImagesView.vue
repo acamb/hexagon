@@ -17,10 +17,12 @@ const dockerfile = ref('')
 const compose = ref('')
 const registryRef = ref('')
 
-// canAsk is false when the server has no claude binary to run, canCompose when
-// it has no `docker compose`. Each control is left out rather than offered as a
-// button that always fails.
+// canAsk is false when the server has no way to run Claude Code at all,
+// canCompose when it has no `docker compose`. Each control is left out rather
+// than offered as a button that always fails. askInContainer is the case in
+// between: the control works, through a container, and says so.
 const canAsk = ref(false)
+const askInContainer = ref(false)
 const canCompose = ref(false)
 
 const removing = ref<string | null>(null)
@@ -158,6 +160,7 @@ onMounted(async () => {
     dockerfile.value = template.dockerfile
     compose.value = template.compose
     canAsk.value = template.canAsk
+    askInContainer.value = template.askInContainer
     canCompose.value = template.canCompose
   } catch {
     // The template is a convenience; the form still works without it.
@@ -207,6 +210,7 @@ onUnmounted(() => window.clearInterval(timer))
           v-model="dockerfile"
           kind="dockerfile"
           placeholder="Ask Claude to change it: add the Go toolchain"
+          :in-container="askInContainer"
           @failed="error = $event"
         />
       </div>
@@ -231,6 +235,7 @@ onUnmounted(() => window.clearInterval(timer))
           v-model="compose"
           kind="compose"
           placeholder="Ask Claude to change it: add a postgres 16"
+          :in-container="askInContainer"
           @failed="error = $event"
         />
       </div>

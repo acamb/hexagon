@@ -372,21 +372,20 @@ func writeCandidate(path string, data []byte) (string, error) {
 //
 // It answers by trying, because on a POSIX system nothing else is conclusive:
 // the mode bits say little about a directory reached through a read-only mount,
-// or owned by another user, or covered by an ACL. Nothing survives the check —
-// an existing file is opened, not truncated, and a missing one costs a
-// temporary file in the directory it would live in.
+// or owned by another user, or covered by an ACL. Nothing survives the check:
+// the probe is a temporary file, made and removed.
+//
+// The probe is the *directory* and never the file, because that is what Update
+// needs. It replaces the configuration by writing a candidate beside it and
+// renaming it over the old one, and neither half asks anything of the file's own
+// mode. A permission check that opened the file would answer yes for the layout
+// the packages install — a 0600 file the service owns, in a directory it does
+// not — and the settings page would offer a form that fails at the save.
 func Writable(path string) bool {
 	if path == "" {
 		return false
 	}
-	if f, err := os.OpenFile(path, os.O_WRONLY, 0o600); err == nil {
-		f.Close()
-		return true
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false
-	}
-
-	// The directory may not exist either — on a machine that has never had a
+	// The directory may not exist — on a machine that has never had a
 	// configuration file, none of it does — so the probe goes to the nearest
 	// ancestor that is there. Creating the missing part is Update's job, not a
 	// side effect of being asked a question.

@@ -61,7 +61,8 @@ internal/auth/      GitHub OAuth login, session cookies, credential encryption
 internal/provider/  the interface a source of repositories implements, and the merged listing
 internal/github/    GitHub REST client
 internal/bitbucket/ Bitbucket Cloud REST client
-internal/claudex/   runs the Claude Code CLI for the image source editor
+internal/claudex/   runs the Claude Code CLI for the image source editor — the
+                    binary on the host, or a container when there is none
 internal/composex/  runs the Docker Compose CLI for images that carry a compose file
 internal/dockerx/   Docker Engine API behind an interface
 internal/gitops/    host-side git: cloning a repository into a session workspace

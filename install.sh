@@ -339,6 +339,9 @@ if [ -z "$CONFIGURE" ]; then
 		configures it from the browser. The wizard prints a one-time password to the
 		service log and asks for the same values there.
 
+		The listen address and the public URL are asked either way: the wizard is a
+		page in a browser, so it can only be reached where the server binds.
+
 		  1. Use the web wizard  (default)
 		  2. Configure now
 	TXT
@@ -585,10 +588,42 @@ allowed=
 git_name=
 git_email=
 
+# Asked whichever way the rest is configured. The wizard runs in a browser, so
+# it can only be reached at the address the server binds: a Hexagon left on
+# loopback on a remote machine has a first-time wizard nobody can open, and the
+# only way to fix it is the file this script is here to write.
+addr=$(ask "Listen address" "$addr")
+public_url=$(ask "Public URL" "$public_url")
+echo "  Callback URL to register on GitHub: $public_url/api/auth/callback" >&2
+
+# The same refusal the server makes at startup, made here instead: writing a
+# file that stops the service from ever coming up, and finding out afterwards,
+# is the failure this avoids. It is a question rather than a refusal because
+# plaintext on a private network is a real deployment — and because the address
+# is now asked of every install, so this is the ordinary answer for a machine on
+# a LAN, not an exotic one.
+insecure_http=no
+case "$addr" in
+127.* | localhost:* | "[::1]"* | "::1"*) ;;
+*)
+	case "$public_url" in
+	https://*) ;;
+	*)
+		echo "" >&2
+		echo "$addr accepts traffic from the network and $public_url is not https." >&2
+		echo "Whoever reaches that port controls the Docker socket, and over http the" >&2
+		echo "session cookie that opens it travels in the clear." >&2
+		if confirm "Serve plaintext on that address anyway?" "N"; then
+			insecure_http=yes
+		else
+			die "put a TLS reverse proxy in front and bind loopback, or answer yes to that question"
+		fi
+		;;
+	esac
+	;;
+esac
+
 if [ "$CONFIGURE" = now ]; then
-	addr=$(ask "Listen address" "$addr")
-	public_url=$(ask "Public URL" "$public_url")
-	echo "  Callback URL to register on GitHub: $public_url/api/auth/callback" >&2
 	client_id=$(ask "GitHub OAuth client id (empty leaves the wizard open)" "")
 	client_secret=$(secret "GitHub OAuth client secret")
 	if [ "$MODE" = system ]; then
@@ -601,21 +636,6 @@ if [ "$CONFIGURE" = now ]; then
 fi
 
 data_dir=$(ask "Data directory (database, workspaces, downloads)" "$DATA_DEFAULT")
-
-# The same refusal the server makes at startup, made here instead: writing a
-# file that stops the service from ever coming up, and finding out afterwards,
-# is the failure this avoids.
-case "$addr" in
-127.* | localhost:* | "[::1]"* | "::1"*) ;;
-*)
-	case "$public_url" in
-	https://*) ;;
-	*)
-		die "addr $addr accepts traffic from the network but publicUrl $public_url is not https: put a TLS reverse proxy in front and bind loopback, or set insecureHttp in $CONFIG_FILE deliberately"
-		;;
-	esac
-	;;
-esac
 
 start_now=no
 if [ "$INIT" != none ]; then
@@ -678,7 +698,11 @@ service_install
 mkdir -p "$CONFIG_DIR" "$data_dir"
 chmod 0700 "$data_dir"
 if [ "$MODE" = system ]; then
-	chown root:hexagon "$CONFIG_DIR"
+	# Owned by the service user, not by root: the settings page and the
+	# first-time wizard replace the configuration file by writing a temporary
+	# one beside it and renaming it, which needs write permission on the
+	# directory and not only on the file.
+	chown hexagon:hexagon "$CONFIG_DIR"
 	chmod 0750 "$CONFIG_DIR"
 	chown hexagon:hexagon "$data_dir"
 else
@@ -700,6 +724,10 @@ if [ "$write_config" = yes ]; then
 			printf '{\n'
 			printf '  "addr": "%s",\n' "$(json_str "$addr")"
 			printf '  "publicUrl": "%s",\n' "$(json_str "$public_url")"
+			# Only written when it was asked for: the key is the difference
+			# between a server that refuses to publish itself in plaintext and
+			# one that was told to.
+			if [ "$insecure_http" = yes ]; then printf '  "insecureHttp": true,\n'; fi
 			printf '  "dataDir": "%s"' "$(json_str "$data_dir")"
 			if [ -n "$client_id$client_secret$allowed" ]; then
 				printf ',\n  "github": {\n'

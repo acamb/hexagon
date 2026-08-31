@@ -169,6 +169,27 @@ func TestWritable(t *testing.T) {
 	if Writable("") {
 		t.Error("Writable = true for no path at all, want false")
 	}
+
+	// The layout the packages install, and the one a file-permission check gets
+	// wrong: the service owns a 0600 configuration file inside a directory it
+	// cannot write. Update replaces that file by renaming another one over it,
+	// so the directory is what decides.
+	locked := filepath.Join(dir, "locked")
+	if err := os.Mkdir(locked, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	config := filepath.Join(locked, "config.json")
+	if err := os.WriteFile(config, []byte("{}\n"), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.Chmod(locked, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	// Put the mode back, or the temporary directory cannot be cleaned up.
+	t.Cleanup(func() { os.Chmod(locked, 0o700) })
+	if Writable(config) {
+		t.Error("Writable = true for a file whose directory cannot be written, want false: the save would fail")
+	}
 }
 
 func keys(m map[string]any) []string {

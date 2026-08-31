@@ -15,6 +15,10 @@ const props = defineProps<{
   kind: SourceKind
   // What to ask for, shown in the box: "add the Go toolchain", "add a redis".
   placeholder: string
+  // Whether the server runs the CLI in a container for want of a binary of its
+  // own. Said out loud under the box: the answer is the same one, it just takes
+  // longer, and the first one waits for an image to be built.
+  inContainer: boolean
 }>()
 
 // The file being edited. Claude Code answers with the whole of it, so the
@@ -73,6 +77,11 @@ function message(e: unknown): string {
     </button>
   </div>
 
+  <p v-if="inContainer" class="note">
+    Claude Code is not installed on this server, so this runs in a container: the same answer,
+    a little slower. The first one also waits for that container's image to be built.
+  </p>
+
   <p v-if="summary" class="summary">
     {{ summary }}
     <button v-if="previous !== null" type="button" class="link" @click="undo">undo</button>
@@ -113,6 +122,12 @@ button:hover:not(:disabled) {
 button:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.note {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.85rem;
 }
 
 .summary {
