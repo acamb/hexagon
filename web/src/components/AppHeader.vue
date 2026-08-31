@@ -13,7 +13,13 @@ async function signOut() {
 <template>
   <header class="bar">
     <nav>
-      <strong>Hexagon</strong>
+      <span class="brand">
+        <picture>
+          <source srcset="/hexagon-mark-dark.png" media="(prefers-color-scheme: dark)" />
+          <img src="/hexagon-mark.png" alt="" width="64" height="57" />
+        </picture>
+        <strong>Hexagon</strong>
+      </span>
       <RouterLink :to="{ name: 'sessions' }">Sessions</RouterLink>
       <RouterLink :to="{ name: 'images' }">Images</RouterLink>
       <RouterLink :to="{ name: 'accounts' }">Accounts</RouterLink>
@@ -40,8 +46,24 @@ async function signOut() {
 
 nav {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 1.25rem;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  /* Extra room after it, so the mark and the name do not read as one more
+     destination in the list beside them. */
+  margin-right: 0.5rem;
+}
+
+/* The intrinsic size is on the element so the bar does not reflow when the mark
+   arrives; the height here is what it is actually drawn at. */
+.brand img {
+  width: auto;
+  height: 1.75rem;
 }
 
 nav a {

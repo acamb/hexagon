@@ -1,4 +1,9 @@
-# Hexagon
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="img/hexagon-banner-dark.png">
+    <img src="img/hexagon-banner-alpha.png" alt="Hexagon — Scalable &amp; Connected Environments" width="760">
+  </picture>
+</p>
 
 Hexagon runs [Claude Code](https://claude.com/claude-code) in Docker containers and puts
 them in your browser. You pick a repository and a base image; it clones the repository on

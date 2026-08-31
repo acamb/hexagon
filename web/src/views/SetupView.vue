@@ -85,7 +85,12 @@ function message(e: unknown): string {
 
 <template>
   <main class="setup">
-    <h1>Hexagon</h1>
+    <h1>
+      <picture>
+        <source srcset="/hexagon-logo-dark.png" media="(prefers-color-scheme: dark)" />
+        <img src="/hexagon-logo.png" alt="Hexagon" width="420" height="443" />
+      </picture>
+    </h1>
     <p class="tagline">First-time setup.</p>
 
     <p v-if="loading" class="muted">Loading…</p>
@@ -175,8 +180,18 @@ function message(e: unknown): string {
 }
 
 h1 {
-  margin: 0;
-  font-size: 2.5rem;
+  margin: 0 0 1.5rem;
+}
+
+/* The wordmark is part of the artwork, so the heading is the logo and nothing
+   else. Half the intrinsic width: the file is sized for a high-density screen. */
+h1 img {
+  width: 210px;
+  height: auto;
+}
+
+h1 picture {
+  display: block;
   text-align: center;
 }
 

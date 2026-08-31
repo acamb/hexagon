@@ -27,9 +27,9 @@ function theme() {
   const styles = getComputedStyle(document.documentElement)
   const read = (name: string, fallback: string) => styles.getPropertyValue(name).trim() || fallback
   return {
-    background: read('--bg', '#131316'),
-    foreground: read('--text', '#ececf0'),
-    cursor: read('--accent', '#a78bfa'),
+    background: read('--bg', '#101519'),
+    foreground: read('--text', '#e6edf3'),
+    cursor: read('--accent', '#79bae9'),
   }
 }
 

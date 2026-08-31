@@ -1,13 +1,20 @@
 /* Base styles shared by every view. Component-specific rules live in the
    component's own <style scoped> block. */
 :root {
+  /* The palette comes off the logo: the blue of its icons, the green of its
+     tagline. The neutrals are not grey but that same blue drained of most of
+     its saturation, so a surface beside the mark looks chosen rather than
+     merely near it. */
   --bg: #ffffff;
-  --surface: #f6f6f7;
-  --border: #e3e3e6;
-  --text: #1c1c1f;
-  --text-muted: #6b6b73;
-  --accent: #7c3aed;
-  --ok: #16a34a;
+  --surface: #f3f5f8;
+  --border: #dde3ea;
+  --text: #16212b;
+  --text-muted: #5c6b78;
+  --accent: #1878be;
+  /* The status colours keep a saturation a dot can be read at from across the
+     page; only the hue is the brand's. Green says running, and the sage of the
+     tagline is too quiet to carry that on its own. */
+  --ok: #3f8a5f;
   --error: #dc2626;
   /* A consequence to read before choosing it, not a failure: the ports a
      session publishes off this machine are the first thing that needed one. */
@@ -24,14 +31,17 @@
 }
 
 @media (prefers-color-scheme: dark) {
+  /* The same colours lifted for a dark background the way img/derive-assets.py
+     lifts the logo: the hue is kept, the saturation pulled back, the value
+     raised. The two therefore stay in step. */
   :root {
-    --bg: #131316;
-    --surface: #1c1c21;
-    --border: #2e2e35;
-    --text: #ececf0;
-    --text-muted: #9a9aa4;
-    --accent: #a78bfa;
-    --ok: #4ade80;
+    --bg: #101519;
+    --surface: #182028;
+    --border: #26313b;
+    --text: #e6edf3;
+    --text-muted: #93a3b0;
+    --accent: #79bae9;
+    --ok: #5fbe8a;
     --error: #f87171;
     --warning: #fbbf24;
   }
