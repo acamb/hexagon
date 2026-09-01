@@ -2,12 +2,14 @@ package httpapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/andrea/hexagon/internal/config"
+	"github.com/andrea/hexagon/internal/store"
 )
 
 // newSettingsEnv builds a signed-in server whose running configuration is the
@@ -24,8 +26,14 @@ func newSettingsEnv(t *testing.T) *testEnv {
 	// have come from. Without it the file resolves to a configuration with no
 	// GitHub application in it, which is a server the settings page is right to
 	// refuse to save over.
+	//
+	// The git identity is here for the same reason: the session manager was
+	// built with one, and it reports the identity it holds as the running
+	// value, so a file that omitted it would describe a server waiting for a
+	// restart it does not need.
 	if err := os.WriteFile(env.cfg.ConfigPath, []byte(
-		`{"github": {"clientId": "client", "clientSecret": "secret", "allowedUsers": ["alice"]}}`,
+		`{"github": {"clientId": "client", "clientSecret": "secret", "allowedUsers": ["alice"]},`+
+			`"git": {"userName": "Hexagon User", "userEmail": "user@example.test"}}`,
 	), 0o600); err != nil {
 		t.Fatalf("write the configuration file: %v", err)
 	}
@@ -152,6 +160,52 @@ func TestSettingsApplyTheAllowlistWithoutARestart(t *testing.T) {
 	}
 }
 
+// The git identity is read only when a session is provisioned, so the manager
+// can be handed a new one while the server runs. Before that it was the startup
+// snapshot, and a session created right after saving still committed as whoever
+// the process had been started as — usually nobody.
+func TestSettingsApplyTheGitIdentityWithoutARestart(t *testing.T) {
+	env := newSettingsEnv(t)
+
+	resp := env.sendJSON(http.MethodPut, "/api/settings",
+		`{"git": {"userName": "Ada Lovelace", "userEmail": "ada@example.test"}}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, env.bodyString(resp))
+	}
+	var settings settingsResponse
+	env.decode(resp, &settings)
+
+	if settings.Running.Git.UserName != "Ada Lovelace" || settings.Running.Git.UserEmail != "ada@example.test" {
+		t.Errorf("running git identity = %q <%s>, want the saved one in force now",
+			settings.Running.Git.UserName, settings.Running.Git.UserEmail)
+	}
+	if settings.RestartRequired {
+		t.Error("restartRequired = true after changing only the git identity, want false")
+	}
+
+	// What the change is actually for: the next session.
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"repoFullName":"acme/widgets","imageId":%q}`, image.ID)), &created)
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	clones := env.cloner.clones()
+	if len(clones) != 1 {
+		t.Fatalf("made %d clones, want 1", len(clones))
+	}
+	if clones[0].UserName != "Ada Lovelace" || clones[0].UserEmail != "ada@example.test" {
+		t.Errorf("clone identity = %q <%s>, want the identity saved a moment ago",
+			clones[0].UserName, clones[0].UserEmail)
+	}
+	containerEnv := env.containerEnv()
+	if containerEnv["GIT_AUTHOR_NAME"] != "Ada Lovelace" || containerEnv["GIT_COMMITTER_EMAIL"] != "ada@example.test" {
+		t.Errorf("container git environment = %q / %q, want the identity saved a moment ago",
+			containerEnv["GIT_AUTHOR_NAME"], containerEnv["GIT_COMMITTER_EMAIL"])
+	}
+}
+
 func TestSettingsKeepAPublicURLChangeWaitingForARestart(t *testing.T) {
 	env := newSettingsEnv(t)
 	before := env.gate.OAuth().RedirectURI()
@@ -201,7 +255,9 @@ func TestSettingsRefuseValuesTheNextStartWouldNotLoad(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read the configuration file: %v", err)
 	}
-	if strings.Contains(string(after), "example.test") || strings.Contains(string(after), "maxSessionsPerUser") {
+	// By the keys the refused bodies would have added, not by their values: the
+	// file legitimately holds an example.test address of its own.
+	if strings.Contains(string(after), "publicUrl") || strings.Contains(string(after), "maxSessionsPerUser") {
 		t.Errorf("the file took a change that was refused: %s", after)
 	}
 }

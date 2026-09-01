@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/andrea/hexagon/internal/claudex"
@@ -131,8 +132,11 @@ type Config struct {
 	// ClaudeLoginDir holds the throwaway HOME of the container the browser login
 	// runs in, one directory per user.
 	ClaudeLoginDir string
-	GitUserName    string
-	GitUserEmail   string
+	// GitUserName and GitUserEmail are the author sessions commit as, and only
+	// the value this process started with: the settings page can replace them
+	// while it runs, so everything after NewManager reads GitIdentity instead.
+	GitUserName  string
+	GitUserEmail string
 	// ContainerUser is the uid:gid session containers run as.
 	ContainerUser string
 }
@@ -150,13 +154,44 @@ type Manager struct {
 	// legal too, and means such an image cannot start a session here.
 	compose Compose
 	cfg     Config
-	log     *slog.Logger
+	// gitMu guards the git identity below. It is the one part of cfg that moves
+	// while the server runs: the settings page applies it without a restart,
+	// and a session provisioned afterwards has to commit as the new author
+	// rather than as the one this process was started with. Everything else in
+	// cfg stays the startup snapshot, which is what the page reports as needing
+	// a restart.
+	gitMu    sync.RWMutex
+	gitName  string
+	gitEmail string
+	log      *slog.Logger
+}
+
+// GitIdentity is the author sessions are provisioned to commit as, as it stands
+// now.
+func (m *Manager) GitIdentity() (name, email string) {
+	m.gitMu.RLock()
+	defer m.gitMu.RUnlock()
+	return m.gitName, m.gitEmail
+}
+
+// SetGitIdentity replaces it, which is how a save on the settings page reaches
+// the next session without a restart.
+//
+// Sessions that already exist keep the identity they were provisioned with:
+// it was written into the clone's local git configuration and into the
+// container's environment when they were created, and a container keeps the
+// environment it was created with.
+func (m *Manager) SetGitIdentity(name, email string) {
+	m.gitMu.Lock()
+	defer m.gitMu.Unlock()
+	m.gitName, m.gitEmail = name, email
 }
 
 // NewManager wires the orchestrator.
 func NewManager(st *store.Store, docker dockerx.API, cloner Cloner, credentials CredentialSource, vscode VSCodeSource, compose Compose, cfg Config, log *slog.Logger) *Manager {
 	return &Manager{store: st, docker: docker, cloner: cloner, credentials: credentials,
-		vscode: vscode, compose: compose, cfg: cfg, log: log}
+		vscode: vscode, compose: compose, cfg: cfg, log: log,
+		gitName: cfg.GitUserName, gitEmail: cfg.GitUserEmail}
 }
 
 // CreateRequest describes the session to set up. The repository is named by the
@@ -336,6 +371,7 @@ func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, co
 	}
 
 	if session.RepoCloneURL != "" {
+		gitName, gitEmail := m.GitIdentity()
 		m.setStatus(session.ID, store.SessionStatusCloning, "")
 		err := m.cloner.Clone(ctx, gitops.Options{
 			CloneURL:  session.RepoCloneURL,
@@ -343,8 +379,8 @@ func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, co
 			Dest:      session.RepoDir,
 			Username:  credentials.Username,
 			Token:     credentials.Secret,
-			UserName:  m.cfg.GitUserName,
-			UserEmail: m.cfg.GitUserEmail,
+			UserName:  gitName,
+			UserEmail: gitEmail,
 		})
 		if err != nil {
 			return err
@@ -536,11 +572,12 @@ func (m *Manager) containerSpec(session *store.Session, homeDir, vscodeDir strin
 			env = append(env, "GITHUB_TOKEN="+credentials.Secret)
 		}
 	}
-	if m.cfg.GitUserName != "" {
-		env = append(env, "GIT_AUTHOR_NAME="+m.cfg.GitUserName, "GIT_COMMITTER_NAME="+m.cfg.GitUserName)
+	gitName, gitEmail := m.GitIdentity()
+	if gitName != "" {
+		env = append(env, "GIT_AUTHOR_NAME="+gitName, "GIT_COMMITTER_NAME="+gitName)
 	}
-	if m.cfg.GitUserEmail != "" {
-		env = append(env, "GIT_AUTHOR_EMAIL="+m.cfg.GitUserEmail, "GIT_COMMITTER_EMAIL="+m.cfg.GitUserEmail)
+	if gitEmail != "" {
+		env = append(env, "GIT_AUTHOR_EMAIL="+gitEmail, "GIT_COMMITTER_EMAIL="+gitEmail)
 	}
 	// A credential configured in the UI outranks the one the process was started
 	// with: it is the one the user can see, change and be told about.

@@ -187,7 +187,7 @@ function message(e: unknown): string {
     <p class="intro">
       Hexagon's configuration file, edited from here. Most of it is read once when the server
       starts, so a change is saved now and in force at the next start; the GitHub sign-in
-      settings are the exception and take effect immediately.
+      settings and the git identity are the exceptions and take effect immediately.
     </p>
 
     <Notice v-if="error" kind="error" :message="error" class="alert" @dismiss="error = null" />

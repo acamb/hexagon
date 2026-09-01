@@ -31,8 +31,8 @@ const maxSettingsRequestBody = 16 << 10
 // when the process starts — the store, the Docker client, the session manager,
 // the code-server release, the rate limiter, the cookie Secure flag — so a page
 // that showed one set of values would be claiming that saving is applying. It
-// is not, for all but the three the gate holds, and RestartRequired is the
-// difference said out loud.
+// is not, for all but the settings the gate holds and the git identity the
+// session manager holds, and RestartRequired is the difference said out loud.
 type settingsResponse struct {
 	ConfigPath      string `json:"configPath"`
 	Writable        bool   `json:"writable"`
@@ -302,6 +302,11 @@ func (s *Server) applySettings(ctx context.Context, user *store.User, patch conf
 		return err
 	}
 	s.gate.Set(oauth, allowlist)
+	// The git identity is the one setting outside the gate that a save applies
+	// at once. It is read when a session is provisioned and nowhere else, so
+	// handing it to the manager is the whole of applying it — which is why the
+	// page stops asking for a restart on account of these two.
+	s.sessions.SetGitIdentity(candidate.GitUserName, candidate.GitUserEmail)
 	return nil
 }
 
@@ -320,14 +325,16 @@ func (s *Server) settingsSnapshot() (settingsResponse, error) {
 	}
 
 	running := settingsValuesOf(s.cfg)
-	// The gate is the live truth for the three settings a save applies without
-	// a restart; s.cfg is the snapshot this process started from.
+	// The gate and the session manager are the live truth for the settings a
+	// save applies without a restart; s.cfg is the snapshot this process
+	// started from.
 	if oauth := s.gate.OAuth(); oauth != nil {
 		running.GitHub.ClientID = oauth.ClientID()
 	}
 	if allowlist := s.gate.Allowlist(); allowlist != nil {
 		running.GitHub.AllowedUsers = allowlist.Entries()
 	}
+	running.Git.UserName, running.Git.UserEmail = s.sessions.GitIdentity()
 
 	return settingsResponse{
 		ConfigPath:         s.cfg.ConfigPath,
