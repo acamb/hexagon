@@ -191,7 +191,7 @@ func TestClaudeLoginTerminalBindsTheCredentialsDirectoryAndCarriesNoCredential(t
 	if len(requests) != 1 {
 		t.Fatalf("made %d exec requests, want 1", len(requests))
 	}
-	if got := strings.Join(requests[0].Cmd, " "); !strings.Contains(got, "tmux new-session -A -D -s login") {
+	if got := strings.Join(requests[0].Cmd, " "); !strings.Contains(got, "tmux -u new-session -A -D -s login") {
 		t.Errorf("exec command = %q, want the login tmux session", got)
 	}
 }

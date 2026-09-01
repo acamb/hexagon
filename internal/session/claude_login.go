@@ -70,7 +70,7 @@ func (m *Manager) StartClaudeLogin(ctx context.Context, userID, imageRef string)
 		// No Anthropic variable of any kind. A container that already had one
 		// would consider itself authenticated, and the login the user came here
 		// for would be theatre performed on the credential they are replacing.
-		Env:        []string{"HOME=" + dockerx.AgentHome, "TERM=xterm-256color"},
+		Env:        []string{"HOME=" + dockerx.AgentHome, "TERM=xterm-256color", "LANG=C.UTF-8"},
 		WorkingDir: dockerx.AgentHome,
 		User:       m.cfg.ContainerUser,
 		// Not hexagon.managed: the reconciler matches managed containers against

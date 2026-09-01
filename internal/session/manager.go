@@ -511,6 +511,12 @@ func (m *Manager) containerSpec(session *store.Session, homeDir, vscodeDir strin
 	env := []string{
 		"HOME=" + dockerx.AgentHome,
 		"TERM=xterm-256color",
+		// C.UTF-8 rather than en_US.UTF-8: glibc provides it without the
+		// `locales` package, so it works in an image Hexagon did not build.
+		// Without it the container runs in the C locale, and tmux decides its
+		// client cannot show UTF-8 — it then draws an underscore in place of
+		// every accent and every box-drawing rule.
+		"LANG=C.UTF-8",
 	}
 	// The clone on the host has already used these; whether the container gets
 	// them too is the session's own choice, made when it was created. There is

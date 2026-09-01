@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -86,7 +87,7 @@ func TestTerminalStreamsBothWays(t *testing.T) {
 	if req.ContainerID != "container-1" {
 		t.Errorf("attached to container %q", req.ContainerID)
 	}
-	if got := strings.Join(req.Cmd, " "); got != "tmux new-session -A -D -s main -c /workspace" {
+	if got := strings.Join(req.Cmd, " "); got != "tmux -u new-session -A -D -s main -c /workspace" {
 		t.Errorf("exec command = %q", got)
 	}
 	if req.Size.Cols != 120 || req.Size.Rows != 40 {
@@ -123,6 +124,33 @@ func TestTerminalStreamsBothWays(t *testing.T) {
 	}
 	if string(buf[:n]) != "ls -la\r" {
 		t.Errorf("keystrokes = %q", buf[:n])
+	}
+}
+
+// Without a UTF-8 locale a tmux client decides it cannot show UTF-8 and draws an
+// underscore in place of every accent and every box-drawing rule, so the whole
+// bug is invisible on the wire: the bytes Hexagon forwards are already wrong.
+func TestTerminalAttachesWithAUTF8Locale(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	env.insertSession("s1", store.SessionStatusRunning, "container-1")
+
+	conn, _, err := env.dialTerminal("s1", "", testOrigin)
+	if err != nil {
+		t.Fatalf("dial terminal: %v", err)
+	}
+	defer conn.Close(websocket.StatusNormalClosure, "")
+	env.docker.containerSide(t)
+
+	requests, _ := env.docker.execs()
+	if len(requests) != 1 {
+		t.Fatalf("made %d exec requests, want 1", len(requests))
+	}
+	if got := requests[0].Env; !slices.Contains(got, "LANG=C.UTF-8") {
+		t.Errorf("exec env = %v, want a UTF-8 locale in it", got)
+	}
+	if got := requests[0].Cmd; !slices.Contains(got, "-u") {
+		t.Errorf("exec command = %v, want -u so the client is UTF-8 whatever the image sets", got)
 	}
 }
 

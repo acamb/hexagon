@@ -305,9 +305,9 @@ func (s *Server) handleClaudeLoginTerminal(w http.ResponseWriter, r *http.Reques
 
 	exec, err := s.docker.AttachExec(ctx, dockerx.ExecRequest{
 		ContainerID: containerID,
-		Cmd: []string{"tmux", "new-session", "-A", "-D", "-s", session.ClaudeLoginTmux,
+		Cmd: []string{"tmux", "-u", "new-session", "-A", "-D", "-s", session.ClaudeLoginTmux,
 			"-c", dockerx.AgentHome, session.ClaudeLoginCommand},
-		Env:  []string{"TERM=xterm-256color"},
+		Env:  []string{"TERM=xterm-256color", "LANG=C.UTF-8"},
 		Size: sizeFromQuery(r.URL.Query()),
 	})
 	if err != nil {

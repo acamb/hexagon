@@ -27,7 +27,7 @@ const (
 	terminalBufferSize = 32 << 10
 )
 
-// The command a terminal attaches with is `tmux new-session -A -D`: -A creates
+// The command a terminal attaches with is `tmux -u new-session -A -D`: -A creates
 // the session if it is not there and attaches otherwise, so reconnecting after a
 // reload is the same operation as connecting the first time. -D detaches any
 // client that is already attached.
@@ -38,6 +38,14 @@ const (
 // client, one stale 80x24 client would shrink the terminal for the live one.
 // The cost is that a second tab takes the terminal over from the first rather
 // than watching alongside it.
+//
+// -u is what makes non-ASCII readable. A tmux client treats itself as UTF-8
+// capable only when LC_ALL, LC_CTYPE or LANG says so, and an image Hexagon did
+// not build may set none of them; a client that decides otherwise renders every
+// accent and every box-drawing rule as an underscore. The flag settles it
+// without depending on what is in the image — and it is the half of the fix
+// that reaches a container created before Hexagon set a locale, because a
+// container keeps the environment it was created with.
 //
 // The session itself is created by the bootstrap, which owns the name; handlers
 // take it from there rather than repeating the string.
@@ -79,8 +87,8 @@ func (s *Server) handleTerminal(w http.ResponseWriter, r *http.Request) {
 
 	exec, err := s.docker.AttachExec(ctx, dockerx.ExecRequest{
 		ContainerID: session.ContainerID,
-		Cmd:         []string{"tmux", "new-session", "-A", "-D", "-s", tmuxSessionName, "-c", dockerx.WorkspaceMount},
-		Env:         []string{"TERM=xterm-256color"},
+		Cmd:         []string{"tmux", "-u", "new-session", "-A", "-D", "-s", tmuxSessionName, "-c", dockerx.WorkspaceMount},
+		Env:         []string{"TERM=xterm-256color", "LANG=C.UTF-8"},
 		Size:        sizeFromQuery(r.URL.Query()),
 	})
 	if err != nil {
