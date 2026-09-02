@@ -27,16 +27,26 @@ make vet          # go vet ./...
 make install      # the installed layout into DESTDIR, with PREFIX
 make deb          # one .deb for one architecture, built inside Debian
 make release      # every release artifact into dist/, plus SHA256SUMS
+make publish      # tag it and create the GitHub release from dist/, with gh
 ```
 
-Cutting a release is three steps, and the version is the `VERSION` file and nothing else —
-bump it first, because the binary, the package and the asset names all come from it:
+Cutting a release is two steps, and the version is the `VERSION` file and nothing else —
+bump it first, because the binary, the package, the release tag and the asset names all
+come from it:
 
 ```sh
 make test && make vet && make release
-git tag -a v0.1.0 -m 'hexagon 0.1.0' && git push --tags
-gh release create v0.1.0 --title 'hexagon 0.1.0' --notes '...' dist/*
+make publish                       # or: make publish NOTES='what changed'
 ```
+
+`publish` tags `v$(VERSION)`, pushes the tag, and creates the release from exactly the
+assets `make release` wrote for that version — never `dist/*`, which would carry a stale
+one along. Without `NOTES` the body is the one GitHub generates from the commits since
+the previous tag. It builds nothing: a publish that rebuilt on its own would hide a `dist`
+that no longer matches the tree being tagged, so instead it refuses — on a dirty tree, on
+a `HEAD` no branch of `origin` contains, on a version already tagged or released, and on a
+`dist` that fails its own `SHA256SUMS` — and says which step to run. Every one of those
+checks guards a mistake that a push makes public and permanent.
 
 `install.sh` finds a release by following the redirect from `/releases/latest` and builds
 the asset name from the tag, so **renaming an asset breaks every future install of every

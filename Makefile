@@ -25,8 +25,14 @@ BUILD_IMAGE    ?= golang:1.26-bookworm
 RELEASE_ARCHES ?= amd64 arm64
 ARTIFACTS      ?= all
 
+# The body of the release `make publish` creates. Empty means GitHub writes one
+# from the commits since the previous tag. It is exported rather than
+# interpolated into the recipe so that quotes and newlines in it survive.
+NOTES ?=
+export NOTES
+
 .PHONY: all build build-web build-server dist-placeholder dev dev-server dev-web \
-	test fmt vet clean install artifacts deb release
+	test fmt vet clean install artifacts deb release publish
 
 all: build
 
@@ -109,6 +115,46 @@ release:
 	@for a in $(RELEASE_ARCHES); do $(MAKE) artifacts ARCH=$$a ARTIFACTS=all || exit 1; done
 	cd dist && sha256sum hexagon_* > SHA256SUMS
 	@ls -l dist
+
+# Publishes what `make release` built: the annotated tag, then the GitHub
+# release carrying exactly the assets for this VERSION. It deliberately does not
+# build. `make release` wipes dist and costs two container builds, and a publish
+# that rebuilt on its own would hide the case where dist no longer matches the
+# tree being tagged — so it checks instead, and says what to run.
+#
+# Every check is here because the mistake it catches cannot be taken back: a tag
+# and a release are public the moment they are pushed. NOTES='...' writes the
+# body; without it GitHub generates one from the commits since the last tag.
+publish:
+	@command -v gh >/dev/null 2>&1 || \
+	  { echo "make publish: gh is not installed" >&2; exit 1; }
+	@gh auth status >/dev/null 2>&1 || \
+	  { echo "make publish: gh is not authenticated; run gh auth login" >&2; exit 1; }
+	@test -z "$$(git status --porcelain)" || \
+	  { echo "make publish: the working tree is dirty; a tag must name a committed tree" >&2; exit 1; }
+	@git fetch --quiet --tags origin || \
+	  { echo "make publish: cannot reach origin" >&2; exit 1; }
+	@test -n "$$(git branch --remotes --contains HEAD)" || \
+	  { echo "make publish: HEAD is not on any branch of origin; push it first" >&2; exit 1; }
+	@if git rev-parse -q --verify refs/tags/v$(VERSION) >/dev/null || \
+	    gh release view v$(VERSION) >/dev/null 2>&1; then \
+	  echo "make publish: v$(VERSION) is already tagged or released; bump VERSION" >&2; exit 1; \
+	fi
+	@assets=""; \
+	for a in $(RELEASE_ARCHES); do \
+	  assets="$$assets dist/hexagon_$(VERSION)_linux_$$a.tar.gz dist/hexagon_$(VERSION)_$$a.deb"; \
+	done; \
+	assets="$$assets dist/SHA256SUMS"; \
+	for f in $$assets; do \
+	  test -f "$$f" || { echo "make publish: $$f is missing; run make release" >&2; exit 1; }; \
+	done; \
+	(cd dist && sha256sum --quiet -c SHA256SUMS) || \
+	  { echo "make publish: dist does not match its SHA256SUMS; run make release" >&2; exit 1; }; \
+	git tag -a v$(VERSION) -m 'hexagon $(VERSION)' || exit 1; \
+	git push origin v$(VERSION) || \
+	  { git tag -d v$(VERSION); echo "make publish: pushing the tag failed; nothing was published" >&2; exit 1; }; \
+	if [ -n "$$NOTES" ]; then set -- --notes "$$NOTES"; else set -- --generate-notes; fi; \
+	gh release create v$(VERSION) --verify-tag --title 'hexagon $(VERSION)' "$$@" $$assets
 
 clean:
 	rm -rf $(BIN) $(WEB)/dist dist
