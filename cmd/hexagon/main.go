@@ -53,6 +53,19 @@ func main() {
 	}
 }
 
+// rootStartupError refuses to start as root unless the operator opts in. The
+// container user is derived from this process (ContainerUser, below), so uid 0
+// here means root:root in every session container — the opposite of the
+// "containers run as you, never as root" guarantee. It is a function so the
+// decision can be tested without the test being root.
+func rootStartupError(uid int, allowRoot bool) error {
+	if uid == 0 && !allowRoot {
+		return errors.New("refusing to run as root: session containers would run as root too; " +
+			"run as an unprivileged user, or set HEXAGON_ALLOW_ROOT to override")
+	}
+	return nil
+}
+
 func run(configPath string) error {
 	// The configuration comes first because it decides how verbose the logger
 	// is. Nothing before this point can fail in a way worth logging: a Load
@@ -70,6 +83,16 @@ func run(configPath string) error {
 	if cfg.InsecureHTTP {
 		log.Warn("insecureHttp is set: the session cookie may travel in plaintext",
 			"addr", cfg.Addr, "public_url", cfg.PublicURL)
+	}
+	// A server running as root would run every session container as root:root,
+	// which is the boundary the container is supposed to be — against the
+	// untrusted code a session runs — turned off. Fail closed.
+	allowRoot := os.Getenv("HEXAGON_ALLOW_ROOT") != ""
+	if err := rootStartupError(os.Getuid(), allowRoot); err != nil {
+		return err
+	}
+	if allowRoot && os.Getuid() == 0 {
+		log.Warn("running as root because HEXAGON_ALLOW_ROOT is set: session containers will run as root")
 	}
 
 	st, err := store.Open(cfg.DatabasePath)

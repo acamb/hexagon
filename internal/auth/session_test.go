@@ -130,3 +130,56 @@ func TestIssueBindsTheSessionToTheTokenExpiry(t *testing.T) {
 		t.Fatal("token_expires_at is NULL, want the session bound to the token")
 	}
 }
+
+// The OAuth state cookie mirrors the session cookie: over https it takes the
+// __Host- prefix and Path=/, so no sibling subdomain can overwrite it and force
+// a login as the attacker's account; over plaintext, where the prefix is
+// impossible, it keeps its plain name and /api/auth path. Whatever the mode,
+// State reads back what SetState wrote and clears it.
+func TestStateCookieIsHostPrefixedOverHTTPS(t *testing.T) {
+	for _, c := range []struct {
+		name       string
+		publicURL  string
+		wantName   string
+		wantPath   string
+		wantSecure bool
+	}{
+		{"plaintext", "http://127.0.0.1:8080", "hexagon_oauth_state", "/api/auth", false},
+		{"https", "https://hexagon.example", "__Host-hexagon_oauth_state", "/", true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			svc, _ := newTestService(t, c.publicURL)
+
+			rec := httptest.NewRecorder()
+			svc.SetState(rec, "the-state")
+			cookies := rec.Result().Cookies()
+			if len(cookies) != 1 {
+				t.Fatalf("SetState set %d cookies, want 1", len(cookies))
+			}
+			cookie := cookies[0]
+			if cookie.Name != c.wantName {
+				t.Errorf("name = %q, want %q", cookie.Name, c.wantName)
+			}
+			if cookie.Path != c.wantPath {
+				t.Errorf("path = %q, want %q", cookie.Path, c.wantPath)
+			}
+			if cookie.Secure != c.wantSecure {
+				t.Errorf("secure = %v, want %v", cookie.Secure, c.wantSecure)
+			}
+			if !cookie.HttpOnly {
+				t.Error("HttpOnly = false, want true")
+			}
+
+			// One redirect, one usable state: State returns it and clears it.
+			req := httptest.NewRequest(http.MethodGet, "/api/auth/callback", nil)
+			req.AddCookie(cookie)
+			cleared := httptest.NewRecorder()
+			if got := svc.State(cleared, req); got != "the-state" {
+				t.Errorf("State = %q, want %q", got, "the-state")
+			}
+			if got := cleared.Result().Cookies()[0]; got.Name != c.wantName || got.MaxAge != -1 {
+				t.Errorf("cleared cookie = %q with MaxAge %d, want %q with -1", got.Name, got.MaxAge, c.wantName)
+			}
+		})
+	}
+}

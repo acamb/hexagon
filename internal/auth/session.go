@@ -29,8 +29,14 @@ const (
 	// name CookieName returns, which over https is this one prefixed.
 	sessionCookie = "hexagon_session"
 	// stateCookie holds the OAuth state parameter between the redirect to
-	// GitHub and the callback. It keeps its plain name in both modes: __Host-
-	// forbids a Path, and this cookie's is /api/auth.
+	// GitHub and the callback. Over https it takes the __Host- prefix like the
+	// session cookie, which means widening its Path to / (the prefix forbids
+	// any other): the trade buys the one thing the state value needs and a
+	// server-side check cannot give it — no sibling subdomain can overwrite it
+	// over plaintext and force a login as the attacker's account. In plaintext
+	// mode the prefix is impossible (it requires Secure) so the plain name and
+	// the /api/auth path stand. stateCookieName and stateCookiePath are the two
+	// places that decide, so set, read and clear cannot disagree.
 	stateCookie = "hexagon_oauth_state"
 	// hostPrefix is enforced by the browser, which refuses a cookie carrying it
 	// unless it is Secure, Path=/ and has no Domain. That is what makes the
@@ -79,6 +85,24 @@ func (s *Service) CookieName() string {
 		return hostPrefix + sessionCookie
 	}
 	return sessionCookie
+}
+
+// stateCookieName and stateCookiePath are to the state cookie what CookieName
+// is to the session cookie: over https the __Host- prefix, which the browser
+// only accepts on a cookie that is Secure and served from Path=/. SetState,
+// State and the clear all go through them so the three agree.
+func (s *Service) stateCookieName() string {
+	if s.secure {
+		return hostPrefix + stateCookie
+	}
+	return stateCookie
+}
+
+func (s *Service) stateCookiePath() string {
+	if s.secure {
+		return "/"
+	}
+	return cookiePathAPI
 }
 
 // Issue creates a session for user and sets the cookie on w. tokenExpiry is when
@@ -169,9 +193,9 @@ func (s *Service) Logout(ctx context.Context, w http.ResponseWriter, r *http.Req
 // SetState stores the OAuth state parameter in a short lived cookie.
 func (s *Service) SetState(w http.ResponseWriter, state string) {
 	http.SetCookie(w, &http.Cookie{
-		Name:     stateCookie,
+		Name:     s.stateCookieName(),
 		Value:    state,
-		Path:     cookiePathAPI,
+		Path:     s.stateCookiePath(),
 		MaxAge:   int(stateTTL.Seconds()),
 		HttpOnly: true,
 		Secure:   s.secure,
@@ -182,8 +206,8 @@ func (s *Service) SetState(w http.ResponseWriter, state string) {
 // State returns the stored OAuth state and clears the cookie: one redirect,
 // one usable state value.
 func (s *Service) State(w http.ResponseWriter, r *http.Request) string {
-	s.clearCookie(w, stateCookie, cookiePathAPI)
-	cookie, err := r.Cookie(stateCookie)
+	s.clearCookie(w, s.stateCookieName(), s.stateCookiePath())
+	cookie, err := r.Cookie(s.stateCookieName())
 	if err != nil {
 		return ""
 	}

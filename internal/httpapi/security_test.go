@@ -19,6 +19,7 @@ func TestSecurityHeadersOnEveryResponse(t *testing.T) {
 		for _, c := range []struct{ header, want string }{
 			{"X-Content-Type-Options", "nosniff"},
 			{"Referrer-Policy", "same-origin"},
+			{"X-Frame-Options", "DENY"},
 			{"Content-Security-Policy", contentSecurityPolicy},
 		} {
 			if got := resp.Header.Get(c.header); got != c.want {
@@ -65,8 +66,13 @@ func TestSecurityHeadersExemptTheVSCodeProxyFromTheCSP(t *testing.T) {
 	if got := resp.Header.Get("Content-Security-Policy"); got != "" {
 		t.Errorf("CSP on the proxy route = %q, want none", got)
 	}
-	// The headers that cost the editor nothing are still there.
+	// The headers that cost the editor nothing are still there. X-Frame-Options
+	// matters most here: with the CSP (and its frame-ancestors) gone, it is what
+	// keeps the editor from being framed for a client that sends no Sec-Fetch-Dest.
 	if got := resp.Header.Get("X-Content-Type-Options"); got != "nosniff" {
 		t.Errorf("X-Content-Type-Options on the proxy route = %q, want nosniff", got)
+	}
+	if got := resp.Header.Get("X-Frame-Options"); got != "DENY" {
+		t.Errorf("X-Frame-Options on the proxy route = %q, want DENY (CSP is exempt here)", got)
 	}
 }

@@ -478,7 +478,10 @@ autonomous agent — from the host, which is why it runs as you and never as roo
   other routes to the host it does not yet model (a named volume backed by a bind driver, a
   host network defined at the top level, `device_cgroup_rules`, `env_file`, and more). Since
   the file's author is the instance's own operator — see the one-person rule above — tightening
-  it further is defense in depth, not a trust boundary.
+  it further is defense in depth, not a trust boundary. The container user is the user the
+  server runs as, so the server refuses to start as root — a root server would give every
+  session container root, which is the boundary against the code it runs turned off. Set
+  `HEXAGON_ALLOW_ROOT` only on a host that genuinely has no unprivileged user to run as.
 - **A published session port has nothing in front of it.** Neither has code-server on its
   own port. Hexagon's sign-in guards the API and the VS Code proxy, not a port you asked it
   to publish — which is why the address field carries a warning. code-server's own port

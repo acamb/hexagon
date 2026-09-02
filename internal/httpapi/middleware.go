@@ -117,6 +117,13 @@ func (s *Server) securityHeaders(next http.Handler) http.Handler {
 		header := w.Header()
 		header.Set("X-Content-Type-Options", "nosniff")
 		header.Set("Referrer-Policy", "same-origin")
+		// X-Frame-Options is set here, before the CSP branch, because the VS
+		// Code proxy paths are exempt from the CSP that carries
+		// frame-ancestors 'none' — leaving them framing-defended only by a
+		// Sec-Fetch-Dest check a header-less client can skip. This legacy
+		// header needs no fetch metadata and is honoured everywhere, so it
+		// covers those paths too; on our own pages it just restates the CSP.
+		header.Set("X-Frame-Options", "DENY")
 		if hsts {
 			header.Set("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
 		}

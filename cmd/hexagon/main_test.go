@@ -136,3 +136,27 @@ func TestVersionMatchesTheVersionFile(t *testing.T) {
 		t.Errorf("version = %q, want %q (from VERSION) or %q", version, file, "dev")
 	}
 }
+
+// The container user is derived from the server process, so starting as root
+// would run every session container as root. The server refuses unless the
+// operator opts in with HEXAGON_ALLOW_ROOT.
+func TestRootStartupError(t *testing.T) {
+	for _, c := range []struct {
+		name      string
+		uid       int
+		allowRoot bool
+		wantErr   bool
+	}{
+		{"root refused", 0, false, true},
+		{"root allowed by override", 0, true, false},
+		{"unprivileged", 1000, false, false},
+		{"unprivileged with override", 1000, true, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			err := rootStartupError(c.uid, c.allowRoot)
+			if (err != nil) != c.wantErr {
+				t.Errorf("rootStartupError(%d, %v) = %v, want error: %v", c.uid, c.allowRoot, err, c.wantErr)
+			}
+		})
+	}
+}
