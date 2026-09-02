@@ -231,6 +231,7 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		ClaudeCredentials: cfg.ClaudeCredentials,
 		AnthropicAPIKey:   cfg.AnthropicAPIKey,
 		ClaudeLoginDir:    filepath.Join(cfg.DataDir, "claude-login"),
+		ClaudeAccountsDir: cfg.ClaudeAccountsDir,
 		GitUserName:       cfg.GitUserName,
 		GitUserEmail:      cfg.GitUserEmail,
 		ContainerUser:     fmt.Sprintf("%d:%d", os.Getuid(), os.Getgid()),

@@ -25,11 +25,16 @@ import (
 var ErrUnavailable = errors.New("claude code is not available")
 
 // Credential kinds, mirrored by the CHECK constraint in
-// 006_claude_credentials.sql. The kind exists to choose a variable name, which
-// is why it is defined here rather than beside the table.
+// 009_claude_accounts.sql. api_key and oauth_token choose a variable name,
+// which is why they are defined here rather than beside the table; KindLogin
+// names no variable at all, and its constant is store.ClaudeAccountKindLogin
+// instead.
 const (
 	KindAPIKey     = "api_key"
 	KindOAuthToken = "oauth_token"
+	// KindLogin means the credential is a file Claude Code itself wrote —
+	// Secret is always empty and File names it instead.
+	KindLogin = "login"
 )
 
 // Credential is how the CLI is authenticated. The zero value means "whatever
@@ -38,6 +43,9 @@ const (
 type Credential struct {
 	Kind   string
 	Secret string
+	// File is set only for KindLogin: the credentials file an account's own
+	// browser login wrote, to be bind mounted wherever this credential runs.
+	File string
 }
 
 // Env returns the assignments that hand this credential over, and nothing at

@@ -71,9 +71,16 @@ type Session struct {
 	// Compose is whether this session is a compose project rather than a single
 	// container. It comes from the image it was created from and, like the two
 	// above, cannot change afterwards.
-	Compose   bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	Compose bool
+	// ClaudeAccountID names which Claude account the container authenticates
+	// with. Empty means "whatever the server resolves" — the user's default
+	// account, or the server's own configuration — which is what a session
+	// created before this column existed, and one created naming no account,
+	// both mean. Editable while the session is stopped; see
+	// session.Manager.SetClaudeAccount.
+	ClaudeAccountID string
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // formatPorts and parsePorts move Session.Ports across the one TEXT column that
@@ -105,7 +112,7 @@ func parsePorts(raw string) ([]int, error) {
 
 const sessionColumns = `id, user_id, title, provider, repo_full_name, repo_clone_url, branch, image_id, image_ref,
 	workspace_dir, repo_dir, container_id, status, error, auto_claude, propagate_token, vscode, ports, port_address,
-	compose, created_at, updated_at`
+	compose, claude_account_id, created_at, updated_at`
 
 // SessionByID returns one of the user's sessions, or ErrNotFound.
 func (s *Store) SessionByID(ctx context.Context, userID, id string) (*Session, error) {
@@ -129,7 +136,7 @@ func scanSession(row scanner) (*Session, error) {
 		&session.RepoCloneURL, &session.Branch, &session.ImageID, &session.ImageRef,
 		&session.WorkspaceDir, &session.RepoDir, &session.ContainerID, &session.Status,
 		&session.Error, &session.AutoClaude, &session.PropagateToken, &session.VSCode, &ports,
-		&session.PortAddress, &session.Compose, &createdAt, &updatedAt)
+		&session.PortAddress, &session.Compose, &session.ClaudeAccountID, &createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -155,11 +162,12 @@ func (s *Store) CreateSession(ctx context.Context, session *Session) (*Session, 
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (`+sessionColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.UserID, session.Title, session.Provider, session.RepoFullName, session.RepoCloneURL,
 		session.Branch, session.ImageID, session.ImageRef, session.WorkspaceDir, session.RepoDir,
 		session.ContainerID, session.Status, session.Error, session.AutoClaude, session.PropagateToken, session.VSCode,
-		formatPorts(session.Ports), session.PortAddress, session.Compose, formatTime(now), formatTime(now))
+		formatPorts(session.Ports), session.PortAddress, session.Compose, session.ClaudeAccountID,
+		formatTime(now), formatTime(now))
 	if err != nil {
 		return nil, fmt.Errorf("create session: %w", err)
 	}
@@ -260,6 +268,28 @@ func (s *Store) SetSessionPorts(ctx context.Context, userID, id string, ports []
 		formatPorts(ports), address, formatTime(time.Now()), id, userID)
 	if err != nil {
 		return fmt.Errorf("set session ports: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// SetSessionClaudeAccount records which Claude account a session's container
+// authenticates with. Like SetSessionPorts, the caller writes the row before
+// rebuilding the container it describes, so a failed rebuild leaves a session
+// claiming an account its container does not carry rather than one carrying an
+// account it does not admit to.
+func (s *Store) SetSessionClaudeAccount(ctx context.Context, userID, id, accountID string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE sessions SET claude_account_id = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
+		accountID, formatTime(time.Now()), id, userID)
+	if err != nil {
+		return fmt.Errorf("set session claude account: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {

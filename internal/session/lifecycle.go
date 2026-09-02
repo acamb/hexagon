@@ -211,6 +211,43 @@ func (m *Manager) rebuildProject(ctx context.Context, session *store.Session, sp
 	return m.store.SetSessionContainer(ctx, session.ID, state.ID)
 }
 
+// SetClaudeAccount changes what Claude Code inside a stopped session's
+// container authenticates as. It is built exactly as SetPorts is, because it
+// is the same operation on a different field: a container keeps the
+// credential it was created with, so the only way to change it is to build
+// another one over the same workspace, which is only safe while the session is
+// down.
+func (m *Manager) SetClaudeAccount(ctx context.Context, session *store.Session, accountID string) error {
+	if session.Status != store.SessionStatusStopped {
+		return ErrSessionNotStopped
+	}
+	if session.ContainerID == "" {
+		return ErrNoContainer
+	}
+	// Nothing to rebuild for a request that asks for what is already there.
+	if session.ClaudeAccountID == accountID {
+		return nil
+	}
+
+	previous := session.ClaudeAccountID
+	session.ClaudeAccountID = accountID
+	spec, err := m.rebuildSpec(ctx, session)
+	if err != nil {
+		session.ClaudeAccountID = previous
+		return err
+	}
+
+	// The row is written before the container is built, for the reason
+	// SetPorts is: if the rebuild then fails, the session claims an account its
+	// container does not carry, and the other order would leave a session
+	// showing one account while its container authenticates as another.
+	if err := m.store.SetSessionClaudeAccount(ctx, session.UserID, session.ID, accountID); err != nil {
+		session.ClaudeAccountID = previous
+		return err
+	}
+	return m.rebuildContainer(ctx, session, spec)
+}
+
 // Start brings a stopped session back up and makes sure tmux is running in it.
 // A container that has been restarted has an empty tmux server, so the
 // bootstrap runs again; the previous session's scrollback is gone either way.

@@ -9,7 +9,7 @@ as described in [AGENTS.md](../../AGENTS.md).
 | 1 | First time wizard | [01-first-time-wizard.md](01-first-time-wizard.md) | done |
 | 2 | Server settings | [02-server-settings.md](02-server-settings.md) | done |
 | 3 | Support for complex builds | [03-complex-builds.md](03-complex-builds.md) | done |
-| 4 | Multiple Claude accounts | [04-multiple-claude-accounts.md](04-multiple-claude-accounts.md) | todo |
+| 4 | Multiple Claude accounts | [04-multiple-claude-accounts.md](04-multiple-claude-accounts.md) | done |
 
 Points 1 and 2 are the same feature seen twice: the wizard configures a server
 that cannot authenticate anybody yet, the settings page reconfigures one that

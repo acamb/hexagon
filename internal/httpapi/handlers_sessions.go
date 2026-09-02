@@ -50,8 +50,14 @@ type sessionResponse struct {
 	PortAddress string `json:"portAddress"`
 	// Compose is whether this session is a project rather than a single
 	// container, which is a property of the image it came from.
-	Compose   bool      `json:"compose"`
-	CreatedAt time.Time `json:"createdAt"`
+	Compose bool `json:"compose"`
+	// ClaudeAccountID names which Claude account this session's container
+	// authenticates with, empty when it resolves dynamically — the user's
+	// default account, or the server's own configuration. Editable while the
+	// session is stopped, in the shape of PortAddress above: see
+	// handleUpdateSessionClaudeAccount.
+	ClaudeAccountID string    `json:"claudeAccountId"`
+	CreatedAt       time.Time `json:"createdAt"`
 }
 
 // sessionPort is one published port. Host is absent while the session is not
@@ -74,23 +80,24 @@ func newSessionResponse(s *store.Session, hostPorts map[int]int) sessionResponse
 		address = "127.0.0.1"
 	}
 	return sessionResponse{
-		ID:             s.ID,
-		Title:          s.Title,
-		Provider:       s.Provider,
-		RepoFullName:   s.RepoFullName,
-		Branch:         s.Branch,
-		ImageID:        s.ImageID,
-		ImageRef:       s.ImageRef,
-		RepoDir:        s.RepoDir,
-		Status:         s.Status,
-		Error:          s.Error,
-		AutoClaude:     s.AutoClaude,
-		PropagateToken: s.PropagateToken,
-		VSCode:         s.VSCode,
-		Ports:          ports,
-		PortAddress:    address,
-		Compose:        s.Compose,
-		CreatedAt:      s.CreatedAt,
+		ID:              s.ID,
+		Title:           s.Title,
+		Provider:        s.Provider,
+		RepoFullName:    s.RepoFullName,
+		Branch:          s.Branch,
+		ImageID:         s.ImageID,
+		ImageRef:        s.ImageRef,
+		RepoDir:         s.RepoDir,
+		Status:          s.Status,
+		Error:           s.Error,
+		AutoClaude:      s.AutoClaude,
+		PropagateToken:  s.PropagateToken,
+		VSCode:          s.VSCode,
+		Ports:           ports,
+		PortAddress:     address,
+		Compose:         s.Compose,
+		ClaudeAccountID: s.ClaudeAccountID,
+		CreatedAt:       s.CreatedAt,
 	}
 }
 
@@ -165,6 +172,11 @@ type createSessionRequest struct {
 	// exposes nothing beyond this machine — the browser proposes 0.0.0.0 with a
 	// warning attached, but a client that says nothing gets the closed answer.
 	PortAddress string `json:"portAddress"`
+	// ClaudeAccountID names which Claude account the container authenticates
+	// with. Empty resolves to the user's default account, or, absent one, to
+	// the server's own configuration. Only settable here — see
+	// handleUpdateSessionClaudeAccount for changing it once the session exists.
+	ClaudeAccountID string `json:"claudeAccountId"`
 }
 
 // handleCreateSession starts provisioning a session and returns straight away;
@@ -201,13 +213,14 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	create := session.CreateRequest{
-		Title:          req.Title,
-		ImageID:        req.ImageID,
-		AutoClaude:     req.AutoClaude == nil || *req.AutoClaude,
-		PropagateToken: req.PropagateToken == nil || *req.PropagateToken,
-		VSCode:         req.VSCode != nil && *req.VSCode,
-		Ports:          req.Ports,
-		PortAddress:    strings.TrimSpace(req.PortAddress),
+		Title:           req.Title,
+		ImageID:         req.ImageID,
+		AutoClaude:      req.AutoClaude == nil || *req.AutoClaude,
+		PropagateToken:  req.PropagateToken == nil || *req.PropagateToken,
+		VSCode:          req.VSCode != nil && *req.VSCode,
+		Ports:           req.Ports,
+		PortAddress:     strings.TrimSpace(req.PortAddress),
+		ClaudeAccountID: strings.TrimSpace(req.ClaudeAccountID),
 	}
 	if fullName := strings.TrimSpace(req.RepoFullName); fullName != "" {
 		// The clone URL is never taken from the request: it is looked up in the
@@ -253,6 +266,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		return
 	case errors.Is(err, session.ErrInvalidPorts):
 		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	case errors.Is(err, session.ErrClaudeAccountNotFound):
+		writeError(w, http.StatusBadRequest, "no such claude account")
 		return
 	case err != nil:
 		s.log.Error("create session", "repo", create.RepoFullName, "err", err)
@@ -401,6 +417,63 @@ func (s *Server) handleUpdateSessionPorts(w http.ResponseWriter, r *http.Request
 
 	s.log.Info("session ports changed", "session", found.ID,
 		"ports", found.Ports, "address", found.PortAddress)
+	s.writeSession(w, r, http.StatusOK, found)
+}
+
+type updateSessionClaudeAccountRequest struct {
+	ClaudeAccountID string `json:"claudeAccountId"`
+}
+
+// handleUpdateSessionClaudeAccount changes which Claude account a stopped
+// session's container authenticates with.
+//
+// It is a POST-shaped operation under its own path rather than a field on
+// PATCH, for the same reason handleUpdateSessionPorts is: a container keeps
+// the credential it was created with, so honouring this means building another
+// container, which is a lifecycle operation and can fail for the reasons the
+// other lifecycle routes fail for.
+func (s *Server) handleUpdateSessionClaudeAccount(w http.ResponseWriter, r *http.Request) {
+	found, ok := s.sessionOr404(w, r)
+	if !ok {
+		return
+	}
+
+	var req updateSessionClaudeAccountRequest
+	if err := decodeJSON(w, r, maxSessionRequestBody, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	accountID := strings.TrimSpace(req.ClaudeAccountID)
+	if accountID != "" {
+		switch _, err := s.store.ClaudeAccountByID(r.Context(), found.UserID, accountID); {
+		case errors.Is(err, store.ErrNotFound):
+			writeError(w, http.StatusBadRequest, "no such claude account")
+			return
+		case err != nil:
+			s.log.Error("load claude account", "id", accountID, "err", err)
+			writeError(w, http.StatusInternalServerError, "cannot update the session")
+			return
+		}
+	}
+
+	// Reconciled first: the row saying stopped is what Hexagon last did, and a
+	// container somebody started from the outside must not have its credential
+	// rebuilt underneath it.
+	found = s.sessions.Refresh(r.Context(), found)
+	err := s.sessions.SetClaudeAccount(r.Context(), found, accountID)
+	switch {
+	case errors.Is(err, session.ErrSessionNotStopped):
+		writeError(w, http.StatusConflict, "the claude account can only be changed while the session is stopped")
+		return
+	case errors.Is(err, session.ErrComposeUnavailable):
+		writeError(w, http.StatusServiceUnavailable, "this server has no docker compose to rebuild the project with")
+		return
+	case err != nil:
+		s.reportLifecycleError(w, "change the claude account of", found, err)
+		return
+	}
+
+	s.log.Info("session claude account changed", "session", found.ID, "account", found.ClaudeAccountID)
 	s.writeSession(w, r, http.StatusOK, found)
 }
 

@@ -65,6 +65,10 @@ var (
 	// ErrInvalidPorts reports a create request whose published ports cannot be
 	// honoured.
 	ErrInvalidPorts = errors.New("invalid published ports")
+	// ErrClaudeAccountNotFound reports a request naming a claude account that
+	// does not exist, or does not belong to the caller — the two look the same
+	// on purpose.
+	ErrClaudeAccountNotFound = errors.New("claude account not found")
 )
 
 // loopback is the address a published port binds when the session named none,
@@ -92,14 +96,15 @@ func publishAddress(stored string) string {
 const maxSessionPorts = 10
 
 // CredentialSource hands over the git credentials for one of a user's connected
-// accounts, and the Claude Code credential a user configured from the UI. It is
-// an interface so the orchestrator never sees the cipher, and so tests do not
-// need one.
+// accounts, and opens the sealed secret of a pasted Claude account. It is an
+// interface so the orchestrator never sees the cipher, and so tests do not need
+// one.
 type CredentialSource interface {
 	GitCredentials(ctx context.Context, userID string, kind provider.Kind) (provider.GitAuth, error)
-	// ClaudeCredential is what Claude Code inside the container authenticates
-	// with, or the zero value when the user configured none.
-	ClaudeCredential(ctx context.Context, userID string) (claudex.Credential, error)
+	// ClaudeSecret opens the sealed secret of an api_key or oauth_token
+	// account. It is never asked about a login account: that credential is a
+	// directory the manager itself owns, not a secret to unseal.
+	ClaudeSecret(ctx context.Context, account *store.ClaudeAccount) (claudex.Credential, error)
 }
 
 // Cloner checks a repository out on the host. The indirection exists so the
@@ -130,8 +135,11 @@ type Config struct {
 	ClaudeCredentials string
 	AnthropicAPIKey   string
 	// ClaudeLoginDir holds the throwaway HOME of the container the browser login
-	// runs in, one directory per user.
+	// runs in, one directory per user or per account.
 	ClaudeLoginDir string
+	// ClaudeAccountsDir holds one directory per Claude account created from the
+	// UI, each with the .credentials.json a login on it writes.
+	ClaudeAccountsDir string
 	// GitUserName and GitUserEmail are the author sessions commit as, and only
 	// the value this process started with: the settings page can replace them
 	// while it runs, so everything after NewManager reads GitIdentity instead.
@@ -228,6 +236,10 @@ type CreateRequest struct {
 	// PortAddress is the host interface they bind. Empty is loopback, which is
 	// the answer that exposes nothing beyond this machine.
 	PortAddress string
+	// ClaudeAccountID names which Claude account the container authenticates
+	// with. Empty resolves to the user's default account, or — when they have
+	// configured none — to the server's own configuration.
+	ClaudeAccountID string
 }
 
 // Create records the session and provisions it in the background. It returns as
@@ -262,9 +274,9 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 			return nil, fmt.Errorf("read the stored %s credentials: %w", req.Provider, err)
 		}
 	}
-	claude, err := m.credentials.ClaudeCredential(ctx, user.ID)
+	claude, err := m.resolveClaudeAccount(ctx, user.ID, req.ClaudeAccountID)
 	if err != nil {
-		return nil, fmt.Errorf("read the stored claude credential: %w", err)
+		return nil, err
 	}
 
 	// The workspace path is derived from the id, so it has to exist first.
@@ -283,24 +295,25 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 	}
 
 	session, err := m.store.CreateSession(ctx, &store.Session{
-		ID:             id,
-		UserID:         user.ID,
-		Title:          title,
-		Provider:       string(req.Provider),
-		RepoFullName:   req.RepoFullName,
-		RepoCloneURL:   req.RepoCloneURL,
-		Branch:         req.Branch,
-		ImageID:        image.ID,
-		ImageRef:       image.ImageRef,
-		WorkspaceDir:   workspace,
-		RepoDir:        filepath.Join(workspace, "repo"),
-		AutoClaude:     req.AutoClaude,
-		PropagateToken: req.PropagateToken,
-		VSCode:         req.VSCode,
-		Ports:          req.Ports,
-		PortAddress:    req.PortAddress,
-		Compose:        compose,
-		Status:         store.SessionStatusCreating,
+		ID:              id,
+		UserID:          user.ID,
+		Title:           title,
+		Provider:        string(req.Provider),
+		RepoFullName:    req.RepoFullName,
+		RepoCloneURL:    req.RepoCloneURL,
+		Branch:          req.Branch,
+		ImageID:         image.ID,
+		ImageRef:        image.ImageRef,
+		WorkspaceDir:    workspace,
+		RepoDir:         filepath.Join(workspace, "repo"),
+		AutoClaude:      req.AutoClaude,
+		PropagateToken:  req.PropagateToken,
+		VSCode:          req.VSCode,
+		Ports:           req.Ports,
+		PortAddress:     req.PortAddress,
+		Compose:         compose,
+		ClaudeAccountID: req.ClaudeAccountID,
+		Status:          store.SessionStatusCreating,
 	})
 	if err != nil {
 		return nil, err
@@ -523,7 +536,7 @@ func (m *Manager) rebuildSpec(ctx context.Context, session *store.Session) (dock
 			return dockerx.ContainerSpec{}, fmt.Errorf("read the stored %s credentials: %w", session.Provider, err)
 		}
 	}
-	claude, err := m.credentials.ClaudeCredential(ctx, session.UserID)
+	claude, err := m.resolveClaudeAccount(ctx, session.UserID, session.ClaudeAccountID)
 	if err != nil {
 		return dockerx.ContainerSpec{}, fmt.Errorf("read the stored claude credential: %w", err)
 	}
@@ -540,6 +553,69 @@ func (m *Manager) rebuildSpec(ctx context.Context, session *store.Session) (dock
 		vscodeDir = dir
 	}
 	return m.containerSpec(session, sessionHome(session), vscodeDir, credentials, claude), nil
+}
+
+// resolveClaudeAccount decides what a session's container authenticates Claude
+// Code with: the account named in the request, else the user's default, else
+// the zero value — in which case the caller falls back to the server's own
+// configuration, which is today's behaviour left exactly as it was.
+//
+// It is resolved here, and read again on every rebuild, rather than
+// remembered: a rebuilt container carries whatever the user's accounts hold
+// now, not what they held when the session was created. That is the only
+// honest answer — the sealed values are the only ones there are — and it is
+// why an account that has been signed out of since fails the rebuild instead
+// of quietly producing a container that cannot authenticate.
+func (m *Manager) resolveClaudeAccount(ctx context.Context, userID, accountID string) (claudex.Credential, error) {
+	var (
+		account *store.ClaudeAccount
+		err     error
+	)
+	if accountID != "" {
+		account, err = m.store.ClaudeAccountByID(ctx, userID, accountID)
+		if errors.Is(err, store.ErrNotFound) {
+			return claudex.Credential{}, ErrClaudeAccountNotFound
+		}
+	} else {
+		account, err = m.store.DefaultClaudeAccount(ctx, userID)
+		if errors.Is(err, store.ErrNotFound) {
+			return claudex.Credential{}, nil
+		}
+	}
+	if err != nil {
+		return claudex.Credential{}, err
+	}
+	if account.Kind == store.ClaudeAccountKindLogin {
+		return claudex.Credential{Kind: claudex.KindLogin, File: m.claudeAccountCredentialsFile(account.ID)}, nil
+	}
+	return m.credentials.ClaudeSecret(ctx, account)
+}
+
+// claudeAccountCredentialsFile is where a login account's browser login writes
+// its credential, and where a session mounts it from.
+func (m *Manager) claudeAccountCredentialsFile(accountID string) string {
+	return filepath.Join(m.cfg.ClaudeAccountsDir, accountID, ".credentials.json")
+}
+
+// ClaudeCredential resolves what a session naming no account would
+// authenticate with, all the way down to the server's own configuration. It is
+// exported for the Images page, which authenticates the source editor the same
+// way a session does — see the comment on containerSpec's credential branch for
+// why the two must agree.
+func (m *Manager) ClaudeCredential(ctx context.Context, userID string) (claudex.Credential, error) {
+	cred, err := m.resolveClaudeAccount(ctx, userID, "")
+	if err != nil || cred.Secret != "" || cred.File != "" {
+		return cred, err
+	}
+	if m.cfg.AnthropicAPIKey != "" {
+		return claudex.Credential{Kind: claudex.KindAPIKey, Secret: m.cfg.AnthropicAPIKey}, nil
+	}
+	if m.cfg.ClaudeCredentials != "" {
+		if _, err := os.Stat(m.cfg.ClaudeCredentials); err == nil {
+			return claudex.Credential{Kind: claudex.KindLogin, File: m.cfg.ClaudeCredentials}, nil
+		}
+	}
+	return claudex.Credential{}, nil
 }
 
 // containerSpec is the whole contract between Hexagon and a session container.
@@ -579,26 +655,32 @@ func (m *Manager) containerSpec(session *store.Session, homeDir, vscodeDir strin
 	if gitEmail != "" {
 		env = append(env, "GIT_AUTHOR_EMAIL="+gitEmail, "GIT_COMMITTER_EMAIL="+gitEmail)
 	}
-	// A credential configured in the UI outranks the one the process was started
-	// with: it is the one the user can see, change and be told about.
-	switch {
-	case claude.Secret != "":
-		env = append(env, claude.Env()...)
-	case m.cfg.AnthropicAPIKey != "":
-		env = append(env, "ANTHROPIC_API_KEY="+m.cfg.AnthropicAPIKey)
-	}
-
 	binds := []string{
 		session.RepoDir + ":" + dockerx.WorkspaceMount,
 		homeDir + ":" + dockerx.AgentHome,
 	}
-	// Read-only: the container gets to use the credentials, not to change them.
-	if path := m.cfg.ClaudeCredentials; path != "" {
-		if _, err := os.Stat(path); err == nil {
-			binds = append(binds, path+":"+dockerx.AgentHome+"/.claude/.credentials.json:ro")
-		} else {
-			m.log.Warn("claude credentials not found, sessions will need their own login",
-				"path", path, "err", err)
+	// An account resolved for this session outranks the server's own
+	// configuration: it is the one the user can see, change and be told about.
+	// With one in play the legacy mount below is not added — a session carries
+	// an environment credential or a file and never both, which is what retires
+	// the shadowing the environment used to win silently over a mount.
+	switch {
+	case claude.File != "":
+		// Read-only: the container gets to use the credentials, not to change them.
+		binds = append(binds, claude.File+":"+dockerx.AgentHome+"/.claude/.credentials.json:ro")
+	case claude.Secret != "":
+		env = append(env, claude.Env()...)
+	default:
+		if m.cfg.AnthropicAPIKey != "" {
+			env = append(env, "ANTHROPIC_API_KEY="+m.cfg.AnthropicAPIKey)
+		}
+		if path := m.cfg.ClaudeCredentials; path != "" {
+			if _, err := os.Stat(path); err == nil {
+				binds = append(binds, path+":"+dockerx.AgentHome+"/.claude/.credentials.json:ro")
+			} else {
+				m.log.Warn("claude credentials not found, sessions will need their own login",
+					"path", path, "err", err)
+			}
 		}
 	}
 	ports := make([]dockerx.PortPublication, 0, len(session.Ports)+1)

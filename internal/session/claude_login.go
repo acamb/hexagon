@@ -25,28 +25,26 @@ const ClaudeLoginCommand = `claude auth login; exec "${SHELL:-sh}"`
 // claudeLoginRole is the dockerx.LabelRole value for a browser login container.
 const claudeLoginRole = "claude-login"
 
-// claudeLoginContainerName is deterministic per user: at most one login
-// container exists for a user at a time, and a leftover from a previous
-// attempt is found by this name rather than tracked separately.
-func claudeLoginContainerName(userID string) string {
-	return "hexagon-claude-login-" + userID
+// claudeLoginContainerName is deterministic per caller: at most one login
+// container exists for a given user or account at a time, and a leftover from
+// a previous attempt is found by this name rather than tracked separately.
+func claudeLoginContainerName(id string) string {
+	return "hexagon-claude-login-" + id
 }
 
-// StartClaudeLogin prepares the container the browser login runs in and
-// returns its id. Any container left over from a previous attempt is removed
-// first: it is throwaway, and a stale one would be attached to instead of a
-// fresh one.
-func (m *Manager) StartClaudeLogin(ctx context.Context, userID, imageRef string) (string, error) {
-	if m.cfg.ClaudeCredentials == "" {
-		return "", ErrClaudeLoginUnavailable
-	}
-
-	name := claudeLoginContainerName(userID)
+// startClaudeLoginContainer is StartClaudeLogin and StartAccountClaudeLogin's
+// shared shape: a throwaway home for tmux and the CLI's own state, and
+// credentialsDir bind mounted read-write at $HOME/.claude, which is where
+// `claude auth login` writes .credentials.json. What differs between the two
+// callers is only which directory that is — the host's shared one, or one
+// account's own — so two logins never overwrite each other's credential.
+func (m *Manager) startClaudeLoginContainer(ctx context.Context, id, credentialsDir, imageRef string) (string, error) {
+	name := claudeLoginContainerName(id)
 	if err := m.docker.RemoveContainer(ctx, name, true); err != nil {
 		return "", err
 	}
 
-	home := filepath.Join(m.cfg.ClaudeLoginDir, userID)
+	home := filepath.Join(m.cfg.ClaudeLoginDir, id)
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		return "", fmt.Errorf("create login home: %w", err)
 	}
@@ -56,9 +54,8 @@ func (m *Manager) StartClaudeLogin(ctx context.Context, userID, imageRef string)
 		return "", err
 	}
 
-	credentialsDir := filepath.Dir(m.cfg.ClaudeCredentials)
-	// Docker would otherwise create this itself, owned by root, on a machine
-	// where nobody has run claude yet.
+	// Docker would otherwise create this itself, owned by root, on a directory
+	// nobody has signed in to yet.
 	if err := os.MkdirAll(credentialsDir, 0o700); err != nil {
 		return "", fmt.Errorf("create claude credentials directory: %w", err)
 	}
@@ -78,9 +75,8 @@ func (m *Manager) StartClaudeLogin(ctx context.Context, userID, imageRef string)
 		Labels: map[string]string{dockerx.LabelRole: claudeLoginRole},
 		Binds: []string{
 			home + ":" + dockerx.AgentHome,
-			// Read-write, and the host's own directory: this is the whole
-			// mechanism. Claude Code writes .credentials.json here itself, into
-			// the file every session already mounts.
+			// Read-write: this is the whole mechanism. Claude Code writes
+			// .credentials.json here itself, into the file a session mounts.
 			credentialsDir + ":" + dockerx.AgentHome + "/.claude",
 		},
 	})
@@ -93,8 +89,34 @@ func (m *Manager) StartClaudeLogin(ctx context.Context, userID, imageRef string)
 	return containerID, nil
 }
 
+// StartClaudeLogin prepares the container the machine-wide browser login runs
+// in and returns its id. Any container left over from a previous attempt is
+// removed first: it is throwaway, and a stale one would be attached to instead
+// of a fresh one.
+func (m *Manager) StartClaudeLogin(ctx context.Context, userID, imageRef string) (string, error) {
+	if m.cfg.ClaudeCredentials == "" {
+		return "", ErrClaudeLoginUnavailable
+	}
+	return m.startClaudeLoginContainer(ctx, userID, filepath.Dir(m.cfg.ClaudeCredentials), imageRef)
+}
+
 // StopClaudeLogin removes the login container. The credentials it wrote are on
 // the host, not in it, so there is nothing to keep.
 func (m *Manager) StopClaudeLogin(ctx context.Context, userID string) error {
 	return m.docker.RemoveContainer(ctx, claudeLoginContainerName(userID), true)
+}
+
+// StartAccountClaudeLogin is StartClaudeLogin for one Claude account rather
+// than for the machine: what gets bind mounted read-write is the account's own
+// directory, so two accounts can be signed in to at once without either
+// overwriting the other's credential. ErrClaudeLoginUnavailable does not apply
+// here — it means "no credentials path is configured", and an account's
+// directory is one Hexagon makes.
+func (m *Manager) StartAccountClaudeLogin(ctx context.Context, accountID, imageRef string) (string, error) {
+	return m.startClaudeLoginContainer(ctx, accountID, filepath.Join(m.cfg.ClaudeAccountsDir, accountID), imageRef)
+}
+
+// StopAccountClaudeLogin removes an account's login container.
+func (m *Manager) StopAccountClaudeLogin(ctx context.Context, accountID string) error {
+	return m.docker.RemoveContainer(ctx, claudeLoginContainerName(accountID), true)
 }

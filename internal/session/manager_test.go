@@ -271,51 +271,73 @@ func TestCreateRejectsVSCodeWithNoSource(t *testing.T) {
 	}
 }
 
-// A credential configured in the UI outranks the one the process was started
-// with: it is the one the user can see, change and be told about.
-func TestContainerSpecPrefersTheStoredClaudeCredentialOverTheConfiguredKey(t *testing.T) {
+// An account resolved for this session outranks the server's own
+// configuration: it is the one the user can see, change and be told about. And
+// a pasted account sets its variable and adds no credentials mount — a session
+// carries an environment credential or a file and never both.
+func TestContainerSpecWithAPastedAccountSetsTheVariableAndNoMount(t *testing.T) {
 	manager, _, _ := testManager(t, nil)
 	manager.cfg.AnthropicAPIKey = "configured-key"
 
 	session := &store.Session{ID: "s-1", RepoDir: "/repo", ImageRef: "ref"}
 
-	withCredential := manager.containerSpec(session, "/home", "", provider.GitAuth{},
+	spec := manager.containerSpec(session, "/home", "", provider.GitAuth{},
 		claudex.Credential{Kind: claudex.KindAPIKey, Secret: "stored-key"})
-	if !slices.Contains(withCredential.Env, "ANTHROPIC_API_KEY=stored-key") {
-		t.Errorf("env = %v, want the stored credential", withCredential.Env)
+	if !slices.Contains(spec.Env, "ANTHROPIC_API_KEY=stored-key") {
+		t.Errorf("env = %v, want the account's credential", spec.Env)
 	}
-	if slices.Contains(withCredential.Env, "ANTHROPIC_API_KEY=configured-key") {
-		t.Errorf("env = %v, the configured key shadowed the stored credential", withCredential.Env)
+	if slices.Contains(spec.Env, "ANTHROPIC_API_KEY=configured-key") {
+		t.Errorf("env = %v, the configured key shadowed the account", spec.Env)
 	}
-
-	withoutCredential := manager.containerSpec(session, "/home", "", provider.GitAuth{}, claudex.Credential{})
-	if !slices.Contains(withoutCredential.Env, "ANTHROPIC_API_KEY=configured-key") {
-		t.Errorf("env = %v, want a fallback to the configured key", withoutCredential.Env)
+	for _, b := range spec.Binds {
+		if strings.HasSuffix(b, ".claude/.credentials.json:ro") {
+			t.Errorf("binds = %v, want no credentials mount alongside a pasted account", spec.Binds)
+		}
 	}
 }
 
-// The credentials mount is a different mechanism from the environment variable
-// and must survive untouched whichever way a container was authenticated.
-func TestContainerSpecKeepsTheCredentialsMountRegardless(t *testing.T) {
+// A login account mounts its own file read-only and sets no Anthropic
+// variable at all.
+func TestContainerSpecWithALoginAccountMountsItsFileAndSetsNoVariable(t *testing.T) {
+	manager, _, _ := testManager(t, nil)
+	manager.cfg.AnthropicAPIKey = "configured-key"
+
+	session := &store.Session{ID: "s-1", RepoDir: "/repo", ImageRef: "ref"}
+	wantMount := "/accounts/acc-1/.credentials.json:" + dockerx.AgentHome + "/.claude/.credentials.json:ro"
+
+	spec := manager.containerSpec(session, "/home", "", provider.GitAuth{},
+		claudex.Credential{Kind: claudex.KindLogin, File: "/accounts/acc-1/.credentials.json"})
+	if !slices.Contains(spec.Binds, wantMount) {
+		t.Errorf("binds = %v, want %q", spec.Binds, wantMount)
+	}
+	for _, e := range spec.Env {
+		if strings.HasPrefix(e, "ANTHROPIC_API_KEY=") || strings.HasPrefix(e, "CLAUDE_CODE_OAUTH_TOKEN=") {
+			t.Errorf("env = %v, want no anthropic variable alongside a login account", spec.Env)
+		}
+	}
+}
+
+// A session with no account is exactly what it is today: the configured key
+// and the machine-wide login mounted beside it, which is the test that says
+// the new path did not disturb the old one.
+func TestContainerSpecWithNoAccountFallsBackToConfiguration(t *testing.T) {
 	manager, _, _ := testManager(t, nil)
 	credentialsPath := filepath.Join(t.TempDir(), ".credentials.json")
 	if err := os.WriteFile(credentialsPath, []byte("{}"), 0o600); err != nil {
 		t.Fatalf("write credentials file: %v", err)
 	}
+	manager.cfg.AnthropicAPIKey = "configured-key"
 	manager.cfg.ClaudeCredentials = credentialsPath
 
 	session := &store.Session{ID: "s-1", RepoDir: "/repo", ImageRef: "ref"}
 	wantMount := credentialsPath + ":" + dockerx.AgentHome + "/.claude/.credentials.json:ro"
 
-	withCredential := manager.containerSpec(session, "/home", "", provider.GitAuth{},
-		claudex.Credential{Kind: claudex.KindAPIKey, Secret: "stored-key"})
-	if !slices.Contains(withCredential.Binds, wantMount) {
-		t.Errorf("binds = %v, want the credentials mount", withCredential.Binds)
+	spec := manager.containerSpec(session, "/home", "", provider.GitAuth{}, claudex.Credential{})
+	if !slices.Contains(spec.Env, "ANTHROPIC_API_KEY=configured-key") {
+		t.Errorf("env = %v, want the configured key", spec.Env)
 	}
-
-	withoutCredential := manager.containerSpec(session, "/home", "", provider.GitAuth{}, claudex.Credential{})
-	if !slices.Contains(withoutCredential.Binds, wantMount) {
-		t.Errorf("binds = %v, want the credentials mount", withoutCredential.Binds)
+	if !slices.Contains(spec.Binds, wantMount) {
+		t.Errorf("binds = %v, want the machine-wide login mount", spec.Binds)
 	}
 }
 
@@ -408,6 +430,106 @@ func TestCreateRejectsAComposeImageWithNoCompose(t *testing.T) {
 	_, err = manager.Create(ctx, user, CreateRequest{ImageID: image.ID})
 	if !errors.Is(err, ErrComposeUnavailable) {
 		t.Errorf("error = %v, want ErrComposeUnavailable", err)
+	}
+}
+
+// fakeClaudeCredentials stands in for internal/auth: it "opens" a secret by
+// treating SecretEnc as plain bytes, which is all a test needs — the cipher
+// itself is auth's own responsibility, tested there.
+type fakeClaudeCredentials struct{}
+
+func (fakeClaudeCredentials) GitCredentials(context.Context, string, provider.Kind) (provider.GitAuth, error) {
+	return provider.GitAuth{}, nil
+}
+
+func (fakeClaudeCredentials) ClaudeSecret(_ context.Context, account *store.ClaudeAccount) (claudex.Credential, error) {
+	return claudex.Credential{Kind: account.Kind, Secret: string(account.SecretEnc)}, nil
+}
+
+// testManagerWithAccounts is testManager plus a claude accounts directory and
+// a credential source, for the tests that resolve one.
+func testManagerWithAccounts(t *testing.T) (*Manager, *store.Store) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "hexagon.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	manager := NewManager(st, stubDocker{}, nil, fakeClaudeCredentials{}, nil, nil, Config{
+		WorkspaceRoot:     filepath.Join(t.TempDir(), "workspaces"),
+		ClaudeAccountsDir: filepath.Join(t.TempDir(), "claude-accounts"),
+	}, slog.New(slog.DiscardHandler))
+	return manager, st
+}
+
+// resolveClaudeAccount is the mechanism containerSpec's credential branch
+// relies on: the account named, else the default, else nothing at all.
+func TestResolveClaudeAccountPrefersTheNamedAccountThenTheDefault(t *testing.T) {
+	ctx := context.Background()
+	manager, st := testManagerWithAccounts(t)
+	user, err := st.UpsertUser(ctx, &store.User{GitHubLogin: "alice", GitHubID: 1})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+
+	def, err := st.CreateClaudeAccount(ctx, &store.ClaudeAccount{
+		UserID: user.ID, Name: "default", Kind: claudex.KindAPIKey, SecretEnc: []byte("sk-default"), IsDefault: true,
+	})
+	if err != nil {
+		t.Fatalf("create default account: %v", err)
+	}
+	other, err := st.CreateClaudeAccount(ctx, &store.ClaudeAccount{
+		UserID: user.ID, Name: "other", Kind: claudex.KindOAuthToken, SecretEnc: []byte("oauth-other"),
+	})
+	if err != nil {
+		t.Fatalf("create other account: %v", err)
+	}
+
+	if cred, err := manager.resolveClaudeAccount(ctx, user.ID, other.ID); err != nil || cred.Secret != "oauth-other" {
+		t.Errorf("resolveClaudeAccount(named) = %+v, %v, want the named account", cred, err)
+	}
+	if cred, err := manager.resolveClaudeAccount(ctx, user.ID, ""); err != nil || cred.Secret != "sk-default" {
+		t.Errorf("resolveClaudeAccount(none) = %+v, %v, want the default %q", cred, err, def.ID)
+	}
+	if _, err := manager.resolveClaudeAccount(ctx, user.ID, "nope"); !errors.Is(err, ErrClaudeAccountNotFound) {
+		t.Errorf("error = %v, want ErrClaudeAccountNotFound", err)
+	}
+
+	// A user with no accounts at all gets the zero value, not an error: that is
+	// the ordinary state of a Hexagon configured entirely from a file.
+	other2, err := st.UpsertUser(ctx, &store.User{GitHubLogin: "bob", GitHubID: 2})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if cred, err := manager.resolveClaudeAccount(ctx, other2.ID, ""); err != nil || cred != (claudex.Credential{}) {
+		t.Errorf("resolveClaudeAccount(no accounts) = %+v, %v, want the zero value", cred, err)
+	}
+}
+
+// A login account resolves to a file under the manager's own accounts
+// directory rather than calling the credential source at all.
+func TestResolveClaudeAccountBuildsTheLoginFilePath(t *testing.T) {
+	ctx := context.Background()
+	manager, st := testManagerWithAccounts(t)
+	user, err := st.UpsertUser(ctx, &store.User{GitHubLogin: "alice", GitHubID: 1})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	account, err := st.CreateClaudeAccount(ctx, &store.ClaudeAccount{
+		UserID: user.ID, Name: "subscription", Kind: store.ClaudeAccountKindLogin, IsDefault: true,
+	})
+	if err != nil {
+		t.Fatalf("create login account: %v", err)
+	}
+
+	cred, err := manager.resolveClaudeAccount(ctx, user.ID, "")
+	if err != nil {
+		t.Fatalf("resolveClaudeAccount: %v", err)
+	}
+	want := filepath.Join(manager.cfg.ClaudeAccountsDir, account.ID, ".credentials.json")
+	if cred.Kind != claudex.KindLogin || cred.File != want || cred.Secret != "" {
+		t.Errorf("credential = %+v, want kind login, file %q, no secret", cred, want)
 	}
 }
 

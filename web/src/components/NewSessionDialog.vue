@@ -7,6 +7,7 @@ import {
   api,
   providerNames,
   type Account,
+  type ClaudeAccount,
   type Image,
   type ProviderKind,
   type Repo,
@@ -18,6 +19,11 @@ const emit = defineEmits<{ close: []; created: [session: Session] }>()
 const repos = ref<Repo[]>([])
 const images = ref<Image[]>([])
 const accounts = ref<Account[]>([])
+const claudeAccounts = ref<ClaudeAccount[]>([])
+// Empty resolves automatically — the user's default account. The select is
+// only shown with more than one to choose between; with one, or none, this
+// stays empty and the form says nothing about it.
+const claudeAccountId = ref('')
 const loading = ref(true)
 const submitting = ref(false)
 const error = ref<string | null>(null)
@@ -119,15 +125,17 @@ async function load(refresh = false) {
   loading.value = true
   error.value = null
   try {
-    const [listing, imageList, accountList] = await Promise.all([
+    const [listing, imageList, accountList, claudeAccountList] = await Promise.all([
       api.repos(refresh),
       api.images.list(),
       api.accounts.list(),
+      api.claude.accounts.list(),
     ])
     repos.value = listing.repos
     failed.value = listing.failed ?? {}
     images.value = imageList
     accounts.value = accountList
+    claudeAccounts.value = claudeAccountList
     if (!imageId.value) imageId.value = usableImages.value[0]?.id ?? ''
   } catch (e) {
     error.value = message(e)
@@ -158,6 +166,7 @@ async function submit() {
             vscode: vscode.value,
             ports: parsedPorts.value,
             portAddress: portAddress.value.trim() || undefined,
+            claudeAccountId: claudeAccountId.value || undefined,
           }
         : {
             provider: selected.value!.provider,
@@ -170,6 +179,7 @@ async function submit() {
             vscode: vscode.value,
             ports: parsedPorts.value,
             portAddress: portAddress.value.trim() || undefined,
+            claudeAccountId: claudeAccountId.value || undefined,
           },
     )
     emit('created', session)
@@ -320,6 +330,16 @@ onMounted(() => load())
                 can fetch or push, and this cannot be changed afterwards.
               </em>
             </span>
+          </label>
+
+          <label v-if="claudeAccounts.length > 1" class="field">
+            <span>Claude account</span>
+            <select v-model="claudeAccountId">
+              <option value="">Resolve automatically — your default account</option>
+              <option v-for="account in claudeAccounts" :key="account.id" :value="account.id">
+                {{ account.name }}{{ account.default ? ' (default)' : '' }}
+              </option>
+            </select>
           </label>
 
           <label class="toggle">

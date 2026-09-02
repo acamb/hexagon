@@ -15,7 +15,8 @@ import {
   api,
   providerNames,
   type Account,
-  type ClaudeCredentialKind,
+  type ClaudeAccount,
+  type ClaudeAccountKind,
   type ClaudeStatus,
   type ClaudeSource,
   type Image,
@@ -82,60 +83,147 @@ function message(e: unknown): string {
   return e instanceof Error ? e.message : String(e)
 }
 
-// The Claude login: a pasted credential, or a browser login that writes the
-// host's own Claude Code file.
+// The Claude accounts sessions can run as: any number of pasted keys or
+// tokens, plus a subscription signed in to through the browser, one of them
+// marked default for a session that names none.
 const claudeStatus = ref<ClaudeStatus | null>(null)
+const claudeAccounts = ref<ClaudeAccount[]>([])
 const claudeError = ref<string | null>(null)
-const claudeBusy = ref(false)
-const claudeKind = ref<ClaudeCredentialKind>('api_key')
-const claudeSecret = ref('')
+// The id of the account a request is in flight for, 'new' for the add form, or
+// null when nothing is busy.
+const claudeBusy = ref<string | null>(null)
 
 const effectiveLabel: Record<ClaudeSource, string> = {
-  credential: 'the credential stored here',
+  account: 'your default Claude account',
   apiKey: "the server's configured API key",
   file: 'the login file on this machine',
   none: 'nothing — sessions will ask to sign in',
 }
 
+const kindLabel: Record<ClaudeAccountKind, string> = {
+  api_key: 'API key',
+  oauth_token: 'Long-lived token',
+  login: 'Subscription',
+}
+
 async function refreshClaude() {
   try {
-    claudeStatus.value = await api.claude.status()
+    const [status, accounts] = await Promise.all([api.claude.status(), api.claude.accounts.list()])
+    claudeStatus.value = status
+    claudeAccounts.value = accounts
   } catch (e) {
     claudeError.value = message(e)
   }
 }
 
-async function setClaudeCredential() {
-  claudeBusy.value = true
+// The form for adding a new account.
+const addingAccount = ref(false)
+const newName = ref('')
+const newKind = ref<ClaudeAccountKind>('api_key')
+const newSecret = ref('')
+
+function openAddAccount() {
+  addingAccount.value = true
+  newName.value = ''
+  newKind.value = 'api_key'
+  newSecret.value = ''
   claudeError.value = null
-  try {
-    claudeStatus.value = await api.claude.setCredential(claudeKind.value, claudeSecret.value.trim())
-    claudeSecret.value = ''
-  } catch (e) {
-    claudeError.value = message(e)
-  } finally {
-    claudeBusy.value = false
-  }
 }
 
-async function forgetClaudeCredential() {
-  if (!window.confirm('Forget the stored Claude credential?')) return
-  claudeBusy.value = true
+async function createAccount() {
+  claudeBusy.value = 'new'
   claudeError.value = null
   try {
-    await api.claude.forgetCredential()
+    await api.claude.accounts.create({
+      name: newName.value.trim(),
+      kind: newKind.value,
+      secret: newKind.value === 'login' ? undefined : newSecret.value.trim(),
+    })
+    addingAccount.value = false
     await refreshClaude()
   } catch (e) {
     claudeError.value = message(e)
   } finally {
-    claudeBusy.value = false
+    claudeBusy.value = null
   }
 }
 
-// The login dialog: a real terminal running `claude` in a throwaway container
-// whose $HOME/.claude is this machine's own, so /login writes the file every
-// session already mounts.
+// Renaming one account in place.
+const editingName = ref<string | null>(null)
+const nameDraft = ref('')
+
+function startRename(account: ClaudeAccount) {
+  editingName.value = account.id
+  nameDraft.value = account.name
+  claudeError.value = null
+}
+
+async function renameAccount(account: ClaudeAccount) {
+  claudeBusy.value = account.id
+  claudeError.value = null
+  try {
+    await api.claude.accounts.update(account.id, { name: nameDraft.value.trim() })
+    editingName.value = null
+    await refreshClaude()
+  } catch (e) {
+    claudeError.value = message(e)
+  } finally {
+    claudeBusy.value = null
+  }
+}
+
+async function makeDefault(account: ClaudeAccount) {
+  claudeBusy.value = account.id
+  claudeError.value = null
+  try {
+    await api.claude.accounts.update(account.id, { default: true })
+    await refreshClaude()
+  } catch (e) {
+    claudeError.value = message(e)
+  } finally {
+    claudeBusy.value = null
+  }
+}
+
+// Replacing a pasted account's secret in place.
+const editingSecret = ref<string | null>(null)
+const secretDraft = ref('')
+
+async function replaceSecret(account: ClaudeAccount) {
+  claudeBusy.value = account.id
+  claudeError.value = null
+  try {
+    await api.claude.accounts.update(account.id, { secret: secretDraft.value.trim() })
+    editingSecret.value = null
+    secretDraft.value = ''
+    await refreshClaude()
+  } catch (e) {
+    claudeError.value = message(e)
+  } finally {
+    claudeBusy.value = null
+  }
+}
+
+async function removeAccount(account: ClaudeAccount) {
+  if (!window.confirm(`Delete the Claude account "${account.name}"?`)) return
+  claudeBusy.value = account.id
+  claudeError.value = null
+  try {
+    await api.claude.accounts.remove(account.id)
+    await refreshClaude()
+  } catch (e) {
+    claudeError.value = message(e)
+  } finally {
+    claudeBusy.value = null
+  }
+}
+
+// The login dialog: a real terminal running `claude` in a throwaway container.
+// null means the machine-wide login, whose $HOME/.claude is this machine's
+// own; an account id means that account's own directory, so two logins never
+// overwrite each other's credential.
 const loginOpen = ref(false)
+const loginTarget = ref<string | null>(null)
 // The image the login container is built from. The empty string is not "none
 // chosen": it is Hexagon's own image, which is what a machine where nothing has
 // been built yet has to use — and the default, since the login needs a container
@@ -153,7 +241,7 @@ const waitingForDefault = computed(
 )
 let defaultImageTimer: number | undefined
 
-async function openLogin() {
+async function openLogin(accountId: string | null) {
   claudeError.value = null
   try {
     images.value = await api.images.list()
@@ -162,6 +250,7 @@ async function openLogin() {
     return
   }
   loginImageId.value = readyImages.value[0]?.id ?? ''
+  loginTarget.value = accountId
   loginOpen.value = true
   followDefaultImage()
 }
@@ -181,10 +270,12 @@ async function closeLogin() {
   loginOpen.value = false
   window.clearTimeout(defaultImageTimer)
   try {
-    await api.claude.stopLogin()
+    if (loginTarget.value) await api.claude.accounts.stopLogin(loginTarget.value)
+    else await api.claude.stopLogin()
   } catch (e) {
     claudeError.value = message(e)
   }
+  loginTarget.value = null
   await refreshClaude()
 }
 
@@ -285,76 +376,160 @@ onUnmounted(() => window.clearTimeout(defaultImageTimer))
 
     <h1 class="claude-heading">Claude</h1>
     <p class="intro">
-      The account sessions run Claude Code as. Paste a key or token, or sign in with a
-      subscription in a terminal that writes this machine's own Claude Code login.
+      The accounts sessions can run Claude Code as. Paste a key or token, or add one that signs
+      in with a subscription in its own browser terminal. The one marked default is what a
+      session gets when it names none.
     </p>
 
     <Notice v-if="claudeError" kind="error" :message="claudeError" class="alert" @dismiss="claudeError = null" />
 
     <div v-if="claudeStatus" class="card">
       <p class="effective">
-        Sessions currently authenticate with <strong>{{ effectiveLabel[claudeStatus.effective] }}</strong>.
-      </p>
-      <p v-if="claudeStatus.effective === 'credential' && claudeStatus.file.present" class="hint">
-        A login file is also present on this machine, but the stored credential takes precedence —
-        Claude Code prefers it to the file, and there is no way to change that from here.
+        A session naming no account authenticates with
+        <strong>{{ effectiveLabel[claudeStatus.effective] }}</strong>.
       </p>
 
-      <div v-if="claudeStatus.credential" class="row">
-        <div class="identity">
-          <strong>{{ claudeStatus.credential.kind === 'api_key' ? 'API key' : 'Long-lived token' }}</strong>
-          <span class="muted">updated {{ formatDate(claudeStatus.credential.updatedAt) }}</span>
-        </div>
-        <button type="button" class="danger" :disabled="claudeBusy" @click="forgetClaudeCredential">
-          <Spinner v-if="claudeBusy" />Forget
-        </button>
-      </div>
+      <ul class="list claude-list">
+        <li v-for="account in claudeAccounts" :key="account.id">
+          <div class="row">
+            <div class="identity">
+              <input
+                v-if="editingName === account.id"
+                v-model="nameDraft"
+                class="name-input"
+                @keydown.esc="editingName = null"
+              />
+              <strong v-else>{{ account.name }}</strong>
+              <span class="muted">
+                {{ kindLabel[account.kind] }}<span v-if="account.default"> · default</span>
+              </span>
+              <span v-if="account.kind === 'login'" class="who">
+                {{
+                  account.login?.present
+                    ? `Signed in ${formatDate(account.login.updatedAt!)}`
+                    : 'Not signed in yet'
+                }}
+              </span>
+            </div>
 
-      <form v-else class="connect" @submit.prevent="setClaudeCredential">
+            <div class="actions">
+              <template v-if="editingName === account.id">
+                <button type="button" @click="editingName = null">Cancel</button>
+                <button
+                  type="button"
+                  class="primary"
+                  :disabled="claudeBusy === account.id"
+                  @click="renameAccount(account)"
+                >
+                  <Spinner v-if="claudeBusy === account.id" />Save
+                </button>
+              </template>
+              <template v-else>
+                <button type="button" @click="startRename(account)">Rename</button>
+                <button
+                  v-if="!account.default"
+                  type="button"
+                  :disabled="claudeBusy === account.id"
+                  @click="makeDefault(account)"
+                >
+                  Make default
+                </button>
+                <button
+                  v-if="account.kind === 'login'"
+                  type="button"
+                  @click="openLogin(account.id)"
+                >
+                  {{ account.login?.present ? 'Log in again' : 'Log in' }}
+                </button>
+                <button
+                  v-else
+                  type="button"
+                  @click="editingSecret = editingSecret === account.id ? null : account.id"
+                >
+                  Replace secret
+                </button>
+                <button
+                  type="button"
+                  class="danger"
+                  :disabled="claudeBusy === account.id"
+                  @click="removeAccount(account)"
+                >
+                  <Spinner v-if="claudeBusy === account.id" />Delete
+                </button>
+              </template>
+            </div>
+          </div>
+
+          <form v-if="editingSecret === account.id" class="connect" @submit.prevent="replaceSecret(account)">
+            <label class="field">
+              <span>{{ account.kind === 'api_key' ? 'API key' : 'Token' }}</span>
+              <input v-model="secretDraft" required type="password" autocomplete="off" />
+            </label>
+            <div class="buttons">
+              <button type="button" @click="editingSecret = null">Cancel</button>
+              <button type="submit" class="primary" :disabled="claudeBusy === account.id">
+                <Spinner v-if="claudeBusy === account.id" />Save
+              </button>
+            </div>
+          </form>
+        </li>
+      </ul>
+      <p v-if="!claudeAccounts.length" class="hint">No Claude accounts configured yet.</p>
+
+      <form v-if="addingAccount" class="connect" @submit.prevent="createAccount">
         <label class="field">
-          <span>Kind</span>
-          <select v-model="claudeKind">
-            <option value="api_key">API key</option>
-            <option value="oauth_token">Long-lived token</option>
-          </select>
+          <span>Name</span>
+          <input v-model="newName" required placeholder="Personal" autocomplete="off" />
         </label>
 
         <label class="field">
-          <span>{{ claudeKind === 'api_key' ? 'API key' : 'Token' }}</span>
-          <input v-model="claudeSecret" required type="password" autocomplete="off" />
+          <span>Kind</span>
+          <select v-model="newKind">
+            <option value="api_key">API key</option>
+            <option value="oauth_token">Long-lived token</option>
+            <option value="login">Subscription (browser login)</option>
+          </select>
+        </label>
+
+        <label v-if="newKind !== 'login'" class="field">
+          <span>{{ newKind === 'api_key' ? 'API key' : 'Token' }}</span>
+          <input v-model="newSecret" required type="password" autocomplete="off" />
         </label>
 
         <p class="hint">
           An API key comes from the Anthropic Console. A long-lived token comes from running
-          <code>claude setup-token</code> on a machine with an active subscription.
-          <span v-if="!claudeStatus.canVerify">
+          <code>claude setup-token</code> on a machine with an active subscription. A subscription
+          account takes no secret here — press <strong>Log in</strong> on it afterwards.
+          <span v-if="newKind !== 'login' && !claudeStatus.canVerify">
             This server has no way to run Claude Code, so the credential is stored without being
             checked first.
           </span>
-          <span v-else-if="claudeStatus.inContainer">
+          <span v-else-if="newKind !== 'login' && claudeStatus.inContainer">
             Claude Code is not installed on this server, so checking the credential runs it in a
             container: it works, it just takes longer.
           </span>
         </p>
 
         <div class="buttons">
-          <button type="submit" class="primary" :disabled="claudeBusy">
-            <Spinner v-if="claudeBusy" />Save
+          <button type="button" @click="addingAccount = false">Cancel</button>
+          <button type="submit" class="primary" :disabled="claudeBusy === 'new'">
+            <Spinner v-if="claudeBusy === 'new'" />Add account
           </button>
         </div>
       </form>
+      <button v-else type="button" @click="openAddAccount">Add a Claude account</button>
 
       <div class="login">
-        <button v-if="claudeStatus.canLogin" type="button" @click="openLogin">
-          Log in with a subscription
+        <button v-if="claudeStatus.canLogin" type="button" @click="openLogin(null)">
+          Log in on this machine
         </button>
         <p v-else class="hint">
-          No credentials path is configured on the server, so a browser login has nowhere to
-          write.
+          No credentials path is configured on the server, so the machine-wide login has nowhere
+          to write.
         </p>
         <p v-if="claudeStatus.canLogin" class="hint">
-          Signing in here writes this machine's own Claude Code login. A session already running
-          keeps whatever it started with; a session picks this up the next time it starts.
+          This is the login of the machine itself — what a session naming no account falls back
+          to. Most of the time an account above, made the default, is the better place to sign in.
         </p>
       </div>
     </div>
@@ -384,8 +559,8 @@ onUnmounted(() => window.clearTimeout(defaultImageTimer))
 
         <TerminalPane
           v-else
-          :key="loginImageId"
-          :url="api.claude.loginTerminal(loginImageId)"
+          :key="loginImageId + (loginTarget ?? '')"
+          :url="loginTarget ? api.claude.accounts.loginTerminal(loginTarget, loginImageId) : api.claude.loginTerminal(loginImageId)"
           class="terminal"
         />
 
@@ -442,6 +617,17 @@ h1 {
 
 .who {
   font-size: 0.9rem;
+  color: var(--text-muted);
+}
+
+.name-input {
+  padding: 0.2rem 0.4rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--text);
+  font: inherit;
+  font-weight: 600;
 }
 
 .muted {

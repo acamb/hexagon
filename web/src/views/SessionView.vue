@@ -3,12 +3,13 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import AppHeader from '../components/AppHeader.vue'
 import Notice from '../components/Notice.vue'
+import SessionClaudeAccountDialog from '../components/SessionClaudeAccountDialog.vue'
 import SessionPortsDialog from '../components/SessionPortsDialog.vue'
 import Spinner from '../components/Spinner.vue'
 import StatusDot from '../components/StatusDot.vue'
 import TerminalPane from '../components/TerminalPane.vue'
 import TmuxCheatsheet from '../components/TmuxCheatsheet.vue'
-import { ApiError, api, providerNames, type Session } from '../api'
+import { ApiError, api, providerNames, type ClaudeAccount, type Session } from '../api'
 import { isProvisioning, sessionLabel } from '../status'
 
 const route = useRoute()
@@ -28,6 +29,26 @@ const cheatsheetOpen = ref(false)
 // Whether the published ports are being edited, which only a stopped session
 // allows: honouring the change rebuilds its container.
 const portsOpen = ref(false)
+// Same shape, for the Claude account.
+const claudeAccountOpen = ref(false)
+
+// The accounts this session's own name resolves against, so the page can show
+// a name rather than an id. Not fatal to fail: the page still works, showing
+// the id in its place.
+const claudeAccounts = ref<ClaudeAccount[]>([])
+const claudeAccountLabel = computed(() => {
+  const id = session.value?.claudeAccountId
+  if (!id) return ''
+  return claudeAccounts.value.find((a) => a.id === id)?.name ?? id
+})
+
+async function loadClaudeAccounts() {
+  try {
+    claudeAccounts.value = await api.claude.accounts.list()
+  } catch {
+    // See the comment on claudeAccounts above.
+  }
+}
 
 // Why the session runs without credentials, which is a different sentence for a
 // session that has an account it was refused and one that has no account at all.
@@ -104,6 +125,11 @@ function portsChanged(updated: Session) {
   portsOpen.value = false
 }
 
+function claudeAccountChanged(updated: Session) {
+  session.value = updated
+  claudeAccountOpen.value = false
+}
+
 async function start() {
   running.value = 'start'
   pending.value = false
@@ -144,7 +170,10 @@ function schedule() {
   timer = window.setTimeout(refresh, delay)
 }
 
-onMounted(refresh)
+onMounted(() => {
+  refresh()
+  loadClaudeAccounts()
+})
 onUnmounted(() => window.clearTimeout(timer))
 </script>
 
@@ -166,6 +195,7 @@ onUnmounted(() => window.clearTimeout(timer))
                  are part of the container's environment, fixed when it was
                  created. -->
             <span v-if="!session.propagateToken" class="branch" :title="noToken">no token</span>
+            <span v-if="claudeAccountLabel" class="branch">claude: {{ claudeAccountLabel }}</span>
           </span>
         </div>
 
@@ -228,6 +258,14 @@ onUnmounted(() => window.clearTimeout(timer))
           >
             Ports
           </button>
+          <button
+            v-if="session.status === 'stopped'"
+            type="button"
+            :disabled="running !== null"
+            @click="claudeAccountOpen = true"
+          >
+            Account
+          </button>
           <button type="button" @click="cheatsheetOpen = true">tmux keys</button>
           <button type="button" @click="router.push({ name: 'sessions' })">All sessions</button>
         </div>
@@ -274,6 +312,12 @@ onUnmounted(() => window.clearTimeout(timer))
       :session="session"
       @close="portsOpen = false"
       @updated="portsChanged"
+    />
+    <SessionClaudeAccountDialog
+      v-if="claudeAccountOpen && session"
+      :session="session"
+      @close="claudeAccountOpen = false"
+      @updated="claudeAccountChanged"
     />
   </div>
 </template>

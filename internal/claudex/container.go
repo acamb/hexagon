@@ -243,15 +243,21 @@ func (c *Container) run(ctx context.Context, cred Credential, in invocation) ([]
 	// The credential last, so it wins over anything of the same name above.
 	env = append(env, cred.Env()...)
 
-	// With no credential to hand over, the login on this machine is what is
-	// left — the file a browser login wrote, which is exactly what every
-	// session authenticates with. Without this the two disagree: a session
-	// signs in and the editor reports "Not logged in", for the same user, on
-	// the same server, five minutes apart.
+	// With no pasted secret to hand over, a file is what is left: cred.File
+	// when the credential resolved to a login account, or the login on this
+	// machine when it resolved to nothing at all — which is exactly what every
+	// session authenticates with in that case. Without the fallback the two
+	// disagree: a session signs in and the editor reports "Not logged in", for
+	// the same user, on the same server, five minutes apart.
 	var binds []string
-	if cred.Secret == "" && c.credentials != "" {
-		if _, err := os.Stat(c.credentials); err == nil {
+	switch {
+	case cred.File != "":
+		if _, err := os.Stat(cred.File); err == nil {
 			// Read-only: the container gets to use the login, not to change it.
+			binds = append(binds, cred.File+":"+credentialsMount+":ro")
+		}
+	case cred.Secret == "" && c.credentials != "":
+		if _, err := os.Stat(c.credentials); err == nil {
 			binds = append(binds, c.credentials+":"+credentialsMount+":ro")
 		}
 	}

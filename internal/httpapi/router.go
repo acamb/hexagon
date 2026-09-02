@@ -172,20 +172,26 @@ func New(deps Deps) http.Handler {
 		"DELETE /api/accounts/{provider}": s.handleDisconnectAccount,
 
 		"GET /api/claude":                s.handleClaudeStatus,
-		"PUT /api/claude/credential":     s.handleSetClaudeCredential,
-		"DELETE /api/claude/credential":  s.handleForgetClaudeCredential,
 		"GET /api/claude/login/terminal": s.handleClaudeLoginTerminal,
 		"DELETE /api/claude/login":       s.handleStopClaudeLogin,
 
-		"GET /api/sessions":               s.handleListSessions,
-		"POST /api/sessions":              s.handleCreateSession,
-		"GET /api/sessions/{id}":          s.handleGetSession,
-		"PATCH /api/sessions/{id}":        s.handleUpdateSession,
-		"PUT /api/sessions/{id}/ports":    s.handleUpdateSessionPorts,
-		"POST /api/sessions/{id}/start":   s.handleStartSession,
-		"POST /api/sessions/{id}/stop":    s.handleStopSession,
-		"DELETE /api/sessions/{id}":       s.handleDeleteSession,
-		"GET /api/sessions/{id}/terminal": s.handleTerminal,
+		"GET /api/claude/accounts":                     s.handleListClaudeAccounts,
+		"POST /api/claude/accounts":                    s.handleCreateClaudeAccount,
+		"PATCH /api/claude/accounts/{id}":              s.handleUpdateClaudeAccount,
+		"DELETE /api/claude/accounts/{id}":             s.handleDeleteClaudeAccount,
+		"GET /api/claude/accounts/{id}/login/terminal": s.handleClaudeAccountLoginTerminal,
+		"DELETE /api/claude/accounts/{id}/login":       s.handleStopClaudeAccountLogin,
+
+		"GET /api/sessions":                     s.handleListSessions,
+		"POST /api/sessions":                    s.handleCreateSession,
+		"GET /api/sessions/{id}":                s.handleGetSession,
+		"PATCH /api/sessions/{id}":              s.handleUpdateSession,
+		"PUT /api/sessions/{id}/ports":          s.handleUpdateSessionPorts,
+		"PUT /api/sessions/{id}/claude-account": s.handleUpdateSessionClaudeAccount,
+		"POST /api/sessions/{id}/start":         s.handleStartSession,
+		"POST /api/sessions/{id}/stop":          s.handleStopSession,
+		"DELETE /api/sessions/{id}":             s.handleDeleteSession,
+		"GET /api/sessions/{id}/terminal":       s.handleTerminal,
 
 		// No method: every verb has to reach the proxy, including the WebSocket
 		// upgrade code-server's own terminal uses.

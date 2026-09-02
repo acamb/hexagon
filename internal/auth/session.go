@@ -265,42 +265,43 @@ func (s *Service) Connected(ctx context.Context, userID string) (map[provider.Ki
 	return out, nil
 }
 
-// SetClaudeCredential stores the Anthropic credential this user configured,
-// sealed. It has been checked against the CLI by the time it gets here.
-func (s *Service) SetClaudeCredential(ctx context.Context, userID string, cred claudex.Credential) error {
-	sealed, err := s.cipher.Seal([]byte(cred.Secret))
+// CreateClaudeAccount adds a new Claude account for this user, sealing its
+// secret when it has one. A login account is created with no secret at all: it
+// is a row with a name and a directory, and the directory is what a browser
+// login on it fills in.
+func (s *Service) CreateClaudeAccount(ctx context.Context, userID, name, kind, secret string, isDefault bool) (*store.ClaudeAccount, error) {
+	var sealed []byte
+	if secret != "" {
+		var err error
+		if sealed, err = s.cipher.Seal([]byte(secret)); err != nil {
+			return nil, err
+		}
+	}
+	return s.store.CreateClaudeAccount(ctx, &store.ClaudeAccount{
+		UserID: userID, Name: name, Kind: kind, SecretEnc: sealed, IsDefault: isDefault,
+	})
+}
+
+// SetClaudeAccountSecret replaces a pasted account's secret, sealed. It has
+// been checked against the CLI by the time it gets here.
+func (s *Service) SetClaudeAccountSecret(ctx context.Context, userID, id, secret string) error {
+	sealed, err := s.cipher.Seal([]byte(secret))
 	if err != nil {
 		return err
 	}
-	_, err = s.store.UpsertClaudeCredential(ctx, &store.ClaudeCredential{
-		UserID:    userID,
-		Kind:      cred.Kind,
-		SecretEnc: sealed,
-	})
-	return err
+	return s.store.SetClaudeAccountSecret(ctx, userID, id, sealed)
 }
 
-// ClaudeCredential returns what to run Claude Code as for this user, or the
-// zero value when there is none. "None" is not an error: it is the ordinary
-// state of a Hexagon configured from a file.
-func (s *Service) ClaudeCredential(ctx context.Context, userID string) (claudex.Credential, error) {
-	stored, err := s.store.ClaudeCredential(ctx, userID)
-	if errors.Is(err, store.ErrNotFound) {
-		return claudex.Credential{}, nil
-	}
+// ClaudeSecret opens the sealed secret of a pasted account. It is called only
+// for an api_key or oauth_token account: a login account has none, and the
+// session manager never asks for one — its credential is the directory the
+// manager itself owns.
+func (s *Service) ClaudeSecret(ctx context.Context, account *store.ClaudeAccount) (claudex.Credential, error) {
+	secret, err := s.cipher.Open(account.SecretEnc)
 	if err != nil {
 		return claudex.Credential{}, err
 	}
-	secret, err := s.cipher.Open(stored.SecretEnc)
-	if err != nil {
-		return claudex.Credential{}, err
-	}
-	return claudex.Credential{Kind: stored.Kind, Secret: string(secret)}, nil
-}
-
-// ForgetClaudeCredential removes it, or reports store.ErrNotFound.
-func (s *Service) ForgetClaudeCredential(ctx context.Context, userID string) error {
-	return s.store.DeleteClaudeCredential(ctx, userID)
+	return claudex.Credential{Kind: account.Kind, Secret: string(secret)}, nil
 }
 
 // GitCredentialSource pairs a user's sealed credentials with the provider that
@@ -329,10 +330,10 @@ func (g *GitCredentialSource) GitCredentials(ctx context.Context, userID string,
 	return p.GitCredentials(credentials), nil
 }
 
-// ClaudeCredential delegates to the service, so the session orchestrator holds
-// one collaborator for every credential it needs rather than one per kind.
-func (g *GitCredentialSource) ClaudeCredential(ctx context.Context, userID string) (claudex.Credential, error) {
-	return g.service.ClaudeCredential(ctx, userID)
+// ClaudeSecret delegates to the service, so the session orchestrator holds one
+// collaborator for every credential it needs rather than one per kind.
+func (g *GitCredentialSource) ClaudeSecret(ctx context.Context, account *store.ClaudeAccount) (claudex.Credential, error) {
+	return g.service.ClaudeSecret(ctx, account)
 }
 
 func (s *Service) credentials(account *store.ProviderAccount) (provider.Credentials, error) {

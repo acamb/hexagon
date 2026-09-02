@@ -235,6 +235,11 @@ export interface Session {
   // Whether the session is a compose project rather than a single container,
   // which is a property of the image it came from.
   compose: boolean
+  // The Claude account this session's container authenticates with, empty
+  // when it resolves dynamically — the user's default account, or the
+  // server's own configuration. Editable while the session is stopped — see
+  // sessions.setClaudeAccount.
+  claudeAccountId: string
   createdAt: string
 }
 
@@ -265,6 +270,10 @@ export interface NewSession {
   // closed answer to a client that does not ask, and it is the dialog that
   // proposes 0.0.0.0 with the warning beside it.
   portAddress?: string
+  // Which Claude account the container authenticates with. Omitted resolves
+  // to the user's default account, or, absent one, the server's own
+  // configuration.
+  claudeAccountId?: string
 }
 
 // What a session's settings can be changed to after it exists. Omitted fields
@@ -279,6 +288,13 @@ export interface SessionSettings {
 export interface SessionPorts {
   ports: number[]
   portAddress: string
+}
+
+// What a session's claude account can be changed to, while stopped. Honouring
+// it means rebuilding the container, the same reason SessionPorts is not part
+// of SessionSettings.
+export interface SessionClaudeAccount {
+  claudeAccountId: string
 }
 
 // The providers this build knows. The value is what the API sends and stores,
@@ -318,16 +334,11 @@ export interface Account {
   removable: boolean
 }
 
-export type ClaudeCredentialKind = 'api_key' | 'oauth_token'
-// What a new session will actually authenticate with: the credential pasted
-// here, the server's own configured key, the file a browser login wrote, or
-// none of the above.
-export type ClaudeSource = 'credential' | 'apiKey' | 'file' | 'none'
-
-export interface ClaudeCredential {
-  kind: ClaudeCredentialKind
-  updatedAt: string
-}
+export type ClaudeAccountKind = 'api_key' | 'oauth_token' | 'login'
+// What a session naming no account will actually authenticate with: the
+// user's default account, the server's own configured key, the file the
+// machine-wide login wrote, or none of the above.
+export type ClaudeSource = 'account' | 'apiKey' | 'file' | 'none'
 
 export interface ClaudeFile {
   path: string
@@ -336,7 +347,6 @@ export interface ClaudeFile {
 }
 
 export interface ClaudeStatus {
-  credential: ClaudeCredential | null
   file: ClaudeFile
   effective: ClaudeSource
   canLogin: boolean
@@ -344,9 +354,39 @@ export interface ClaudeStatus {
   // Whether the CLI runs in a container on this server, which is what happens
   // when there is no claude binary on it.
   inContainer: boolean
-  // The image Hexagon builds for itself, which is what the browser login runs
-  // in when you have built none of your own. Absent with no Docker to build it.
+  // The image Hexagon builds for itself, which is what a browser login runs in
+  // when you have built none of your own. Absent with no Docker to build it.
   defaultImage?: DefaultImage
+}
+
+// One Claude account: a pasted API key or OAuth token, or a subscription
+// signed in to through the browser. Never carries a secret.
+export interface ClaudeAccount {
+  id: string
+  name: string
+  kind: ClaudeAccountKind
+  default: boolean
+  createdAt: string
+  updatedAt: string
+  // Present only for a login account: whether anybody has signed in on it yet.
+  // A row can exist before that happens.
+  login?: { present: boolean; updatedAt?: string }
+}
+
+export interface NewClaudeAccount {
+  name: string
+  kind: ClaudeAccountKind
+  // Absent for a login account: it takes no secret at all.
+  secret?: string
+}
+
+// What an existing account can be changed to. Omitted fields are left alone;
+// `default: true` is the only value default takes, since there is no way to
+// unmake an account the default except by making another one it instead.
+export interface ClaudeAccountUpdate {
+  name?: string
+  secret?: string
+  default?: true
 }
 
 export interface DefaultImage {
@@ -384,6 +424,9 @@ export const api = {
     // publish anything else, and refuses with 409 while it runs.
     setPorts: (id: string, ports: SessionPorts) =>
       request<Session>(`/sessions/${id}/ports`, { method: 'PUT', body: JSON.stringify(ports) }),
+    // Only while the session is stopped, for the same reason as setPorts.
+    setClaudeAccount: (id: string, account: SessionClaudeAccount) =>
+      request<Session>(`/sessions/${id}/claude-account`, { method: 'PUT', body: JSON.stringify(account) }),
     start: (id: string) => request<Session>(`/sessions/${id}/start`, { method: 'POST' }),
     stop: (id: string) => request<Session>(`/sessions/${id}/stop`, { method: 'POST' }),
     remove: (id: string, purge: boolean) =>
@@ -405,9 +448,6 @@ export const api = {
 
   claude: {
     status: () => request<ClaudeStatus>('/claude'),
-    setCredential: (kind: ClaudeCredentialKind, secret: string) =>
-      request<ClaudeStatus>('/claude/credential', { method: 'PUT', body: JSON.stringify({ kind, secret }) }),
-    forgetCredential: () => request<null>('/claude/credential', { method: 'DELETE' }),
     stopLogin: () => request<null>('/claude/login', { method: 'DELETE' }),
     // The terminal is a WebSocket, so it is a path for TerminalPane rather than
     // a fetch.
@@ -417,6 +457,20 @@ export const api = {
       imageId
         ? `/api/claude/login/terminal?image=${encodeURIComponent(imageId)}`
         : '/api/claude/login/terminal',
+
+    accounts: {
+      list: () => request<ClaudeAccount[]>('/claude/accounts'),
+      create: (account: NewClaudeAccount) =>
+        request<ClaudeAccount>('/claude/accounts', { method: 'POST', body: JSON.stringify(account) }),
+      update: (id: string, update: ClaudeAccountUpdate) =>
+        request<ClaudeAccount>(`/claude/accounts/${id}`, { method: 'PATCH', body: JSON.stringify(update) }),
+      remove: (id: string) => request<null>(`/claude/accounts/${id}`, { method: 'DELETE' }),
+      stopLogin: (id: string) => request<null>(`/claude/accounts/${id}/login`, { method: 'DELETE' }),
+      loginTerminal: (id: string, imageId: string) =>
+        imageId
+          ? `/api/claude/accounts/${id}/login/terminal?image=${encodeURIComponent(imageId)}`
+          : `/api/claude/accounts/${id}/login/terminal`,
+    },
   },
 
   images: {

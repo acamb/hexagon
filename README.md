@@ -96,17 +96,16 @@ The call runs with every built-in tool removed, so it is a pure text transformat
 shell, no file access, no network of its own. A compose file it writes goes through exactly
 the same refusals as one you typed by hand.
 
-It signs in the way a session does, and with the same order of preference: the credential you
-pasted on the Accounts page, then the key the server was configured with, then the login on
-the machine itself — the file a browser login writes. Configure Claude once and both halves
-of Hexagon use it.
+It signs in the way a session does, and with the same order of preference: your default
+Claude account, then the key the server was configured with, then the machine-wide login —
+the file its browser login writes. Configure Claude once and both halves of Hexagon use it.
 
 The call needs the Claude Code CLI, and where the server has no `claude` binary of its own —
 a packaged install has none: the service user has no home to install one into — it runs the
 CLI in a container instead, from the same image the browser login uses. That is the same
 answer a little slower, plus a wait for that image the first time, and the box says which of
 the two you are getting rather than leaving you to wonder why it is thinking. What it needs
-either way is a Claude Code credential, from the card on the Accounts page.
+either way is a Claude account, from the Accounts page.
 
 Installing `claude` on the server is still worth it if you use this a lot: put it on the
 `PATH` of the account the server runs as, or name it with `claude.binary`, and the box uses
@@ -146,8 +145,8 @@ the container, and there is no equivalent of the rebuild for it.
 
 ### Accounts
 
-![The Accounts page: the connected providers, and the card that sets the Claude Code account
-sessions run as](docs/images/accounts.jpg)
+![The Accounts page: the connected providers, and the list of Claude accounts sessions can run
+as](docs/images/accounts.jpg)
 
 Repositories come from the accounts you connect. GitHub is there already: it is how you
 signed in.
@@ -170,21 +169,34 @@ nothing in the session can fetch or push.
 
 It cannot be changed afterwards: a container keeps the environment it was created with.
 
-### The Claude login
+### Claude accounts
 
-The Claude card on the Accounts page is where a session's Claude Code account is set,
-without needing a shell on the server. Either paste an API key from the Console, or the
-token `claude setup-token` prints — both are checked against the CLI before being stored —
-or press **Log in** to get a real terminal running `claude auth login`.
+More than one Claude account can be configured on the Accounts page, without needing a shell
+on the server: paste an API key from the Console, the token `claude setup-token` prints, or
+add one that signs in with a subscription — press **Log in** on it to get a real terminal
+running `claude auth login`. A pasted secret is checked against the CLI before it is stored.
+One account is marked **default**, and a session created naming none gets it; naming another
+one instead is a choice in the new-session dialog when there is more than one to choose
+between.
 
-A pasted credential reaches sessions created after it was stored, and outranks the key the
-server was started with. A browser login reaches an existing session the next time it
-starts. The card says which of the two a new session will actually use.
+A stopped session's account can be changed too — the **Account** button beside **Ports**, on
+its card in the sessions list or on the session page. Changing it rebuilds the container from
+the same image, over the same workspace, for the same reason changing its ports does: a
+container keeps the credential it was created with. What it ends up authenticating as is
+whatever that account holds at the moment of the rebuild, so one that has been signed out of
+since fails the rebuild rather than quietly producing a container that cannot authenticate.
 
-The login runs `claude` in a throwaway container, which means it needs an image with Claude
-Code in it. On a machine where you have not built one yet it uses Hexagon's own — the same
-reference image the Images page starts from, built the first time something asks for it. The
-dialog says so while that build is running, and offers your own images once you have any.
+Each subscription account gets its own directory to sign in to, so two of them can be logged
+in to at once without either overwriting the other's credential. A machine-wide login further
+down the Accounts page still exists too, for a session that names no account and has no
+default configured either: it writes `claude.credentials`, exactly as it always has, and a
+session that resolves to it mounts that file read-only.
+
+Either kind of login runs `claude` in a throwaway container, which means it needs an image
+with Claude Code in it. On a machine where you have not built one yet it uses Hexagon's own —
+the same reference image the Images page starts from, built the first time something asks for
+it. The dialog says so while that build is running, and offers your own images once you have
+any.
 
 Inside a session, `claude` opens straight into the repository: each session gets its own
 `$HOME/.claude.json` marked as already onboarded and already trusting `/workspace`, so it
@@ -373,8 +385,8 @@ file, which wins over the defaults.**
 | `HEXAGON_BITBUCKET_API_URL` | `bitbucket.apiUrl` | `https://api.bitbucket.org/2.0` | Override |
 | `HEXAGON_SECRET_KEY` | `secretKey` | `<data dir>/secret.key` | 32 bytes, base64. Generated on first run |
 | `HEXAGON_DEBUG` | `debug` | — | Set to anything for debug logging |
-| `HEXAGON_CLAUDE_CREDENTIALS` | `claude.credentials` | `~/.claude/.credentials.json` | Mounted read-only into session containers. Empty disables the mount. Also the file a browser login writes |
-| `ANTHROPIC_API_KEY` | `claude.anthropicApiKey` | — | Handed to session containers when no credential is configured in the UI |
+| `HEXAGON_CLAUDE_CREDENTIALS` | `claude.credentials` | `~/.claude/.credentials.json` | Mounted read-only into a session that resolves to no Claude account. Empty disables the mount. Also the file the machine-wide login writes |
+| `ANTHROPIC_API_KEY` | `claude.anthropicApiKey` | — | Handed to a session that resolves to no Claude account |
 | `HEXAGON_CLAUDE_BINARY` | `claude.binary` | `claude` on `PATH`, then `~/.local/bin/claude` | Rewrites a Dockerfile or a compose file from the Images page. Without one, that runs in a container instead |
 | `HEXAGON_CLAUDE_MODEL` | `claude.model` | — | Model for that call; empty leaves the choice to the CLI |
 | `HEXAGON_GIT_USER_NAME` | `git.userName` | — | Git identity for clones and for commits made inside containers |

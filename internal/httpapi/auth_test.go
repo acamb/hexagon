@@ -169,9 +169,11 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	// it on purpose. Both the httpapi and the session config need it: one
 	// reports canLogin, the other actually starts the container.
 	claudeCredentials := filepath.Join(workspaces, "claude", ".credentials.json")
+	claudeAccountsDir := filepath.Join(workspaces, "claude-accounts")
 
 	cfg := &config.Config{
 		Addr: "127.0.0.1:0", PublicURL: "http://127.0.0.1:8080", ClaudeCredentials: claudeCredentials,
+		ClaudeAccountsDir: claudeAccountsDir,
 		// Where the first-time wizard would write. Nothing is there until a
 		// test puts it there.
 		ConfigPath: filepath.Join(t.TempDir(), "config.json"),
@@ -199,7 +201,9 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		return session.NewManager(st, docker, cloner, auth.NewGitCredentialSource(logins, providers), vscode, compose, session.Config{
 			WorkspaceRoot:     workspaces,
 			ClaudeCredentials: claudeCredentials,
+			AnthropicAPIKey:   cfg.AnthropicAPIKey,
 			ClaudeLoginDir:    filepath.Join(workspaces, "claude-login"),
+			ClaudeAccountsDir: claudeAccountsDir,
 			GitUserName:       "Hexagon User",
 			GitUserEmail:      "user@example.test",
 			ContainerUser:     "1000:1000",

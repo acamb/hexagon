@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -166,6 +167,88 @@ func TestRebuildingImagesKeepsTheRowsAndTheForeignKey(t *testing.T) {
 	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM images WHERE id = 'i-1'`); err == nil {
 		t.Error("an image still in use could be deleted: the rebuild lost the foreign key")
+	}
+}
+
+// Migration 009 carries over the single Claude credential every user already
+// had into the accounts table, as their default account, and drops the table
+// it came from. This is the assertion that the carry-over is lossless and that
+// a session which named no account before still names none afterwards.
+func TestMigrationCarriesOverTheClaudeCredentialAsADefaultAccount(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hexagon.db")
+	db, err := sql.Open("sqlite", "file:"+path+"?_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer db.Close()
+	s := &Store{db: db}
+
+	const before = 8
+	applyThrough(t, s, before)
+
+	ctx := t.Context()
+	user, err := s.UpsertUser(ctx, &User{GitHubLogin: "alice", GitHubID: 1})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO claude_credentials (user_id, kind, secret_enc, created_at, updated_at)
+		VALUES (?, 'oauth_token', ?, ?, ?)`,
+		user.ID, []byte("sealed-token"), formatTime(time.Now()), formatTime(time.Now())); err != nil {
+		t.Fatalf("insert claude credential: %v", err)
+	}
+	image, err := s.CreateImage(ctx, &Image{UserID: user.ID, Name: "base",
+		SourceType: ImageSourceDockerfile, ImageRef: "ref", Status: ImageStatusReady})
+	if err != nil {
+		t.Fatalf("create image: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `
+		INSERT INTO sessions (id, user_id, title, provider, repo_full_name, repo_clone_url, branch,
+			image_id, image_ref, workspace_dir, repo_dir, container_id, status, error, created_at, updated_at)
+		VALUES ('s-1', ?, 'work', 'github', 'acme/widgets', 'https://example.test/x.git', 'main',
+			?, 'ref', '/w/s-1', '/w/s-1/repo', 'c-1', 'running', '', ?, ?)`,
+		user.ID, image.ID, formatTime(time.Now()), formatTime(time.Now())); err != nil {
+		t.Fatalf("insert session: %v", err)
+	}
+
+	if err := s.migrate(); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+
+	account, err := s.DefaultClaudeAccount(ctx, user.ID)
+	if err != nil {
+		t.Fatalf("the credential did not come out as a default account: %v", err)
+	}
+	if account.Kind != "oauth_token" || string(account.SecretEnc) != "sealed-token" {
+		t.Errorf("account = %+v, want the credential's own kind and sealed bytes", account)
+	}
+
+	var gone int
+	if err := db.QueryRowContext(ctx, `SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='claude_credentials'`).Scan(&gone); err != nil {
+		t.Fatalf("check claude_credentials: %v", err)
+	}
+	if gone != 0 {
+		t.Error("claude_credentials still exists after the migration")
+	}
+
+	session, err := s.SessionByID(ctx, user.ID, "s-1")
+	if err != nil {
+		t.Fatalf("the session did not survive the migration: %v", err)
+	}
+	if session.ClaudeAccountID != "" {
+		t.Errorf("claude_account_id = %q, want empty: no existing session changed meaning", session.ClaudeAccountID)
+	}
+
+	// The partial unique index holds from the moment the migration creates it.
+	if _, err := s.CreateClaudeAccount(ctx, &ClaudeAccount{
+		UserID: user.ID, Name: "second", Kind: "api_key", SecretEnc: []byte("x"), IsDefault: true,
+	}); !errors.Is(err, ErrConflict) {
+		t.Errorf("a second default account = %v, want ErrConflict", err)
+	}
+	if _, err := s.CreateClaudeAccount(ctx, &ClaudeAccount{
+		UserID: user.ID, Name: account.Name, Kind: "api_key", SecretEnc: []byte("x"),
+	}); !errors.Is(err, ErrConflict) {
+		t.Errorf("a duplicate name = %v, want ErrConflict", err)
 	}
 }
 

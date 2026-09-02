@@ -5,6 +5,7 @@ import AppHeader from '../components/AppHeader.vue'
 import Notice from '../components/Notice.vue'
 import NewSessionDialog from '../components/NewSessionDialog.vue'
 import SessionPortsDialog from '../components/SessionPortsDialog.vue'
+import SessionClaudeAccountDialog from '../components/SessionClaudeAccountDialog.vue'
 import Spinner from '../components/Spinner.vue'
 import StatusDot from '../components/StatusDot.vue'
 import { ApiError, api, providerNames, type Session } from '../api'
@@ -25,6 +26,8 @@ const busy = ref<string | null>(null)
 // be: honouring a change rebuilds the container, and this list is the only page
 // a stopped session can be reached from.
 const editingPorts = ref<Session | null>(null)
+// Same shape, for the Claude account: also only while stopped, also a rebuild.
+const editingClaudeAccount = ref<Session | null>(null)
 
 async function refresh() {
   try {
@@ -70,6 +73,11 @@ async function remove(session: Session) {
 // re-reading it keeps every card in step, including the one behind the dialog.
 function portsChanged() {
   editingPorts.value = null
+  refresh()
+}
+
+function claudeAccountChanged() {
+  editingClaudeAccount.value = null
   refresh()
 }
 
@@ -174,6 +182,14 @@ onUnmounted(() => window.clearInterval(timer))
           >
             Ports
           </button>
+          <button
+            v-if="session.status === 'stopped'"
+            type="button"
+            :disabled="busy === session.id"
+            @click="editingClaudeAccount = session"
+          >
+            Account
+          </button>
           <button type="button" class="danger" @click="armDelete(session)">Delete</button>
         </div>
       </li>
@@ -189,6 +205,12 @@ onUnmounted(() => window.clearInterval(timer))
       :session="editingPorts"
       @close="editingPorts = null"
       @updated="portsChanged"
+    />
+    <SessionClaudeAccountDialog
+      v-if="editingClaudeAccount"
+      :session="editingClaudeAccount"
+      @close="editingClaudeAccount = null"
+      @updated="claudeAccountChanged"
     />
   </main>
 </template>
