@@ -453,6 +453,14 @@ Hexagon drives the Docker socket and holds credentials for your repositories. An
 reach it and hold a session can run anything on the machine it runs on. These are the
 properties it maintains, and the ones it deliberately does not.
 
+**One instance is meant for one person, and that person owns the machine it runs on.** The
+allowlist and the per-user scoping keep *unauthenticated* callers out and keep the data model
+honest; they are not a sandbox between two people who have both signed in. A session drives the
+Docker socket, so whoever holds one already controls the host — signing in is not a privilege
+boundary between people you would not hand a shell. Put such people on their own instance. What
+the container *does* wall off is the code a session runs — an untrusted repository, or the
+autonomous agent — from the host, which is why it runs as you and never as root.
+
 - **There is no way in without signing in.** Every endpoint except the health check, the
   login handshake and the first-run wizard requires a session, the terminal WebSocket
   included. Admission is re-checked against the allowlist on every request, not only at
@@ -462,11 +470,15 @@ properties it maintains, and the ones it deliberately does not.
   proxy in front and leave the bind where it is. The server refuses to start on an address
   the network can reach unless `publicUrl` is https, or `insecureHttp` says the plaintext is
   deliberate.
-- **Containers run as you, never as root**, and a user-supplied compose file is checked
-  against that before anything is created from it: no `privileged`, no added capabilities,
-  no host namespaces, no host bind mounts, no fixed host ports, no `build`, and no service
-  running as root. The check runs against Docker's own normalized view of the file, so the
-  same request written another way is refused too.
+- **Containers run as you, never as root**, and a user-supplied compose file is screened
+  before anything is created from it — no `privileged`, no added capabilities, no host
+  namespaces, no host bind mounts, no fixed host ports, no `build`, no service running as
+  root — against Docker's own normalized view of the file. Treat the screen as a guard-rail
+  against a careless compose file, not a sandbox around a hostile one: the Compose format has
+  other routes to the host it does not yet model (a named volume backed by a bind driver, a
+  host network defined at the top level, `device_cgroup_rules`, `env_file`, and more). Since
+  the file's author is the instance's own operator — see the one-person rule above — tightening
+  it further is defense in depth, not a trust boundary.
 - **A published session port has nothing in front of it.** Neither has code-server on its
   own port. Hexagon's sign-in guards the API and the VS Code proxy, not a port you asked it
   to publish — which is why the address field carries a warning. code-server's own port
