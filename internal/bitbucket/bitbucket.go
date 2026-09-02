@@ -68,7 +68,7 @@ func (c *Client) Kind() provider.Kind { return provider.Bitbucket }
 // the API token. Deliberately not the account email, which is what the REST API
 // wants — the two are not interchangeable.
 func (c *Client) GitCredentials(cred provider.Credentials) provider.GitAuth {
-	return provider.GitAuth{Username: gitUsername, Secret: cred.Secret}
+	return provider.GitAuth{Username: gitUsername, Secret: cred.SecretForGit()}
 }
 
 // account is the shape of GET /2.0/user.

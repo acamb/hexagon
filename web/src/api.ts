@@ -332,6 +332,9 @@ export interface Account {
   updatedAt?: string
   // False for GitHub: it is the account you signed in with.
   removable: boolean
+  // Whether a long-lived token has been pasted for git. The value never comes
+  // back from the server, only whether there is one.
+  gitTokenSet: boolean
 }
 
 export type ClaudeAccountKind = 'api_key' | 'oauth_token' | 'login'
@@ -444,6 +447,13 @@ export const api = {
       }),
     disconnect: (provider: ProviderKind) =>
       request<null>(`/accounts/${provider}`, { method: 'DELETE' }),
+    setGitToken: (provider: ProviderKind, secret: string) =>
+      request<Account>(`/accounts/${provider}/git-token`, {
+        method: 'PUT',
+        body: JSON.stringify({ secret }),
+      }),
+    clearGitToken: (provider: ProviderKind) =>
+      request<null>(`/accounts/${provider}/git-token`, { method: 'DELETE' }),
   },
 
   claude: {

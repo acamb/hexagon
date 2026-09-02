@@ -25,21 +25,30 @@ type ProviderAccount struct {
 	Identity  string
 	AvatarURL string
 	SecretEnc []byte
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	// GitSecretEnc is a second sealed secret, used for git and nothing else,
+	// nil when there is none. It exists because GitHub's secret_enc is the
+	// OAuth token from signing in and expires within hours, while a container
+	// keeps the credential it was created with.
+	GitSecretEnc []byte
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 const providerAccountColumns = `id, user_id, provider, account, identity, avatar_url, secret_enc,
-	created_at, updated_at`
+	git_secret_enc, created_at, updated_at`
 
 // UpsertProviderAccount connects an account, replacing whatever was connected
 // for that provider before: one account per provider per user, so reconnecting
 // with a fresh token is the same operation as connecting.
+//
+// git_secret_enc is deliberately absent from the update: this runs at every
+// GitHub sign-in, and the pasted token there is the one that has to survive an
+// OAuth token being refreshed. SetProviderGitSecret is the only writer of it.
 func (s *Store) UpsertProviderAccount(ctx context.Context, a *ProviderAccount) (*ProviderAccount, error) {
 	now := time.Now()
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO provider_accounts (`+providerAccountColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id, provider) DO UPDATE SET
 			account    = excluded.account,
 			identity   = excluded.identity,
@@ -47,7 +56,7 @@ func (s *Store) UpsertProviderAccount(ctx context.Context, a *ProviderAccount) (
 			secret_enc = excluded.secret_enc,
 			updated_at = excluded.updated_at`,
 		uuid.NewString(), a.UserID, a.Provider, a.Account, a.Identity, a.AvatarURL, a.SecretEnc,
-		formatTime(now), formatTime(now))
+		a.GitSecretEnc, formatTime(now), formatTime(now))
 	if err != nil {
 		return nil, fmt.Errorf("upsert provider account: %w", err)
 	}
@@ -88,6 +97,26 @@ func (s *Store) ListProviderAccounts(ctx context.Context, userID string) ([]*Pro
 	return accounts, rows.Err()
 }
 
+// SetProviderGitSecret stores the sealed secret git should use for an account,
+// or clears it when sealed is nil. It reports ErrNotFound when that provider is
+// not connected: a secret for an account that does not exist has nowhere to go.
+func (s *Store) SetProviderGitSecret(ctx context.Context, userID, provider string, sealed []byte) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE provider_accounts SET git_secret_enc = ?, updated_at = ?
+		WHERE user_id = ? AND provider = ?`, sealed, formatTime(time.Now()), userID, provider)
+	if err != nil {
+		return fmt.Errorf("set provider git secret: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // DeleteProviderAccount forgets a connected account, or reports ErrNotFound.
 func (s *Store) DeleteProviderAccount(ctx context.Context, userID, provider string) error {
 	res, err := s.db.ExecContext(ctx, `
@@ -111,7 +140,8 @@ func scanProviderAccount(row scanner) (*ProviderAccount, error) {
 		createdAt, updatedAt string
 	)
 	err := row.Scan(&account.ID, &account.UserID, &account.Provider, &account.Account,
-		&account.Identity, &account.AvatarURL, &account.SecretEnc, &createdAt, &updatedAt)
+		&account.Identity, &account.AvatarURL, &account.SecretEnc, &account.GitSecretEnc,
+		&createdAt, &updatedAt)
 	if err != nil {
 		return nil, err
 	}

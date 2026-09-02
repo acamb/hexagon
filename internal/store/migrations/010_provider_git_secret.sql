@@ -1,0 +1,17 @@
+-- A second secret for an account, for git and nothing else.
+--
+-- The GitHub credential in secret_enc is the OAuth token from signing in, and it
+-- expires after a few hours. A container cannot be handed a new one — it keeps
+-- the environment it was created with — so a session that outlives the token
+-- spends the rest of its life unable to fetch or push. A personal access token
+-- pasted here is what outlives it.
+--
+-- It is a second column rather than an overwrite of secret_enc because the two
+-- have different lifecycles: secret_enc is rewritten by every sign-in, and a
+-- pasted token stored there would be destroyed by the next login, at the moment
+-- nobody is watching for it. UpsertProviderAccount leaves this column alone for
+-- exactly that reason.
+--
+-- NULL means there is none, and the account's own secret is what git gets, which
+-- is what every row that exists today wants.
+ALTER TABLE provider_accounts ADD COLUMN git_secret_enc BLOB;

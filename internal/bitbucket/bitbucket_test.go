@@ -252,3 +252,20 @@ func TestRefusedCredentialsFailAtTheFirstCall(t *testing.T) {
 		t.Errorf("made %d calls, want one", calls)
 	}
 }
+
+// The same preference as GitHub's, so the field means one thing everywhere. No
+// Bitbucket account needs it today — what one is connected with is already a
+// pasted token — but a secret that was honoured by one provider and ignored by
+// the other would be a trap.
+func TestGitCredentialsPreferThePastedToken(t *testing.T) {
+	auth := New().GitCredentials(provider.Credentials{
+		Identity: "alice@example.test", Secret: "api-token", GitSecret: "git-token",
+	})
+
+	if auth.Username != "x-bitbucket-api-token-auth" {
+		t.Errorf("username = %q, want the fixed placeholder", auth.Username)
+	}
+	if auth.Secret != "git-token" {
+		t.Errorf("secret = %q, want the pasted token in preference to the API one", auth.Secret)
+	}
+}

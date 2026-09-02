@@ -149,6 +149,87 @@ func TestMigrationMovesTheGitHubTokenOutOfUsers(t *testing.T) {
 	}
 }
 
+func TestSetProviderGitSecretStoresThenClears(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	user := testUser(t, s, "alice", 1)
+
+	if _, err := s.UpsertProviderAccount(ctx, &ProviderAccount{
+		UserID: user.ID, Provider: "github", Account: "alice", SecretEnc: []byte("oauth"),
+	}); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	// A freshly connected account has none: git falls back to the account's own
+	// credential, which is what every row that predates this column wants.
+	account, err := s.ProviderAccount(ctx, user.ID, "github")
+	if err != nil {
+		t.Fatalf("ProviderAccount: %v", err)
+	}
+	if account.GitSecretEnc != nil {
+		t.Errorf("git secret = %q, want none on a freshly connected account", account.GitSecretEnc)
+	}
+
+	if err := s.SetProviderGitSecret(ctx, user.ID, "github", []byte("sealed-pat")); err != nil {
+		t.Fatalf("SetProviderGitSecret: %v", err)
+	}
+	if account, err = s.ProviderAccount(ctx, user.ID, "github"); err != nil {
+		t.Fatalf("ProviderAccount: %v", err)
+	}
+	if string(account.GitSecretEnc) != "sealed-pat" {
+		t.Errorf("git secret = %q, want sealed-pat", account.GitSecretEnc)
+	}
+	if string(account.SecretEnc) != "oauth" {
+		t.Errorf("secret = %q, want the account's own credential left alone", account.SecretEnc)
+	}
+
+	if err := s.SetProviderGitSecret(ctx, user.ID, "github", nil); err != nil {
+		t.Fatalf("SetProviderGitSecret clearing: %v", err)
+	}
+	if account, err = s.ProviderAccount(ctx, user.ID, "github"); err != nil {
+		t.Fatalf("ProviderAccount: %v", err)
+	}
+	if account.GitSecretEnc != nil {
+		t.Errorf("git secret = %q, want none after clearing", account.GitSecretEnc)
+	}
+
+	if err := s.SetProviderGitSecret(ctx, user.ID, "bitbucket", []byte("x")); !errors.Is(err, ErrNotFound) {
+		t.Errorf("error = %v, want ErrNotFound for a provider that is not connected", err)
+	}
+}
+
+// The whole point of the second column: signing in again refreshes the OAuth
+// token, and the pasted one has to be there afterwards. This is the regression
+// that would come back the moment somebody "completes" the upsert.
+func TestUpsertProviderAccountKeepsTheGitSecret(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	user := testUser(t, s, "alice", 1)
+
+	if _, err := s.UpsertProviderAccount(ctx, &ProviderAccount{
+		UserID: user.ID, Provider: "github", Account: "alice", SecretEnc: []byte("oauth-1"),
+	}); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := s.SetProviderGitSecret(ctx, user.ID, "github", []byte("sealed-pat")); err != nil {
+		t.Fatalf("SetProviderGitSecret: %v", err)
+	}
+
+	// What SaveLogin does at every sign-in.
+	again, err := s.UpsertProviderAccount(ctx, &ProviderAccount{
+		UserID: user.ID, Provider: "github", Account: "alice", SecretEnc: []byte("oauth-2"),
+	})
+	if err != nil {
+		t.Fatalf("UpsertProviderAccount again: %v", err)
+	}
+	if string(again.SecretEnc) != "oauth-2" {
+		t.Errorf("secret = %q, want the refreshed OAuth token", again.SecretEnc)
+	}
+	if string(again.GitSecretEnc) != "sealed-pat" {
+		t.Errorf("git secret = %q, want the pasted token to survive signing in again", again.GitSecretEnc)
+	}
+}
+
 // seedSchemaVersion builds a database with the first n migrations applied and
 // nothing more, then lets seed put rows in it.
 func seedSchemaVersion(t *testing.T, path string, n int, seed func(*sql.DB)) {

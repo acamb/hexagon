@@ -74,9 +74,11 @@ func (c *Client) CurrentUser(ctx context.Context, token string) (*User, error) {
 func (c *Client) Kind() provider.Kind { return provider.GitHub }
 
 // GitCredentials are what git wants over HTTPS: the placeholder GitHub expects
-// alongside an OAuth token, and the token itself.
+// alongside a token, and the token itself. The username works for a personal
+// access token as well as for an OAuth one, so preferring the pasted secret
+// changes nothing else here.
 func (c *Client) GitCredentials(cred provider.Credentials) provider.GitAuth {
-	return provider.GitAuth{Username: "x-access-token", Secret: cred.Secret}
+	return provider.GitAuth{Username: "x-access-token", Secret: cred.SecretForGit()}
 }
 
 // Verify identifies the account behind a token. The login is the same call the

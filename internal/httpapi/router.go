@@ -171,6 +171,9 @@ func New(deps Deps) http.Handler {
 		"PUT /api/accounts/{provider}":    s.handleConnectAccount,
 		"DELETE /api/accounts/{provider}": s.handleDisconnectAccount,
 
+		"PUT /api/accounts/{provider}/git-token":    s.handleSetAccountGitToken,
+		"DELETE /api/accounts/{provider}/git-token": s.handleClearAccountGitToken,
+
 		"GET /api/claude":                s.handleClaudeStatus,
 		"GET /api/claude/login/terminal": s.handleClaudeLoginTerminal,
 		"DELETE /api/claude/login":       s.handleStopClaudeLogin,

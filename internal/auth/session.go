@@ -237,6 +237,25 @@ func (s *Service) Connect(ctx context.Context, user *store.User, account provide
 	})
 }
 
+// SetGitSecret stores the secret git should use for one of the user's accounts,
+// sealed. It has been checked against the provider by the time it gets here.
+//
+// It is a separate call from Connect, and writes a separate column, because the
+// two secrets have different lifetimes: Connect runs at every GitHub sign-in
+// with a fresh OAuth token, and this one has to survive that.
+func (s *Service) SetGitSecret(ctx context.Context, userID string, kind provider.Kind, secret string) error {
+	sealed, err := s.cipher.Seal([]byte(secret))
+	if err != nil {
+		return err
+	}
+	return s.store.SetProviderGitSecret(ctx, userID, string(kind), sealed)
+}
+
+// ClearGitSecret forgets it, leaving git back on the account's own credential.
+func (s *Service) ClearGitSecret(ctx context.Context, userID string, kind provider.Kind) error {
+	return s.store.SetProviderGitSecret(ctx, userID, string(kind), nil)
+}
+
 // Credentials unseals one connected account, for acting on the user's behalf.
 func (s *Service) Credentials(ctx context.Context, userID string, kind provider.Kind) (provider.Credentials, error) {
 	account, err := s.store.ProviderAccount(ctx, userID, string(kind))
@@ -341,11 +360,19 @@ func (s *Service) credentials(account *store.ProviderAccount) (provider.Credenti
 	if err != nil {
 		return provider.Credentials{}, err
 	}
-	return provider.Credentials{
+	credentials := provider.Credentials{
 		Account:  account.Account,
 		Identity: account.Identity,
 		Secret:   string(secret),
-	}, nil
+	}
+	if len(account.GitSecretEnc) > 0 {
+		gitSecret, err := s.cipher.Open(account.GitSecretEnc)
+		if err != nil {
+			return provider.Credentials{}, err
+		}
+		credentials.GitSecret = string(gitSecret)
+	}
+	return credentials, nil
 }
 
 // NewState returns a fresh OAuth state value.

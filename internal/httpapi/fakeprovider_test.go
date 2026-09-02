@@ -50,9 +50,10 @@ func (f *fakeProvider) ListRepos(_ context.Context, c provider.Credentials) ([]p
 }
 
 // GitCredentials mirrors what the real providers do: a placeholder username
-// that is not the account name, and the secret as the password.
+// that is not the account name, and the secret git should use as the password —
+// the pasted one when there is one, which is what SecretForGit answers.
 func (f *fakeProvider) GitCredentials(c provider.Credentials) provider.GitAuth {
-	return provider.GitAuth{Username: "x-" + string(f.kind) + "-token", Secret: c.Secret}
+	return provider.GitAuth{Username: "x-" + string(f.kind) + "-token", Secret: c.SecretForGit()}
 }
 
 // offer adds a repository to what this provider will list.
@@ -65,6 +66,14 @@ func (f *fakeProvider) offer(fullName, defaultBranch string) {
 		CloneURL:      "https://" + string(f.kind) + ".test/" + fullName + ".git",
 		DefaultBranch: defaultBranch,
 	})
+}
+
+// identify changes the account Verify reports, so a test can hand over a token
+// that belongs to somebody else.
+func (f *fakeProvider) identify(account string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.account = account
 }
 
 func (f *fakeProvider) fail(err error) {

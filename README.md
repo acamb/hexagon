@@ -157,7 +157,18 @@ account settings → Security → API tokens with `read:workspace:bitbucket` and
 Both reads are needed because Bitbucket lists workspaces first and their repositories one
 workspace at a time. App passwords are not supported — Atlassian removed them in July 2026.
 
+The GitHub box also takes a **personal access token**, and it is worth setting. The
+credential that arrives with the sign-in expires after a few hours, and a container keeps
+the token it was built with, so a session outlives its own ability to fetch and push. A
+personal access token does not expire, and sessions created after you paste one use it for
+git. Make one under GitHub Settings → Developer settings → Personal access tokens, with the
+`repo` scope for a classic token or read and write access to Contents for a fine-grained
+one. It is used for git only — your repositories are still listed with the account you
+signed in with — so its scopes can be as narrow as you like.
+
 Credentials are checked against a real API call before they are stored, and sealed at rest.
+A token that turns out to belong to a different account is refused rather than stored: it
+would produce a session pushing commits under somebody else's name.
 
 ### The provider token
 
@@ -167,7 +178,10 @@ clone on the host uses the credentials either way — it could not reach a priva
 otherwise — so the choice is only about what runs *inside* the container. Without the token
 nothing in the session can fetch or push.
 
-It cannot be changed afterwards: a container keeps the environment it was created with.
+It cannot be changed afterwards: a container keeps the environment it was created with. That
+is also why a GitHub session is worth giving a personal access token before it is created —
+see [Accounts](#accounts). Without one it carries the token from signing in, and when that
+expires the session can no longer fetch or push at all; the new-session dialog says so.
 
 ### Claude accounts
 

@@ -206,3 +206,120 @@ func TestSessionFromABitbucketRepository(t *testing.T) {
 func jsonHeader() map[string]string {
 	return map[string]string{"Content-Type": "application/json"}
 }
+
+func TestSetGitTokenVerifiesThenStoresItSealed(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	var updated accountResponse
+	env.decode(env.sendJSON(http.MethodPut, "/api/accounts/github/git-token",
+		`{"secret":"ghp_personal"}`), &updated)
+	if !updated.GitTokenSet {
+		t.Errorf("account = %+v, want it reporting a token for git", updated)
+	}
+
+	account, err := env.store.ProviderAccount(t.Context(), env.userID(), "github")
+	if err != nil {
+		t.Fatalf("read the account back: %v", err)
+	}
+	if strings.Contains(string(account.GitSecretEnc), "ghp_personal") {
+		t.Error("the personal access token is stored in the clear")
+	}
+	// The credential the user signed in with is untouched: it is what lists
+	// repositories, and the two secrets answer different questions.
+	if len(account.SecretEnc) == 0 {
+		t.Error("storing a token for git overwrote the credential from signing in")
+	}
+
+	// And it comes back on the listing, as a boolean and never as the value.
+	var accounts []accountResponse
+	env.decode(env.do(http.MethodGet, "/api/accounts", nil), &accounts)
+	for _, a := range accounts {
+		if a.Provider == provider.GitHub && !a.GitTokenSet {
+			t.Errorf("github = %+v, want gitTokenSet after storing one", a)
+		}
+	}
+}
+
+func TestSetGitTokenRefusesOneTheProviderRejects(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	env.ghRepos.fail(fmt.Errorf("bad credentials: %w", provider.ErrUnauthorized))
+
+	resp := env.sendJSON(http.MethodPut, "/api/accounts/github/git-token", `{"secret":"nope"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a token the provider rejected", resp.StatusCode)
+	}
+
+	// A token that does not work fails inside a container hours later, so it is
+	// never stored on the strength of having been typed.
+	account, err := env.store.ProviderAccount(t.Context(), env.userID(), "github")
+	if err != nil {
+		t.Fatalf("read the account back: %v", err)
+	}
+	if account.GitSecretEnc != nil {
+		t.Error("the rejected token was stored anyway")
+	}
+}
+
+// A personal access token identifies an account of its own, and it does not
+// have to be this one. Storing somebody else's would produce a session pushing
+// commits under their name.
+func TestSetGitTokenRefusesAnotherAccountsToken(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	env.ghRepos.identify("bob")
+
+	resp := env.sendJSON(http.MethodPut, "/api/accounts/github/git-token", `{"secret":"ghp_bob"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400 for a token belonging to another account", resp.StatusCode)
+	}
+
+	account, err := env.store.ProviderAccount(t.Context(), env.userID(), "github")
+	if err != nil {
+		t.Fatalf("read the account back: %v", err)
+	}
+	if account.GitSecretEnc != nil {
+		t.Error("another account's token was stored")
+	}
+}
+
+func TestClearGitTokenLeavesTheAccountConnected(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	env.decode(env.sendJSON(http.MethodPut, "/api/accounts/github/git-token",
+		`{"secret":"ghp_personal"}`), &accountResponse{})
+
+	resp := env.do(http.MethodDelete, "/api/accounts/github/git-token",
+		map[string]string{"Content-Type": "application/json"})
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d, want 204", resp.StatusCode)
+	}
+
+	account, err := env.store.ProviderAccount(t.Context(), env.userID(), "github")
+	if err != nil {
+		t.Fatalf("removing the token disconnected the account: %v", err)
+	}
+	if account.GitSecretEnc != nil {
+		t.Errorf("git secret = %q, want none after removing it", account.GitSecretEnc)
+	}
+}
+
+// Signing in again refreshes the OAuth token, and it must not take the pasted
+// one with it: the whole feature is a credential that outlives a login.
+func TestSigningInAgainKeepsTheGitToken(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	env.decode(env.sendJSON(http.MethodPut, "/api/accounts/github/git-token",
+		`{"secret":"ghp_personal"}`), &accountResponse{})
+
+	env.signIn()
+
+	account, err := env.store.ProviderAccount(t.Context(), env.userID(), "github")
+	if err != nil {
+		t.Fatalf("read the account back: %v", err)
+	}
+	if account.GitSecretEnc == nil {
+		t.Error("signing in again threw away the token stored for git")
+	}
+}

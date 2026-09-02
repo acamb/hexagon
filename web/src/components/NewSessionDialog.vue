@@ -96,6 +96,20 @@ const tokenProvider = ref<ProviderKind | ''>('')
 // The accounts a repository-less session can take a token from.
 const connected = computed(() => accounts.value.filter((a) => a.connected))
 
+// Whether this session will carry a GitHub token, either way of choosing one.
+const takesGitHubToken = computed(() =>
+  withoutRepo.value
+    ? tokenProvider.value === 'github'
+    : propagateToken.value && selected.value?.provider === 'github',
+)
+
+// The token it would carry is the one from signing in, and that one expires
+// while the session is still running. A personal access token is what outlives
+// it, and there is no way to give a container one afterwards.
+const staleTokenAhead = computed(
+  () => takesGitHubToken.value && !accounts.value.find((a) => a.provider === 'github')?.gitTokenSet,
+)
+
 // What the server names such a session when the title is left empty.
 const imageName = computed(() => usableImages.value.find((i) => i.id === imageId.value)?.name ?? '')
 
@@ -331,6 +345,15 @@ onMounted(() => load())
               </em>
             </span>
           </label>
+
+          <p v-if="staleTokenAhead" class="warning">
+            The GitHub token this session gets is the one from signing in, and it expires after a
+            few hours. When it does, nothing inside the session can fetch or push any more, and
+            the only way back is to create the session again — a container keeps the token it was
+            built with. Set a personal access token on the
+            <RouterLink :to="{ name: 'accounts' }">Accounts</RouterLink> page and sessions get one
+            that lasts.
+          </p>
 
           <label v-if="claudeAccounts.length > 1" class="field">
             <span>Claude account</span>
@@ -596,5 +619,12 @@ button:disabled {
   border-radius: 6px;
   color: var(--warning);
   font-size: 0.9rem;
+}
+
+/* The link takes the warning's colour rather than the accent: an accent-blue
+   link inside an amber box reads as a second, unrelated message. */
+.warning a {
+  color: inherit;
+  text-decoration: underline;
 }
 </style>

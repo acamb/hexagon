@@ -1262,3 +1262,61 @@ func TestSessionRefusesAnAddressItCannotPublishOn(t *testing.T) {
 		}
 	}
 }
+
+// The reason the second secret exists: a session created while a personal
+// access token is stored authenticates git with that, not with the OAuth token
+// from signing in, which is the one that expires under a running container.
+func TestSessionCarriesThePersonalAccessTokenWhenThereIsOne(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+
+	env.decode(env.sendJSON(http.MethodPut, "/api/accounts/github/git-token",
+		`{"secret":"ghp_personal"}`), &accountResponse{})
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"repoFullName":"acme/widgets","imageId":%q}`, image.ID)), &created)
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	// Both halves of "everything git": the clone on the host, and the container
+	// that has to go on pushing long after the sign-in token has died.
+	clones := env.cloner.clones()
+	if len(clones) != 1 {
+		t.Fatalf("made %d clones, want 1", len(clones))
+	}
+	if clones[0].Token != "ghp_personal" {
+		t.Errorf("clone token = %q, want the personal access token", clones[0].Token)
+	}
+
+	containerEnv := env.containerEnv()
+	if containerEnv["HEXAGON_GIT_PASSWORD"] != "ghp_personal" {
+		t.Errorf("HEXAGON_GIT_PASSWORD = %q, want the personal access token",
+			containerEnv["HEXAGON_GIT_PASSWORD"])
+	}
+	if containerEnv["GITHUB_TOKEN"] != "ghp_personal" {
+		t.Errorf("GITHUB_TOKEN = %q, want the personal access token: the reference image's "+
+			"askpass and gh both read it under that name", containerEnv["GITHUB_TOKEN"])
+	}
+}
+
+// And with none stored nothing moves, which is every session that exists today.
+func TestSessionCarriesTheSignInTokenWithoutAPersonalAccessToken(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"repoFullName":"acme/widgets","imageId":%q}`, image.ID)), &created)
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	if clones := env.cloner.clones(); len(clones) != 1 || clones[0].Token != "gho_token" {
+		t.Errorf("clones = %+v, want the token from signing in", clones)
+	}
+	if containerEnv := env.containerEnv(); containerEnv["GITHUB_TOKEN"] != "gho_token" {
+		t.Errorf("GITHUB_TOKEN = %q, want the token from signing in", containerEnv["GITHUB_TOKEN"])
+	}
+}

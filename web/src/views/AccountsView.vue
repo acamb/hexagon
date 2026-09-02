@@ -33,6 +33,13 @@ const identity = ref('')
 const secret = ref('')
 const busy = ref<ProviderKind | null>(null)
 
+// The personal access token form, open for at most one provider at a time.
+// Only GitHub offers it: its credential is the OAuth token from signing in, and
+// that is the only one that expires while the user is still using it. What
+// Bitbucket is connected with is already a token somebody chose.
+const editingGitToken = ref<ProviderKind | null>(null)
+const gitToken = ref('')
+
 async function refresh() {
   try {
     accounts.value = await api.accounts.list()
@@ -70,6 +77,45 @@ async function disconnect(account: Account) {
   busy.value = account.provider
   try {
     await api.accounts.disconnect(account.provider)
+    await refresh()
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    busy.value = null
+  }
+}
+
+function openGitToken(provider: ProviderKind) {
+  editingGitToken.value = editingGitToken.value === provider ? null : provider
+  gitToken.value = ''
+  error.value = null
+}
+
+async function setGitToken(provider: ProviderKind) {
+  busy.value = provider
+  error.value = null
+  try {
+    await api.accounts.setGitToken(provider, gitToken.value.trim())
+    editingGitToken.value = null
+    gitToken.value = ''
+    await refresh()
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    busy.value = null
+  }
+}
+
+async function clearGitToken(account: Account) {
+  const warning =
+    'Remove the personal access token? Sessions created after this go back to the token from ' +
+    'signing in, which expires.'
+  if (!window.confirm(warning)) return
+  busy.value = account.provider
+  error.value = null
+  try {
+    await api.accounts.clearGitToken(account.provider)
+    editingGitToken.value = null
     await refresh()
   } catch (e) {
     error.value = message(e)
@@ -315,9 +361,30 @@ onUnmounted(() => window.clearTimeout(defaultImageTimer))
               </span>
             </span>
             <span v-else class="muted">Not connected</span>
+            <span v-if="account.connected && account.provider === 'github'" class="muted">
+              {{
+                account.gitTokenSet
+                  ? 'git uses a personal access token'
+                  : 'git uses the sign-in token, which expires'
+              }}
+            </span>
           </div>
 
           <div class="actions">
+            <template v-if="account.connected && account.provider === 'github'">
+              <button type="button" @click="openGitToken(account.provider)">
+                {{ account.gitTokenSet ? 'Replace token' : 'Set token' }}
+              </button>
+              <button
+                v-if="account.gitTokenSet"
+                type="button"
+                class="danger"
+                :disabled="busy === account.provider"
+                @click="clearGitToken(account)"
+              >
+                <Spinner v-if="busy === account.provider" />Remove token
+              </button>
+            </template>
             <span v-if="!account.removable" class="muted">signed in with</span>
             <button
               v-else-if="account.connected"
@@ -366,6 +433,33 @@ onUnmounted(() => window.clearTimeout(defaultImageTimer))
             <button type="button" @click="connecting = null">Cancel</button>
             <button type="submit" class="primary" :disabled="busy === account.provider">
               <Spinner v-if="busy === account.provider" />Connect
+            </button>
+          </div>
+        </form>
+
+        <form
+          v-if="editingGitToken === account.provider"
+          class="connect"
+          @submit.prevent="setGitToken(account.provider)"
+        >
+          <label class="field">
+            <span>Personal access token</span>
+            <input v-model="gitToken" required type="password" autocomplete="off" />
+          </label>
+
+          <p class="hint">
+            The token sessions fetch and push with. Create one under GitHub Settings → Developer
+            settings → Personal access tokens, with the <code>repo</code> scope for a classic
+            token, or read and write access to Contents for a fine-grained one. It is used for git
+            only — your repositories are still listed with the account you signed in with, so its
+            scopes can be as narrow as you like. Sessions that already exist keep the token their
+            container was built with.
+          </p>
+
+          <div class="buttons">
+            <button type="button" @click="editingGitToken = null">Cancel</button>
+            <button type="submit" class="primary" :disabled="busy === account.provider">
+              <Spinner v-if="busy === account.provider" />Save
             </button>
           </div>
         </form>

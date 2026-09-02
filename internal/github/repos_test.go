@@ -96,3 +96,23 @@ func TestListReposReportsARejectedToken(t *testing.T) {
 		t.Errorf("error = %v, want ErrUnauthorized", err)
 	}
 }
+
+// The pasted token wins wherever git is what needs authenticating, which is the
+// whole point of storing a second secret: the account's own is the OAuth token
+// from signing in, and it expires while sessions are still running.
+func TestGitCredentialsPreferThePastedToken(t *testing.T) {
+	auth := New().GitCredentials(provider.Credentials{Secret: "gho_oauth", GitSecret: "ghp_pat"})
+
+	if auth.Username != "x-access-token" {
+		t.Errorf("username = %q, want the placeholder, which a PAT accepts too", auth.Username)
+	}
+	if auth.Secret != "ghp_pat" {
+		t.Errorf("secret = %q, want the pasted token in preference to the OAuth one", auth.Secret)
+	}
+
+	// And without one, nothing moves: this is what every account has today.
+	auth = New().GitCredentials(provider.Credentials{Secret: "gho_oauth"})
+	if auth.Secret != "gho_oauth" {
+		t.Errorf("secret = %q, want the account's own credential when none was pasted", auth.Secret)
+	}
+}

@@ -62,6 +62,22 @@ type Credentials struct {
 	Account  string
 	Identity string
 	Secret   string
+	// GitSecret is what git should authenticate with instead of Secret, empty
+	// when there is nothing to prefer. It exists for GitHub, whose Secret is
+	// the OAuth token from signing in: that token expires within hours, and a
+	// container cannot be handed a new one, so a session outlives its own
+	// ability to push. A personal access token pasted here does not expire.
+	GitSecret string
+}
+
+// SecretForGit is the secret git wants: the one pasted for it, or the account's
+// own. Every caller that authenticates git goes through it, so the preference is
+// stated once rather than in each provider.
+func (c Credentials) SecretForGit() string {
+	if c.GitSecret != "" {
+		return c.GitSecret
+	}
+	return c.Secret
 }
 
 // GitAuth is what git wants over HTTPS for one account. It is a type of its own
