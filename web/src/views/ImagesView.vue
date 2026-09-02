@@ -30,6 +30,13 @@ const removing = ref<string | null>(null)
 const openLogId = ref<string | null>(null)
 const log = ref('')
 
+// Editing an existing image's source, one at a time: opening one panel closes
+// whichever other was open, the same way the log pane already works.
+const editingId = ref<string | null>(null)
+const editDockerfile = ref('')
+const editCompose = ref('')
+const rebuilding = ref<string | null>(null)
+
 // The log pane follows the output while it is being appended, the way `tail -f`
 // does, and lets go the moment the reader scrolls away to look at something.
 const logEl = ref<HTMLElement | null>(null)
@@ -120,6 +127,34 @@ function toggleLog(image: Image) {
   log.value = ''
   autoScroll.value = true
   if (openLogId.value) refreshLog()
+}
+
+function toggleEdit(image: Image) {
+  editingId.value = editingId.value === image.id ? null : image.id
+  if (editingId.value) {
+    editDockerfile.value = image.dockerfile ?? ''
+    editCompose.value = image.compose ?? ''
+  }
+}
+
+async function rebuild(image: Image) {
+  rebuilding.value = image.id
+  try {
+    await api.images.rebuild(image.id, {
+      dockerfile: editDockerfile.value,
+      compose: image.sourceType === 'compose' ? editCompose.value : undefined,
+    })
+    editingId.value = null
+    // Follow the new build, the way starting one from the form already does.
+    openLogId.value = image.id
+    log.value = ''
+    autoScroll.value = true
+    await refresh()
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    rebuilding.value = null
+  }
 }
 
 async function refreshLog() {
@@ -259,6 +294,14 @@ onUnmounted(() => window.clearInterval(timer))
           </div>
           <StatusDot :status="image.status" />
           <div class="actions">
+            <button
+              v-if="image.sourceType !== 'registry'"
+              type="button"
+              :disabled="image.status === 'building' || image.status === 'pending'"
+              @click="toggleEdit(image)"
+            >
+              {{ editingId === image.id ? 'Cancel edit' : 'Edit' }}
+            </button>
             <button type="button" @click="toggleLog(image)">
               {{ openLogId === image.id ? 'Hide log' : 'Log' }}
             </button>
@@ -274,6 +317,45 @@ onUnmounted(() => window.clearInterval(timer))
         </div>
 
         <p v-if="image.error" class="error inline">{{ image.error }}</p>
+
+        <form v-if="editingId === image.id" class="edit-pane" @submit.prevent="rebuild(image)">
+          <label class="field">
+            <span>Dockerfile</span>
+            <textarea v-model="editDockerfile" rows="14" spellcheck="false" required></textarea>
+          </label>
+          <AskClaude
+            v-if="canAsk"
+            v-model="editDockerfile"
+            kind="dockerfile"
+            placeholder="Ask Claude to change it: add the Go toolchain"
+            :in-container="askInContainer"
+            @failed="error = $event"
+          />
+
+          <template v-if="image.sourceType === 'compose'">
+            <label class="field">
+              <span>Compose file</span>
+              <textarea v-model="editCompose" rows="14" spellcheck="false" required></textarea>
+            </label>
+            <AskClaude
+              v-if="canAsk"
+              v-model="editCompose"
+              kind="compose"
+              placeholder="Ask Claude to change it: add a postgres 16"
+              :in-container="askInContainer"
+              @failed="error = $event"
+            />
+          </template>
+
+          <p class="hint">
+            Existing sessions keep the image they were built from; only sessions started after this
+            rebuild use the new content.
+          </p>
+
+          <button type="submit" :disabled="rebuilding === image.id">
+            <Spinner v-if="rebuilding === image.id" />Rebuild image
+          </button>
+        </form>
 
         <div v-if="openLogId === image.id" class="log-pane">
           <label class="follow">
@@ -439,6 +521,19 @@ button:disabled {
 .actions {
   display: flex;
   gap: 0.5rem;
+}
+
+.edit-pane {
+  display: grid;
+  gap: 1rem;
+  margin-top: 0.75rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border);
+}
+
+.edit-pane > button {
+  justify-self: start;
+  font-weight: 600;
 }
 
 .log-pane {

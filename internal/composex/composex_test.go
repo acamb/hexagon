@@ -63,10 +63,16 @@ func TestValidateSendsTheFileAndReturnsItsServices(t *testing.T) {
 	}
 
 	args := recorded.read(t, "args")
-	for _, want := range []string{"compose", "--file", "-", "config", "--format", "json"} {
+	for _, want := range []string{"compose", "--project-name", "--file", "-", "config", "--format", "json"} {
 		if !strings.Contains(args, want+"\n") {
 			t.Errorf("%q is missing from the arguments:\n%s", want, args)
 		}
+	}
+	// A real project name, not an empty one: with the file on stdin there is no
+	// directory for the CLI to infer a name from, and it refuses to run without
+	// one ("project name must not be empty").
+	if strings.Contains(args, "--project-name\n\n") {
+		t.Error("--project-name was sent with an empty value")
 	}
 	if stdin := recorded.read(t, "stdin"); !strings.Contains(stdin, "postgres:16") {
 		t.Errorf("the file did not reach the CLI's stdin:\n%s", stdin)

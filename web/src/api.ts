@@ -190,6 +190,14 @@ export interface NewImage {
   registryRef?: string
 }
 
+// What an existing Dockerfile or compose image's source can be rebuilt from.
+// Sent whole rather than as an omittable patch: a rebuild always replaces
+// both files a compose image carries, since the two describe one build.
+export interface ImageSourceUpdate {
+  dockerfile: string
+  compose?: string
+}
+
 export type SessionStatus =
   | 'creating'
   | 'cloning'
@@ -489,6 +497,8 @@ export const api = {
       request<Image>('/images', { method: 'POST', body: JSON.stringify(image) }),
     remove: (id: string) => request<null>(`/images/${id}`, { method: 'DELETE' }),
     log: (id: string) => request<ImageLog>(`/images/${id}/log`),
+    rebuild: (id: string, update: ImageSourceUpdate) =>
+      request<Image>(`/images/${id}/rebuild`, { method: 'POST', body: JSON.stringify(update) }),
     template: () => request<ImageTemplate>('/images/template'),
     editSource: (kind: SourceKind, content: string, instruction: string) =>
       request<SourceEdit>('/images/source', {

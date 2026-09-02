@@ -119,6 +119,29 @@ func (s *Store) SetImageBuildLog(ctx context.Context, id, log string) error {
 	return nil
 }
 
+// UpdateImageSource replaces an image's Dockerfile and compose content and
+// puts it back into the build queue: status becomes building and the previous
+// build's log and error are cleared, so the log pane the UI already polls
+// shows the new build rather than a stale one appended to it. It returns
+// ErrNotFound when the image is not the caller's.
+func (s *Store) UpdateImageSource(ctx context.Context, userID, id, dockerfile, compose string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE images SET dockerfile = ?, compose = ?, status = ?, build_log = '', error = ''
+		WHERE id = ? AND user_id = ?`,
+		dockerfile, compose, ImageStatusBuilding, id, userID)
+	if err != nil {
+		return fmt.Errorf("update image source: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
 // FinishImage records the outcome of a build or pull.
 func (s *Store) FinishImage(ctx context.Context, id, status, imageRef, log, errMessage string) error {
 	_, err := s.db.ExecContext(ctx, `

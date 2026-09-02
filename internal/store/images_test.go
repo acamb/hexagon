@@ -155,6 +155,53 @@ func TestFailInterruptedImageBuilds(t *testing.T) {
 	}
 }
 
+func TestUpdateImageSourceResetsStatusLogAndError(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	user := testUser(t, s, "alice", 1)
+
+	img, err := s.CreateImage(ctx, &Image{UserID: user.ID, Name: "base",
+		SourceType: ImageSourceDockerfile, ImageRef: "hexagon/img-1:latest", Status: ImageStatusBuilding})
+	if err != nil {
+		t.Fatalf("CreateImage: %v", err)
+	}
+	if err := s.FinishImage(ctx, img.ID, ImageStatusFailed, img.ImageRef, "Step 1/1\nboom", "boom"); err != nil {
+		t.Fatalf("FinishImage: %v", err)
+	}
+
+	if err := s.UpdateImageSource(ctx, user.ID, img.ID, "FROM busybox\nRUN true", ""); err != nil {
+		t.Fatalf("UpdateImageSource: %v", err)
+	}
+
+	got, err := s.ImageByID(ctx, user.ID, img.ID)
+	if err != nil {
+		t.Fatalf("ImageByID: %v", err)
+	}
+	if got.Dockerfile != "FROM busybox\nRUN true" {
+		t.Errorf("Dockerfile = %q, want the new content", got.Dockerfile)
+	}
+	if got.Status != ImageStatusBuilding || got.BuildLog != "" || got.Error != "" {
+		t.Errorf("updated image = %+v, want status building with a cleared log and error", got)
+	}
+}
+
+func TestUpdateImageSourceReturnsNotFoundForAnotherUsersImage(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	alice := testUser(t, s, "alice", 1)
+	bob := testUser(t, s, "bob", 2)
+
+	img, err := s.CreateImage(ctx, &Image{UserID: alice.ID, Name: "base",
+		SourceType: ImageSourceDockerfile, Status: ImageStatusReady})
+	if err != nil {
+		t.Fatalf("CreateImage: %v", err)
+	}
+
+	if err := s.UpdateImageSource(ctx, bob.ID, img.ID, "FROM busybox", ""); !errors.Is(err, ErrNotFound) {
+		t.Errorf("another user updated the image: err = %v, want ErrNotFound", err)
+	}
+}
+
 func TestCountSessionsUsingImage(t *testing.T) {
 	ctx := context.Background()
 	s := testStore(t)
