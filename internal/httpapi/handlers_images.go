@@ -270,6 +270,108 @@ func (s *Server) handleCreateImage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, newImageResponse(created))
 }
 
+type rebuildImageRequest struct {
+	Dockerfile string `json:"dockerfile"`
+	Compose    string `json:"compose"`
+}
+
+// handleRebuildImage replaces a Dockerfile or compose image's source with an
+// edited version and rebuilds it under the same local tag, so sessions
+// created from it afterwards see the change without the image losing the
+// identity anything already referencing it (by id) relies on. It never
+// updates the source without rebuilding: a stored "ready" image whose
+// dockerfile/compose no longer matches what was built is a state nothing
+// else in the schema accounts for.
+func (s *Server) handleRebuildImage(w http.ResponseWriter, r *http.Request) {
+	img, ok := s.imageOr404(w, r)
+	if !ok {
+		return
+	}
+	if img.SourceType == store.ImageSourceRegistry {
+		writeError(w, http.StatusBadRequest, "a registry image has no Dockerfile or compose file to rebuild from")
+		return
+	}
+	if img.Status == store.ImageStatusPending || img.Status == store.ImageStatusBuilding {
+		writeError(w, http.StatusConflict, "this image is already building")
+		return
+	}
+
+	var req rebuildImageRequest
+	if err := decodeJSON(w, r, maxImageRequestBody, &req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body: "+err.Error())
+		return
+	}
+	dockerfile, compose, err := validatedSource(img.SourceType, req.Dockerfile, req.Compose)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	// Same checks handleCreateImage runs, in the same order, before a build
+	// starts.
+	if img.SourceType == store.ImageSourceCompose {
+		if s.compose == nil {
+			writeError(w, http.StatusServiceUnavailable, "this server has no docker compose to run a project with")
+			return
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), composeValidateTimeout)
+		defer cancel()
+		if _, err := s.compose.Validate(ctx, compose); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
+	switch building, err := s.store.CountBuildingImages(r.Context(), img.UserID); {
+	case err != nil:
+		s.log.Error("count builds in flight", "err", err)
+		writeError(w, http.StatusInternalServerError, "cannot rebuild image")
+		return
+	case building >= s.cfg.MaxConcurrentBuilds:
+		writeError(w, http.StatusTooManyRequests, fmt.Sprintf(
+			"at most %d builds at a time: wait for one to finish", s.cfg.MaxConcurrentBuilds))
+		return
+	}
+
+	if err := s.docker.Ping(r.Context()); err != nil {
+		s.log.Error("docker unreachable", "err", err)
+		writeError(w, http.StatusServiceUnavailable, "docker is unreachable")
+		return
+	}
+
+	switch err := s.store.UpdateImageSource(r.Context(), img.UserID, img.ID, dockerfile, compose); {
+	case errors.Is(err, store.ErrNotFound):
+		writeError(w, http.StatusNotFound, "no such image")
+		return
+	case err != nil:
+		s.log.Error("update image source", "id", img.ID, "err", err)
+		writeError(w, http.StatusInternalServerError, "cannot rebuild image")
+		return
+	}
+	img.Dockerfile, img.Compose = dockerfile, compose
+	img.Status, img.BuildLog, img.Error = store.ImageStatusBuilding, "", ""
+
+	s.startImageBuild(img)
+	writeJSON(w, http.StatusAccepted, newImageResponse(img))
+}
+
+// validatedSource trims and checks a Dockerfile, and a compose file when
+// sourceType calls for one, the same way for a new image and for a rebuild of
+// an existing one: the two must accept exactly the same content.
+func validatedSource(sourceType, rawDockerfile, rawCompose string) (dockerfile, compose string, err error) {
+	dockerfile = strings.TrimSpace(rawDockerfile)
+	if dockerfile == "" {
+		return "", "", errors.New("a Dockerfile is required")
+	}
+	if sourceType == store.ImageSourceCompose {
+		compose = strings.TrimSpace(rawCompose)
+		if compose == "" {
+			return "", "", errors.New("a compose file is required")
+		}
+	}
+	return dockerfile, compose, nil
+}
+
 // imageFromRequest validates the payload and returns the row to insert.
 func imageFromRequest(req createImageRequest) (*store.Image, error) {
 	name := strings.TrimSpace(req.Name)
@@ -285,9 +387,9 @@ func imageFromRequest(req createImageRequest) (*store.Image, error) {
 
 	switch req.SourceType {
 	case store.ImageSourceDockerfile:
-		dockerfile := strings.TrimSpace(req.Dockerfile)
-		if dockerfile == "" {
-			return nil, errors.New("a Dockerfile is required")
+		dockerfile, _, err := validatedSource(store.ImageSourceDockerfile, req.Dockerfile, "")
+		if err != nil {
+			return nil, err
 		}
 		img.SourceType = store.ImageSourceDockerfile
 		img.Dockerfile = dockerfile
@@ -297,13 +399,9 @@ func imageFromRequest(req createImageRequest) (*store.Image, error) {
 		// A Dockerfile and a compose file together: the Dockerfile still
 		// describes the container Claude Code runs in, and builds exactly as it
 		// does above.
-		dockerfile := strings.TrimSpace(req.Dockerfile)
-		compose := strings.TrimSpace(req.Compose)
-		switch {
-		case dockerfile == "":
-			return nil, errors.New("a Dockerfile is required")
-		case compose == "":
-			return nil, errors.New("a compose file is required")
+		dockerfile, compose, err := validatedSource(store.ImageSourceCompose, req.Dockerfile, req.Compose)
+		if err != nil {
+			return nil, err
 		}
 		img.SourceType = store.ImageSourceCompose
 		img.Dockerfile = dockerfile

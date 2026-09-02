@@ -28,6 +28,14 @@ import (
 // images cannot be offered at all.
 var ErrUnavailable = errors.New("docker compose is not available")
 
+// composeValidateProjectName satisfies `docker compose config`'s requirement
+// for a project name, even though Validate's content never corresponds to a
+// running project — it arrives over stdin, sometimes before any image or
+// session exists, so there is no directory to infer one from. It cannot
+// collide with a real project's name: those are "hexagon-" followed by a
+// session id (see internal/session/compose.go), never this literal word.
+const composeValidateProjectName = "hexagon-validate"
+
 // Runner invokes the CLI.
 type Runner struct {
 	binary string
@@ -125,7 +133,7 @@ func (r *Runner) Validate(ctx context.Context, content string) ([]string, error)
 	// cannot be dodged by writing the same request another way. Reading it as
 	// JSON is also what keeps a YAML parser out of go.mod.
 	normalized, err := r.run(ctx, "config", "", strings.NewReader(content),
-		"compose", "--file", "-", "config", "--format", "json")
+		"compose", "--project-name", composeValidateProjectName, "--file", "-", "config", "--format", "json")
 	if err != nil {
 		return nil, err
 	}

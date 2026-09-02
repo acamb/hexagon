@@ -871,3 +871,104 @@ func TestCreateComposeImageWithoutCompose(t *testing.T) {
 		t.Error("canCompose = true on a server with no docker compose")
 	}
 }
+
+// A rebuild replaces the stored source and starts the build over, under the
+// same tag it already had.
+func TestRebuildImageStartsANewBuildFromEditedContent(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	created := env.readyImage("base")
+
+	resp := env.postJSON("/api/images/"+created.ID+"/rebuild", `{"dockerfile":"FROM busybox\nRUN true"}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("rebuild status = %d, want 202", resp.StatusCode)
+	}
+	var rebuilt imageResponse
+	env.decode(resp, &rebuilt)
+	if rebuilt.Status != store.ImageStatusBuilding {
+		t.Errorf("status right after rebuild = %q, want building", rebuilt.Status)
+	}
+	if rebuilt.ImageRef != created.ImageRef {
+		t.Errorf("image ref = %q, want the same tag as before: %q", rebuilt.ImageRef, created.ImageRef)
+	}
+
+	ready := env.waitForImageStatus(created.ID, store.ImageStatusReady)
+	if !strings.Contains(ready.Dockerfile, "RUN true") {
+		t.Errorf("dockerfile = %q, want the edited content", ready.Dockerfile)
+	}
+
+	built := env.docker.builtDockerfiles()
+	if len(built) != 2 || !strings.Contains(built[1], "RUN true") {
+		t.Errorf("built = %v, want a second build from the edited Dockerfile", built)
+	}
+}
+
+// A registry image has no Dockerfile or compose file, so there is nothing to
+// rebuild it from.
+func TestRebuildImageRejectsARegistryImage(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	var created imageResponse
+	env.decode(env.postJSON("/api/images", `{"name":"node","sourceType":"registry","registryRef":"node:22"}`), &created)
+	env.waitForImageStatus(created.ID, store.ImageStatusReady)
+
+	resp := env.postJSON("/api/images/"+created.ID+"/rebuild", `{"dockerfile":"FROM node:22"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// Two rebuilds cannot run at once: the second request has nothing to append
+// its result to but a build already in flight.
+func TestRebuildImageRejectsWhileAlreadyBuilding(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	created := env.readyImage("base")
+
+	// Puts the row back into "building" without going through the handler,
+	// standing in for a rebuild already in flight.
+	if err := env.store.UpdateImageSource(context.Background(), env.userID(), created.ID, "FROM busybox", ""); err != nil {
+		t.Fatalf("UpdateImageSource: %v", err)
+	}
+
+	resp := env.postJSON("/api/images/"+created.ID+"/rebuild", `{"dockerfile":"FROM busybox\nRUN true"}`)
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status = %d, want 409", resp.StatusCode)
+	}
+}
+
+// A rebuilt compose image goes through the same refusals a new one does, and
+// a refused edit is not persisted over the working content it replaces.
+func TestRebuildImageValidatesComposeBeforePersisting(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	var created imageResponse
+	env.decode(env.postJSON("/api/images", `{"name":"advanced","sourceType":"compose",
+		"dockerfile":"FROM busybox\n","compose":"services:\n  db:\n    image: postgres:16\n"}`), &created)
+	env.waitForImageStatus(created.ID, store.ImageStatusReady)
+
+	env.compose.err = fmt.Errorf(`service "db": privileged is not allowed here`)
+	resp := env.postJSON("/api/images/"+created.ID+"/rebuild",
+		`{"dockerfile":"FROM busybox\n","compose":"services:\n  db:\n    privileged: true\n"}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+	var body map[string]string
+	env.decode(resp, &body)
+	if !strings.Contains(body["error"], "privileged") {
+		t.Errorf("error = %q, want it to name the refused key", body["error"])
+	}
+
+	var current imageResponse
+	env.decode(env.do(http.MethodGet, "/api/images/"+created.ID, nil), &current)
+	if strings.Contains(current.Compose, "privileged") {
+		t.Errorf("compose = %q, want the refused edit not to have been stored", current.Compose)
+	}
+	if current.Status != store.ImageStatusReady {
+		t.Errorf("status = %q, want the image to stay ready after a refused rebuild", current.Status)
+	}
+}
