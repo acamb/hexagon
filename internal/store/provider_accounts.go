@@ -30,12 +30,17 @@ type ProviderAccount struct {
 	// OAuth token from signing in and expires within hours, while a container
 	// keeps the credential it was created with.
 	GitSecretEnc []byte
-	CreatedAt    time.Time
-	UpdatedAt    time.Time
+	// ExpiresAt is when secret_enc (the OAuth token) dies, as the provider
+	// reported it at sign-in; the zero value means it advertised no expiry. The
+	// login session is bound to this instant so a cookie cannot outlive the
+	// token that makes it useful.
+	ExpiresAt time.Time
+	CreatedAt time.Time
+	UpdatedAt time.Time
 }
 
 const providerAccountColumns = `id, user_id, provider, account, identity, avatar_url, secret_enc,
-	git_secret_enc, created_at, updated_at`
+	git_secret_enc, created_at, updated_at, expires_at`
 
 // UpsertProviderAccount connects an account, replacing whatever was connected
 // for that provider before: one account per provider per user, so reconnecting
@@ -48,15 +53,16 @@ func (s *Store) UpsertProviderAccount(ctx context.Context, a *ProviderAccount) (
 	now := time.Now()
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO provider_accounts (`+providerAccountColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(user_id, provider) DO UPDATE SET
 			account    = excluded.account,
 			identity   = excluded.identity,
 			avatar_url = excluded.avatar_url,
 			secret_enc = excluded.secret_enc,
+			expires_at = excluded.expires_at,
 			updated_at = excluded.updated_at`,
 		uuid.NewString(), a.UserID, a.Provider, a.Account, a.Identity, a.AvatarURL, a.SecretEnc,
-		a.GitSecretEnc, formatTime(now), formatTime(now))
+		a.GitSecretEnc, formatTime(now), formatTime(now), nullTime(a.ExpiresAt))
 	if err != nil {
 		return nil, fmt.Errorf("upsert provider account: %w", err)
 	}
@@ -138,10 +144,11 @@ func scanProviderAccount(row scanner) (*ProviderAccount, error) {
 	var (
 		account              ProviderAccount
 		createdAt, updatedAt string
+		expiresAt            sql.NullString
 	)
 	err := row.Scan(&account.ID, &account.UserID, &account.Provider, &account.Account,
 		&account.Identity, &account.AvatarURL, &account.SecretEnc, &account.GitSecretEnc,
-		&createdAt, &updatedAt)
+		&createdAt, &updatedAt, &expiresAt)
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +157,9 @@ func scanProviderAccount(row scanner) (*ProviderAccount, error) {
 	}
 	if account.UpdatedAt, err = parseTime(updatedAt); err != nil {
 		return nil, fmt.Errorf("parse updated_at: %w", err)
+	}
+	if account.ExpiresAt, err = parseNullTime(expiresAt); err != nil {
+		return nil, fmt.Errorf("parse expires_at: %w", err)
 	}
 	return &account, nil
 }

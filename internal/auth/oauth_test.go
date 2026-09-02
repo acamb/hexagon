@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 )
 
 func validOAuthConfig() OAuthConfig {
@@ -70,15 +71,44 @@ func TestOAuthExchange(t *testing.T) {
 	cfg.TokenURL = stub.URL
 	o, _ := NewOAuth(cfg)
 
-	token, err := o.Exchange(context.Background(), "the-code")
+	token, expiresAt, err := o.Exchange(context.Background(), "the-code")
 	if err != nil {
 		t.Fatalf("Exchange: %v", err)
 	}
 	if token != "gho_token" {
 		t.Errorf("token = %q", token)
 	}
+	if !expiresAt.IsZero() {
+		t.Errorf("expiresAt = %v, want zero: this response carried no expires_in", expiresAt)
+	}
 	if gotForm.Get("code") != "the-code" || gotForm.Get("client_secret") != "secret" {
 		t.Errorf("unexpected form: %v", gotForm)
+	}
+}
+
+// A token that expires (a GitHub App user token, or an OAuth App with token
+// expiration on) carries expires_in, and Exchange turns it into the moment the
+// token dies so the login session can be bound to it.
+func TestOAuthExchangeReturnsTokenExpiry(t *testing.T) {
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"access_token":"gho_token","token_type":"bearer","expires_in":28800}`))
+	}))
+	defer stub.Close()
+
+	cfg := validOAuthConfig()
+	cfg.TokenURL = stub.URL
+	o, _ := NewOAuth(cfg)
+
+	before := time.Now()
+	_, expiresAt, err := o.Exchange(context.Background(), "the-code")
+	if err != nil {
+		t.Fatalf("Exchange: %v", err)
+	}
+	// 28800s = 8h; allow a wide window so the test is not clock-flaky.
+	want := before.Add(8 * time.Hour)
+	if expiresAt.Before(want.Add(-time.Minute)) || expiresAt.After(want.Add(time.Minute)) {
+		t.Errorf("expiresAt = %v, want ~%v (now + expires_in)", expiresAt, want)
 	}
 }
 
@@ -95,7 +125,7 @@ func TestOAuthExchangeRejectsErrorDocument(t *testing.T) {
 	cfg.TokenURL = stub.URL
 	o, _ := NewOAuth(cfg)
 
-	_, err := o.Exchange(context.Background(), "stale")
+	_, _, err := o.Exchange(context.Background(), "stale")
 	if err == nil {
 		t.Fatal("Exchange accepted an error document")
 	}

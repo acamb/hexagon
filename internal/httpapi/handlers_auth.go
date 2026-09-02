@@ -55,7 +55,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	token, err := oauth.Exchange(ctx, code)
+	token, tokenExpiry, err := oauth.Exchange(ctx, code)
 	if err != nil {
 		s.log.Error("oauth code exchange", "err", err)
 		s.failLogin(w, r, "exchange_failed")
@@ -81,13 +81,13 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	user, err := s.auth.SaveLogin(ctx, ghUser, token)
+	user, err := s.auth.SaveLogin(ctx, ghUser, token, tokenExpiry)
 	if err != nil {
 		s.log.Error("save login", "login", ghUser.Login, "err", err)
 		s.failLogin(w, r, "server_error")
 		return
 	}
-	if err := s.auth.Issue(ctx, w, user); err != nil {
+	if err := s.auth.Issue(ctx, w, user, tokenExpiry); err != nil {
 		s.log.Error("issue session", "login", ghUser.Login, "err", err)
 		s.failLogin(w, r, "server_error")
 		return

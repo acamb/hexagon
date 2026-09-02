@@ -81,8 +81,12 @@ func (s *Service) CookieName() string {
 	return sessionCookie
 }
 
-// Issue creates a session for user and sets the cookie on w.
-func (s *Service) Issue(ctx context.Context, w http.ResponseWriter, user *store.User) error {
+// Issue creates a session for user and sets the cookie on w. tokenExpiry is when
+// the OAuth token behind the login dies: when it is set the session is bound to
+// it — it expires with the token and is never renewed — so a cookie cannot
+// outlive the credential that makes it useful. A zero tokenExpiry (the provider
+// advertised no expiry) leaves the ordinary sliding lifetime in place.
+func (s *Service) Issue(ctx context.Context, w http.ResponseWriter, user *store.User, tokenExpiry time.Time) error {
 	raw := make([]byte, tokenBytes)
 	if _, err := rand.Read(raw); err != nil {
 		return fmt.Errorf("generate session token: %w", err)
@@ -90,7 +94,10 @@ func (s *Service) Issue(ctx context.Context, w http.ResponseWriter, user *store.
 	token := base64.RawURLEncoding.EncodeToString(raw)
 
 	expires := time.Now().Add(sessionTTL)
-	if err := s.store.CreateUserSession(ctx, hashToken(token), user.ID, expires); err != nil {
+	if !tokenExpiry.IsZero() {
+		expires = tokenExpiry
+	}
+	if err := s.store.CreateUserSession(ctx, hashToken(token), user.ID, expires, tokenExpiry); err != nil {
 		return err
 	}
 
@@ -200,7 +207,7 @@ func (s *Service) clearCookie(w http.ResponseWriter, name, path string) {
 // Two writes, because they are two different things: the user row is the
 // identity, and the GitHub provider account is one of the places this user's
 // repositories come from. The login just happens to hand us both at once.
-func (s *Service) SaveLogin(ctx context.Context, ghUser *github.User, token string) (*store.User, error) {
+func (s *Service) SaveLogin(ctx context.Context, ghUser *github.User, token string, tokenExpiry time.Time) (*store.User, error) {
 	user, err := s.store.UpsertUser(ctx, &store.User{
 		GitHubLogin: ghUser.Login,
 		GitHubID:    ghUser.ID,
@@ -213,7 +220,7 @@ func (s *Service) SaveLogin(ctx context.Context, ghUser *github.User, token stri
 		Kind:      provider.GitHub,
 		Account:   ghUser.Login,
 		AvatarURL: ghUser.AvatarURL,
-	}, token)
+	}, token, tokenExpiry)
 	if err != nil {
 		return nil, err
 	}
@@ -221,8 +228,10 @@ func (s *Service) SaveLogin(ctx context.Context, ghUser *github.User, token stri
 }
 
 // Connect stores an account's secret, sealed. The account has already been
-// verified against the provider by the time it gets here.
-func (s *Service) Connect(ctx context.Context, user *store.User, account provider.Account, secret string) (*store.ProviderAccount, error) {
+// verified against the provider by the time it gets here. secretExpiry is when
+// that secret dies (zero for a pasted token or any provider that gives no
+// expiry); it is stored so a login session can be bound to it.
+func (s *Service) Connect(ctx context.Context, user *store.User, account provider.Account, secret string, secretExpiry time.Time) (*store.ProviderAccount, error) {
 	sealed, err := s.cipher.Seal([]byte(secret))
 	if err != nil {
 		return nil, err
@@ -234,6 +243,7 @@ func (s *Service) Connect(ctx context.Context, user *store.User, account provide
 		Identity:  account.Identity,
 		AvatarURL: account.AvatarURL,
 		SecretEnc: sealed,
+		ExpiresAt: secretExpiry,
 	})
 }
 

@@ -598,7 +598,7 @@ func TestRequestsFromAUserNoLongerAllowedAre401(t *testing.T) {
 		t.Fatalf("create user: %v", err)
 	}
 	issued := httptest.NewRecorder()
-	if err := env.auth.Issue(context.Background(), issued, bob); err != nil {
+	if err := env.auth.Issue(context.Background(), issued, bob, time.Time{}); err != nil {
 		t.Fatalf("issue session: %v", err)
 	}
 	cookie := issued.Result().Cookies()[0]

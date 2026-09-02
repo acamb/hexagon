@@ -123,7 +123,9 @@ func (s *Server) handleConnectAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if _, err := s.auth.Connect(r.Context(), user, account, credentials.Secret); err != nil {
+	// A pasted credential carries no expiry: it is a personal access token the
+	// user manages, not an OAuth token with a lifetime we were told.
+	if _, err := s.auth.Connect(r.Context(), user, account, credentials.Secret, time.Time{}); err != nil {
 		s.log.Error("connect provider account", "provider", kind, "err", err)
 		writeError(w, http.StatusInternalServerError, "cannot save the account")
 		return

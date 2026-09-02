@@ -20,6 +20,25 @@ func parseTime(s string) (time.Time, error) {
 	return time.Parse(timeLayout, s)
 }
 
+// nullTime renders a time for a nullable TEXT column: a zero time is stored as
+// SQL NULL, so "no value" is the absence of one rather than a sentinel date the
+// rest of the code would have to recognise.
+func nullTime(t time.Time) any {
+	if t.IsZero() {
+		return nil
+	}
+	return formatTime(t)
+}
+
+// parseNullTime is the inverse of nullTime: a NULL (or empty) column reads back
+// as the zero time.
+func parseNullTime(s sql.NullString) (time.Time, error) {
+	if !s.Valid || s.String == "" {
+		return time.Time{}, nil
+	}
+	return parseTime(s.String)
+}
+
 // User is someone allowed to use Hexagon, identified by their GitHub account.
 //
 // The account is the identity only. The token that came with it lives in
@@ -121,12 +140,15 @@ func scanUser(row scanner) (*User, error) {
 }
 
 // CreateUserSession stores a browser login session. tokenHash is the SHA-256 of
-// the cookie value; the value itself is never persisted.
-func (s *Store) CreateUserSession(ctx context.Context, tokenHash []byte, userID string, expiresAt time.Time) error {
+// the cookie value; the value itself is never persisted. tokenExpiresAt is when
+// the OAuth token behind the login dies: a non-zero value binds the session to
+// it (see TouchUserSession), and the zero value stores NULL for a session with
+// no token expiry to honour.
+func (s *Store) CreateUserSession(ctx context.Context, tokenHash []byte, userID string, expiresAt, tokenExpiresAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO user_sessions (token_hash, user_id, created_at, expires_at)
-		VALUES (?, ?, ?, ?)`,
-		tokenHash, userID, formatTime(time.Now()), formatTime(expiresAt))
+		INSERT INTO user_sessions (token_hash, user_id, created_at, expires_at, token_expires_at)
+		VALUES (?, ?, ?, ?, ?)`,
+		tokenHash, userID, formatTime(time.Now()), formatTime(expiresAt), nullTime(tokenExpiresAt))
 	if err != nil {
 		return fmt.Errorf("create user session: %w", err)
 	}
@@ -161,10 +183,15 @@ func (s *Store) DeleteUserSession(ctx context.Context, tokenHash []byte) error {
 //
 // It reports whether the row was actually extended, which is what tells the
 // caller to re-set the cookie.
+//
+// A session bound to an OAuth token (token_expires_at is not NULL) is never
+// extended: its life is the token's, and renewing it would let the cookie
+// outlive the credential that makes it useful. Only the unbound sessions — a
+// non-expiring OAuth-App token — get the sliding lifetime.
 func (s *Store) TouchUserSession(ctx context.Context, tokenHash []byte, renewBefore, expiresAt time.Time) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `
 		UPDATE user_sessions SET expires_at = ?
-		WHERE token_hash = ? AND expires_at <= ?`,
+		WHERE token_hash = ? AND expires_at <= ? AND token_expires_at IS NULL`,
 		formatTime(expiresAt), tokenHash, formatTime(renewBefore))
 	if err != nil {
 		return false, fmt.Errorf("touch user session: %w", err)

@@ -74,7 +74,7 @@ func TestUserSessionsLifecycle(t *testing.T) {
 	}
 
 	live := []byte("live-hash")
-	if err := s.CreateUserSession(ctx, live, user.ID, time.Now().Add(time.Hour)); err != nil {
+	if err := s.CreateUserSession(ctx, live, user.ID, time.Now().Add(time.Hour), time.Time{}); err != nil {
 		t.Fatalf("CreateUserSession: %v", err)
 	}
 	got, err := s.UserBySessionToken(ctx, live)
@@ -86,7 +86,7 @@ func TestUserSessionsLifecycle(t *testing.T) {
 	}
 
 	expired := []byte("expired-hash")
-	if err := s.CreateUserSession(ctx, expired, user.ID, time.Now().Add(-time.Minute)); err != nil {
+	if err := s.CreateUserSession(ctx, expired, user.ID, time.Now().Add(-time.Minute), time.Time{}); err != nil {
 		t.Fatalf("CreateUserSession (expired): %v", err)
 	}
 	if _, err := s.UserBySessionToken(ctx, expired); !errors.Is(err, ErrNotFound) {
@@ -112,6 +112,64 @@ func TestUserSessionsLifecycle(t *testing.T) {
 	}
 }
 
+// A session bound to an OAuth token (token_expires_at is set) is never renewed:
+// its life is the token's, so it expires with the credential rather than being
+// slid forward. This is the backstop for a stolen cookie.
+func TestTouchUserSessionNeverRenewsATokenBoundSession(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	user, err := s.UpsertUser(ctx, &User{GitHubLogin: "alice", GitHubID: 1})
+	if err != nil {
+		t.Fatalf("UpsertUser: %v", err)
+	}
+	token := []byte("bound-token-hash")
+	tokenExpiry := time.Now().Add(time.Hour)
+	// A token-bound session's expires_at is the token expiry; pass it as both.
+	if err := s.CreateUserSession(ctx, token, user.ID, tokenExpiry, tokenExpiry); err != nil {
+		t.Fatalf("CreateUserSession: %v", err)
+	}
+
+	// Well past the half life, so an unbound session would be extended here.
+	renewed, err := s.TouchUserSession(ctx, token, time.Now().Add(90*time.Minute), time.Now().Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("TouchUserSession: %v", err)
+	}
+	if renewed {
+		t.Error("a token-bound session was extended; it must die with its token")
+	}
+
+	var got string
+	if err := s.DB().QueryRow(`SELECT expires_at FROM user_sessions WHERE token_hash = ?`, token).Scan(&got); err != nil {
+		t.Fatalf("read expires_at: %v", err)
+	}
+	if got != formatTime(tokenExpiry) {
+		t.Errorf("expires_at = %q, want the untouched token expiry %q", got, formatTime(tokenExpiry))
+	}
+}
+
+// A token-bound session past its token's expiry reads as absent, exactly like
+// any other expired session: expires_at is the token expiry, so the ordinary
+// expiry filter already covers it.
+func TestUserBySessionTokenRejectsAnExpiredTokenBoundSession(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+
+	user, err := s.UpsertUser(ctx, &User{GitHubLogin: "alice", GitHubID: 1})
+	if err != nil {
+		t.Fatalf("UpsertUser: %v", err)
+	}
+	token := []byte("dead-token-hash")
+	past := time.Now().Add(-time.Minute)
+	if err := s.CreateUserSession(ctx, token, user.ID, past, past); err != nil {
+		t.Fatalf("CreateUserSession: %v", err)
+	}
+
+	if _, err := s.UserBySessionToken(ctx, token); !errors.Is(err, ErrNotFound) {
+		t.Errorf("expired token-bound session still resolves: err = %v", err)
+	}
+}
+
 // The renewal boundary: a session in the first half of its life costs no write
 // at all, and one past it is extended.
 func TestTouchUserSessionRenewsOnlyPastHalfLife(t *testing.T) {
@@ -124,7 +182,7 @@ func TestTouchUserSessionRenewsOnlyPastHalfLife(t *testing.T) {
 	}
 	token := []byte("token-hash")
 	expires := time.Now().Add(time.Hour)
-	if err := s.CreateUserSession(ctx, token, user.ID, expires); err != nil {
+	if err := s.CreateUserSession(ctx, token, user.ID, expires, time.Time{}); err != nil {
 		t.Fatalf("CreateUserSession: %v", err)
 	}
 
@@ -182,7 +240,7 @@ func TestDeleteUserSessionsForUserLeavesOtherUsersAlone(t *testing.T) {
 		token []byte
 		user  string
 	}{{[]byte("a1"), alice.ID}, {[]byte("a2"), alice.ID}, {[]byte("b1"), bob.ID}} {
-		if err := s.CreateUserSession(ctx, session.token, session.user, time.Now().Add(time.Hour)); err != nil {
+		if err := s.CreateUserSession(ctx, session.token, session.user, time.Now().Add(time.Hour), time.Time{}); err != nil {
 			t.Fatalf("CreateUserSession %d: %v", i, err)
 		}
 	}

@@ -99,8 +99,14 @@ func (o *OAuth) AuthorizeURL(state string) string {
 	return o.authorizeURL + "?" + q.Encode()
 }
 
-// Exchange trades the callback code for an access token.
-func (o *OAuth) Exchange(ctx context.Context, code string) (string, error) {
+// Exchange trades the callback code for an access token and the moment that
+// token expires. The expiry is the zero time when GitHub advertises none: a
+// classic OAuth-App token that does not expire sends no expires_in, and the
+// caller reads a zero time as "no bound to honour". refresh_token is
+// deliberately ignored — Hexagon does not refresh, because a refresh flow would
+// let a stolen session cookie be re-extended server-side, which is the opposite
+// of what binding the session to the token is for.
+func (o *OAuth) Exchange(ctx context.Context, code string) (string, time.Time, error) {
 	form := url.Values{
 		"client_id":     {o.clientID},
 		"client_secret": {o.clientSecret},
@@ -109,37 +115,42 @@ func (o *OAuth) Exchange(ctx context.Context, code string) (string, error) {
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, o.tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", err
+		return "", time.Time{}, err
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 
 	resp, err := o.http.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("exchange oauth code: %w", err)
+		return "", time.Time{}, fmt.Errorf("exchange oauth code: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
-		return "", fmt.Errorf("exchange oauth code: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+		return "", time.Time{}, fmt.Errorf("exchange oauth code: %s: %s", resp.Status, strings.TrimSpace(string(body)))
 	}
 
 	// GitHub answers 200 with an error document when the code is stale, so the
 	// body has to be inspected rather than the status alone.
 	var payload struct {
 		AccessToken      string `json:"access_token"`
+		ExpiresIn        int    `json:"expires_in"`
 		Error            string `json:"error"`
 		ErrorDescription string `json:"error_description"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
-		return "", fmt.Errorf("decode oauth token response: %w", err)
+		return "", time.Time{}, fmt.Errorf("decode oauth token response: %w", err)
 	}
 	switch {
 	case payload.Error != "":
-		return "", fmt.Errorf("exchange oauth code: %s: %s", payload.Error, payload.ErrorDescription)
+		return "", time.Time{}, fmt.Errorf("exchange oauth code: %s: %s", payload.Error, payload.ErrorDescription)
 	case payload.AccessToken == "":
-		return "", errors.New("exchange oauth code: no access token in response")
+		return "", time.Time{}, errors.New("exchange oauth code: no access token in response")
 	}
-	return payload.AccessToken, nil
+	var expiresAt time.Time
+	if payload.ExpiresIn > 0 {
+		expiresAt = time.Now().Add(time.Duration(payload.ExpiresIn) * time.Second)
+	}
+	return payload.AccessToken, expiresAt, nil
 }

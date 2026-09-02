@@ -361,13 +361,11 @@ onUnmounted(() => window.clearTimeout(defaultImageTimer))
               </span>
             </span>
             <span v-else class="muted">Not connected</span>
-            <span v-if="account.connected && account.provider === 'github'" class="muted">
-              {{
-                account.gitTokenSet
-                  ? 'git uses a personal access token'
-                  : 'git uses the sign-in token, which expires'
-              }}
-            </span>
+            <div v-if="account.connected && account.provider === 'github'" class="muted">
+              <p v-if="!account.gitTokenSet" class="notice error" role="alert">
+                <span>git is using the sign-in token, which requires a logout/login when expires</span>
+              </p>
+            </div>
           </div>
 
           <div class="actions">

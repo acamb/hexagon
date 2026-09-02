@@ -38,7 +38,7 @@ func TestPruneRevokedSessionsSignsOutOnlyUsersNoLongerAllowed(t *testing.T) {
 		token []byte
 		user  string
 	}{{[]byte("alice"), alice.ID}, {[]byte("mallory"), mallory.ID}} {
-		if err := st.CreateUserSession(ctx, s.token, s.user, time.Now().Add(time.Hour)); err != nil {
+		if err := st.CreateUserSession(ctx, s.token, s.user, time.Now().Add(time.Hour), time.Time{}); err != nil {
 			t.Fatalf("create session: %v", err)
 		}
 	}

@@ -1,0 +1,15 @@
+-- Bind a browser session to the OAuth token it was minted from.
+--
+-- A session cookie is the whole credential, and sliding renewal used to keep one
+-- alive indefinitely as long as the browser called back once per half life. The
+-- GitHub token behind it, on the other hand, expires within hours: once it does
+-- the session can no longer list repositories or identify the user, and it
+-- lingers only to be a stolen-cookie liability. Tying the two closes that gap.
+--
+-- token_expires_at holds the moment the OAuth token dies. When it is set, the
+-- session's own expires_at is that same instant and the session is never
+-- renewed, so it goes exactly when the credential does. NULL means the provider
+-- returned no expiry (a non-expiring OAuth-App token); such a session keeps the
+-- ordinary sliding lifetime, which is why the column is nullable and defaults to
+-- absent for every row that exists today.
+ALTER TABLE user_sessions ADD COLUMN token_expires_at TEXT;

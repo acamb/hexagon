@@ -2,10 +2,12 @@ package auth
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/andrea/hexagon/internal/store"
 )
@@ -49,7 +51,7 @@ func TestSessionCookieCarriesTheHostPrefixOverHTTPS(t *testing.T) {
 			svc, user := newTestService(t, c.publicURL)
 
 			rec := httptest.NewRecorder()
-			if err := svc.Issue(context.Background(), rec, user); err != nil {
+			if err := svc.Issue(context.Background(), rec, user, time.Time{}); err != nil {
 				t.Fatalf("Issue: %v", err)
 			}
 			cookies := rec.Result().Cookies()
@@ -99,5 +101,32 @@ func TestSessionCookieCarriesTheHostPrefixOverHTTPS(t *testing.T) {
 				t.Errorf("cleared cookie = %q with MaxAge %d, want %q with -1", got.Name, got.MaxAge, c.wantName)
 			}
 		})
+	}
+}
+
+// A login carrying an OAuth token expiry binds the session to it: the cookie
+// expires exactly then, and the row records the binding so it is never renewed.
+func TestIssueBindsTheSessionToTheTokenExpiry(t *testing.T) {
+	svc, user := newTestService(t, "https://hexagon.example")
+
+	tokenExpiry := time.Now().Add(8 * time.Hour).Round(time.Second)
+	rec := httptest.NewRecorder()
+	if err := svc.Issue(context.Background(), rec, user, tokenExpiry); err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+
+	cookie := rec.Result().Cookies()[0]
+	if d := cookie.Expires.Sub(tokenExpiry); d < -time.Minute || d > time.Minute {
+		t.Errorf("cookie expires = %v, want the token expiry %v", cookie.Expires, tokenExpiry)
+	}
+
+	var tokenExpiresAt sql.NullString
+	err := svc.store.DB().QueryRow(
+		`SELECT token_expires_at FROM user_sessions ORDER BY created_at DESC LIMIT 1`).Scan(&tokenExpiresAt)
+	if err != nil {
+		t.Fatalf("read token_expires_at: %v", err)
+	}
+	if !tokenExpiresAt.Valid {
+		t.Fatal("token_expires_at is NULL, want the session bound to the token")
 	}
 }
