@@ -503,6 +503,8 @@ button:disabled {
 .row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 0.5rem;
   gap: 1rem;
 }
 
@@ -520,6 +522,8 @@ button:disabled {
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
+  row-gap: 0.4rem;
   gap: 0.5rem;
 }
 

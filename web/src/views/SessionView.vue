@@ -333,6 +333,8 @@ onUnmounted(() => window.clearTimeout(timer))
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  row-gap: 0.5rem;
   gap: 1rem;
   padding: 0.6rem 1.5rem;
   border-bottom: 1px solid var(--border);
@@ -360,6 +362,8 @@ onUnmounted(() => window.clearTimeout(timer))
 .right {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 0.5rem;
   gap: 0.75rem;
 }
 

@@ -698,6 +698,8 @@ h1 {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
+  row-gap: 0.5rem;
   gap: 1rem;
 }
 
@@ -730,6 +732,8 @@ h1 {
 .actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  row-gap: 0.4rem;
   gap: 0.5rem;
 }
 

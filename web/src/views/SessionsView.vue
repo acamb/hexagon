@@ -239,7 +239,7 @@ h1 {
   padding: 0;
   display: grid;
   gap: 0.75rem;
-  grid-template-columns: repeat(auto-fill, minmax(20rem, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(20rem, 100%), 1fr));
 }
 
 .card {
@@ -297,6 +297,8 @@ h1 {
 
 .actions {
   display: flex;
+  flex-wrap: wrap;
+  row-gap: 0.4rem;
   gap: 0.5rem;
   margin-top: auto;
   padding-top: 0.25rem;
