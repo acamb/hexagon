@@ -41,6 +41,18 @@ func (c *Client) BuildImage(ctx context.Context, dockerfile, tag string, logs io
 	return decodeProgress(resp.Body, logs)
 }
 
+// InspectImage returns the content-addressable id of the local image ref
+// currently resolves to. Unlike ref itself, which for an image Hexagon built is
+// a tag that a later rebuild reassigns, this id names the exact content — it is
+// how a session pins the image it was created with even after that tag moves.
+func (c *Client) InspectImage(ctx context.Context, ref string) (string, error) {
+	inspected, err := c.cli.ImageInspect(ctx, ref)
+	if err != nil {
+		return "", fmt.Errorf("inspect image %s: %w", ref, err)
+	}
+	return inspected.ID, nil
+}
+
 // PullImage fetches ref from its registry. Only public images are supported:
 // Hexagon has no registry credentials to offer.
 func (c *Client) PullImage(ctx context.Context, ref string, logs io.Writer) error {

@@ -133,8 +133,12 @@ func TestSessionContainerSpec(t *testing.T) {
 		spec = s
 	}
 
-	if spec.Image != image.ImageRef {
-		t.Errorf("image = %q, want %q", spec.Image, image.ImageRef)
+	// Not image.ImageRef: the container is pinned to the content behind that tag
+	// at creation time, so a later rebuild of the image under the same tag
+	// cannot change what this session's own container runs.
+	wantImage := "digest:" + image.ImageRef
+	if spec.Image != wantImage {
+		t.Errorf("image = %q, want %q", spec.Image, wantImage)
 	}
 	if strings.Join(spec.Cmd, " ") != "sleep infinity" {
 		t.Errorf("cmd = %v", spec.Cmd)
@@ -970,6 +974,41 @@ func TestSessionPortsAreChangedWhileItIsStopped(t *testing.T) {
 	env.decode(env.do(http.MethodPost, "/api/sessions/"+running.ID+"/start", json), &started)
 	if started.Status != store.SessionStatusRunning {
 		t.Errorf("status after start = %q, want the rebuilt container started", started.Status)
+	}
+}
+
+// A rebuild triggered by a port change must run the image content the session
+// was created with, not whatever its tag currently resolves to: image_ref is
+// reassigned in place when the image is rebuilt (handleRebuildImage), so a
+// session that only pinned the tag would silently start running edited content
+// the next time its container was recreated.
+func TestSessionPortsChangeRebuildsWithTheImageTheSessionWasCreatedWith(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	json := map[string]string{"Content-Type": "application/json"}
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions",
+		fmt.Sprintf(`{"imageId":%q,"ports":[3000]}`, image.ID)), &created)
+	running := env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+	_, firstSpec := env.containerOf(running.ID)
+
+	// Simulate the image being edited and rebuilt under the same tag, the way
+	// POST /api/images/{id}/rebuild does: image_ref stays the same string, but
+	// it now resolves to different content.
+	env.docker.digest = "digest:edited-content"
+
+	env.do(http.MethodPost, "/api/sessions/"+running.ID+"/stop", json)
+	resp := env.sendJSON(http.MethodPut, "/api/sessions/"+running.ID+"/ports", `{"ports":[8080]}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+
+	_, rebuiltSpec := env.containerOf(running.ID)
+	if rebuiltSpec.Image != firstSpec.Image {
+		t.Errorf("rebuilt image = %q, want %q (what the session was created with, not the edited image)",
+			rebuiltSpec.Image, firstSpec.Image)
 	}
 }
 

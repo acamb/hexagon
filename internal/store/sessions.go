@@ -39,6 +39,15 @@ type Session struct {
 	Branch       string
 	ImageID      string
 	ImageRef     string
+	// ImageDigest is the content-addressable id of the image content this
+	// session's container was actually created from, read once right after
+	// creation and never updated. ImageRef is a tag that a later edit to the
+	// image reassigns (see handleRebuildImage); a rebuild of this session's own
+	// container uses ImageDigest instead, so it keeps running what the session
+	// was created with rather than whatever the tag now resolves to. Empty for
+	// a session created before this column existed, which falls back to
+	// ImageRef exactly as every session did before.
+	ImageDigest string
 	// WorkspaceDir is the per-session directory on the host; RepoDir is the
 	// clone inside it, the path bind mounted at /workspace.
 	WorkspaceDir string
@@ -111,8 +120,8 @@ func parsePorts(raw string) ([]int, error) {
 }
 
 const sessionColumns = `id, user_id, title, provider, repo_full_name, repo_clone_url, branch, image_id, image_ref,
-	workspace_dir, repo_dir, container_id, status, error, auto_claude, propagate_token, vscode, ports, port_address,
-	compose, claude_account_id, created_at, updated_at`
+	image_digest, workspace_dir, repo_dir, container_id, status, error, auto_claude, propagate_token, vscode, ports,
+	port_address, compose, claude_account_id, created_at, updated_at`
 
 // SessionByID returns one of the user's sessions, or ErrNotFound.
 func (s *Store) SessionByID(ctx context.Context, userID, id string) (*Session, error) {
@@ -133,7 +142,7 @@ func scanSession(row scanner) (*Session, error) {
 		createdAt, updatedAt string
 	)
 	err := row.Scan(&session.ID, &session.UserID, &session.Title, &session.Provider, &session.RepoFullName,
-		&session.RepoCloneURL, &session.Branch, &session.ImageID, &session.ImageRef,
+		&session.RepoCloneURL, &session.Branch, &session.ImageID, &session.ImageRef, &session.ImageDigest,
 		&session.WorkspaceDir, &session.RepoDir, &session.ContainerID, &session.Status,
 		&session.Error, &session.AutoClaude, &session.PropagateToken, &session.VSCode, &ports,
 		&session.PortAddress, &session.Compose, &session.ClaudeAccountID, &createdAt, &updatedAt)
@@ -162,9 +171,9 @@ func (s *Store) CreateSession(ctx context.Context, session *Session) (*Session, 
 
 	_, err := s.db.ExecContext(ctx, `
 		INSERT INTO sessions (`+sessionColumns+`)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		session.ID, session.UserID, session.Title, session.Provider, session.RepoFullName, session.RepoCloneURL,
-		session.Branch, session.ImageID, session.ImageRef, session.WorkspaceDir, session.RepoDir,
+		session.Branch, session.ImageID, session.ImageRef, session.ImageDigest, session.WorkspaceDir, session.RepoDir,
 		session.ContainerID, session.Status, session.Error, session.AutoClaude, session.PropagateToken, session.VSCode,
 		formatPorts(session.Ports), session.PortAddress, session.Compose, session.ClaudeAccountID,
 		formatTime(now), formatTime(now))

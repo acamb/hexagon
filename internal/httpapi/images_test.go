@@ -24,15 +24,21 @@ import (
 // fakeDocker records what the handlers ask of the daemon. For exec it hands
 // back one end of a pipe, so a test can play the part of the container.
 type fakeDocker struct {
-	mu        sync.Mutex
-	pingErr   error
-	buildErr  error
-	pullErr   error
-	attachErr error
-	built     []string
-	builtFrom []string
-	pulled    []string
-	removed   []string
+	mu         sync.Mutex
+	pingErr    error
+	buildErr   error
+	pullErr    error
+	attachErr  error
+	built      []string
+	builtFrom  []string
+	pulled     []string
+	removed    []string
+	inspected  []string
+	inspectErr error
+	// digest is what InspectImage returns for every ref, once set. Left empty,
+	// InspectImage derives one from ref instead, which is enough for a test that
+	// does not care about a specific value.
+	digest string
 
 	createErr  error
 	startErr   error
@@ -86,6 +92,23 @@ func (f *fakeDocker) RemoveImage(_ context.Context, ref string) error {
 	defer f.mu.Unlock()
 	f.removed = append(f.removed, ref)
 	return nil
+}
+
+// InspectImage stands in for the daemon resolving a tag to content: it hands
+// back a digest derived from ref, so a test can tell two builds under the same
+// tag apart by rebuilding f.digest between them the way a real rebuild would
+// change what the tag resolves to.
+func (f *fakeDocker) InspectImage(_ context.Context, ref string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inspected = append(f.inspected, ref)
+	if f.inspectErr != nil {
+		return "", f.inspectErr
+	}
+	if f.digest != "" {
+		return f.digest, nil
+	}
+	return "digest:" + ref, nil
 }
 
 func (f *fakeDocker) AttachExec(_ context.Context, req dockerx.ExecRequest) (*dockerx.Exec, error) {

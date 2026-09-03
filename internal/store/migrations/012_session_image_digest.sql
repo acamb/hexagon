@@ -1,0 +1,14 @@
+-- The image reference Hexagon builds for a session, "hexagon/img-<id>:latest",
+-- is a tag: rebuilding the image's Dockerfile (see handleRebuildImage) reuses
+-- it so new sessions see the change, but that same reassignment means a
+-- rebuild of an existing session's container — from a port or Claude account
+-- change, in Manager.SetPorts and Manager.SetClaudeAccount — would resolve the
+-- tag fresh and silently pick up content the session was never created with.
+--
+-- image_digest is the content-addressable id docker.InspectImage read right
+-- after the session's container was first created, and is what a rebuild
+-- passes to Docker instead of image_ref from then on. Empty for every session
+-- that exists today: the tag it was created under may already have moved, so
+-- there is nothing honest to backfill, and containerSpec falls back to
+-- image_ref for those rows exactly as it always has.
+ALTER TABLE sessions ADD COLUMN image_digest TEXT NOT NULL DEFAULT '';

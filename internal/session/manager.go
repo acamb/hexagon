@@ -265,6 +265,16 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 		return nil, err
 	}
 
+	// image.ImageRef is a tag, and handleRebuildImage reassigns it in place when
+	// the image's Dockerfile changes. Pinning the session to the content behind
+	// it today is what keeps a later rebuild of this session's own container —
+	// from a port or Claude account change — running what was chosen here
+	// rather than whatever the tag resolves to by then.
+	digest, err := m.docker.InspectImage(ctx, image.ImageRef)
+	if err != nil {
+		return nil, fmt.Errorf("inspect image %s: %w", image.ImageRef, err)
+	}
+
 	// A session attached to no account has nothing to unseal: no clone to
 	// authenticate and no credentials to hand over.
 	var credentials provider.GitAuth
@@ -304,6 +314,7 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 		Branch:          req.Branch,
 		ImageID:         image.ID,
 		ImageRef:        image.ImageRef,
+		ImageDigest:     digest,
 		WorkspaceDir:    workspace,
 		RepoDir:         filepath.Join(workspace, "repo"),
 		AutoClaude:      req.AutoClaude,
@@ -618,6 +629,20 @@ func (m *Manager) ClaudeCredential(ctx context.Context, userID string) (claudex.
 	return claudex.Credential{}, nil
 }
 
+// sessionImage is the image reference a session's container is created or
+// rebuilt from: ImageDigest when it was captured at creation, so a rebuild
+// stays on the content the session was actually made with even if the image's
+// tag has since been reassigned by handleRebuildImage. A session created
+// before that column existed has none, and falls back to ImageRef exactly as
+// every session did before — the content that tag pointed to when this session
+// was created may already be gone, so there is nothing more honest to do.
+func sessionImage(session *store.Session) string {
+	if session.ImageDigest != "" {
+		return session.ImageDigest
+	}
+	return session.ImageRef
+}
+
 // containerSpec is the whole contract between Hexagon and a session container.
 func (m *Manager) containerSpec(session *store.Session, homeDir, vscodeDir string, credentials provider.GitAuth, claude claudex.Credential) dockerx.ContainerSpec {
 	env := []string{
@@ -702,7 +727,7 @@ func (m *Manager) containerSpec(session *store.Session, homeDir, vscodeDir strin
 
 	return dockerx.ContainerSpec{
 		Name:  containerNamePrefix + session.ID,
-		Image: session.ImageRef,
+		Image: sessionImage(session),
 		// The container is a place to run things, not a process in itself. The
 		// terminal and the bootstrap arrive later as execs.
 		Cmd:        []string{"sleep", "infinity"},

@@ -35,6 +35,8 @@ type API interface {
 	PullImage(ctx context.Context, ref string, logs io.Writer) error
 	// RemoveImage deletes a local image.
 	RemoveImage(ctx context.Context, ref string) error
+	// InspectImage returns the content-addressable id ref currently resolves to.
+	InspectImage(ctx context.Context, ref string) (string, error)
 
 	// AttachExec runs an interactive command in a container and returns the
 	// attached streams.
