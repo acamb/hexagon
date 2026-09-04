@@ -38,17 +38,6 @@ async function signOut() {
     >
       <span class="bars" />
     </button>
-
-    <div class="account" v-if="currentUser">
-      <img v-if="currentUser.avatarUrl" :src="currentUser.avatarUrl" alt="" width="24" height="24" />
-      <span>{{ currentUser.login }}</span>
-      <button type="button" @click="signOut">Sign out</button>
-    </div>
-
-    <!-- Click-outside-to-close for the dropdown below. Not a dialog: no focus
-         trap, since it holds nothing but links back into the same page. -->
-    <div v-if="menuOpen" class="scrim" @click="closeMenu" />
-
     <nav :class="{ open: menuOpen }">
       <RouterLink :to="{ name: 'sessions' }" @click="closeMenu">Sessions</RouterLink>
       <RouterLink :to="{ name: 'images' }" @click="closeMenu">Images</RouterLink>
@@ -63,6 +52,17 @@ async function signOut() {
         <button type="button" @click="signOut">Sign out</button>
       </div>
     </nav>
+    <div class="account" v-if="currentUser">
+      <img v-if="currentUser.avatarUrl" :src="currentUser.avatarUrl" alt="" width="24" height="24" />
+      <span>{{ currentUser.login }}</span>
+      <button type="button" @click="signOut">Sign out</button>
+    </div>
+
+    <!-- Click-outside-to-close for the dropdown below. Not a dialog: no focus
+         trap, since it holds nothing but links back into the same page. -->
+    <div v-if="menuOpen" class="scrim" @click="closeMenu" />
+
+
   </header>
 </template>
 
