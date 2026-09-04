@@ -116,9 +116,16 @@ const imageName = computed(() => usableImages.value.find((i) => i.id === imageId
 // Only images that finished building can start a session.
 const usableImages = computed(() => images.value.filter((i) => i.status === 'ready'))
 
-// The providers with something to show, so the filter only appears when there
-// is a choice to make.
-const sources = computed(() => [...new Set(repos.value.map((r) => r.provider))])
+// The providers the user has an account with, rather than the ones that
+// returned something: an account that lists nothing has to be visible as an
+// empty tab, otherwise it looks exactly like an account nobody connected.
+const sources = computed(() => connected.value.map((a) => a.provider))
+
+// How many repositories one provider contributes to the list at most. The cap
+// is per provider, not over the merged list: that list is sorted by date across
+// every account, so a single cap lets a long GitHub history push a whole
+// Bitbucket account past the end of it. Typing part of a name finds the rest.
+const maxPerProvider = 100
 
 const matches = computed(() => {
   const needle = filter.value.trim().toLowerCase()
@@ -127,7 +134,23 @@ const matches = computed(() => {
       (!only.value || r.provider === only.value) &&
       (!needle || r.fullName.toLowerCase().includes(needle)),
   )
-  return list.slice(0, 100)
+  const shown: Partial<Record<ProviderKind, number>> = {}
+  return list.filter((r) => {
+    const count = (shown[r.provider] ?? 0) + 1
+    shown[r.provider] = count
+    return count <= maxPerProvider
+  })
+})
+
+// Why the list is empty. A provider that came back with nothing at all is not
+// the same as a filter that matched nothing, and it is the one the user has no
+// other way of seeing.
+const emptyReason = computed(() => {
+  const source = only.value || (sources.value.length === 1 ? sources.value[0] : '')
+  if (source && !failed.value[source] && !repos.value.some((r) => r.provider === source)) {
+    return `${providerNames[source]} returned no repositories.`
+  }
+  return 'No repository matches.'
 })
 
 function choose(repo: Repo) {
@@ -279,7 +302,7 @@ onMounted(() => load())
                   <span class="desc">{{ repo.description }}</span>
                 </button>
               </li>
-              <li v-if="!matches.length" class="hint">No repository matches.</li>
+              <li v-if="!matches.length" class="hint">{{ emptyReason }}</li>
             </ul>
           </template>
 

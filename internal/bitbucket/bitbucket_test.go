@@ -269,3 +269,102 @@ func TestGitCredentialsPreferThePastedToken(t *testing.T) {
 		t.Errorf("secret = %q, want the pasted token in preference to the API one", auth.Secret)
 	}
 }
+
+// role=member is why a connected account listed nothing: it asks for the
+// repositories the account is an explicit member of, which excludes everything
+// it reads through a workspace-level or group grant.
+func TestWorkspaceListingAsksForEveryRepositoryNotJustExplicitMemberships(t *testing.T) {
+	var queries []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		queries = append(queries, r.URL.RawQuery)
+		if r.URL.Path == "/user/workspaces" {
+			fmt.Fprint(w, `{"values":[{"slug":"acme"}]}`)
+			return
+		}
+		if r.URL.Query().Has("role") {
+			// What Bitbucket answers for an account whose access to the
+			// workspace is inherited rather than per repository.
+			fmt.Fprint(w, `{"values":[]}`)
+			return
+		}
+		fmt.Fprint(w, `{"values":[{"full_name":"acme/widgets","mainbranch":{"name":"main"},
+			"links":{"clone":[{"name":"https","href":"https://bitbucket.org/acme/widgets.git"}]}}]}`)
+	}))
+	defer server.Close()
+
+	repos, err := NewWithBaseURL(server.URL).ListRepos(context.Background(), credentials())
+	if err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	if len(repos) != 1 || repos[0].FullName != "acme/widgets" {
+		t.Fatalf("repositories = %+v, want the workspace's repositories", repos)
+	}
+	for _, query := range queries {
+		if strings.Contains(query, "role=") {
+			t.Errorf("query = %q, want no role filter: it hides inherited access", query)
+		}
+	}
+}
+
+// Connecting an account that can see no workspace has to fail at the form. It
+// can never list a repository, and accepting it produces an account that shows
+// as connected while contributing nothing, with nothing anywhere saying why.
+func TestVerifyRefusesATokenThatSeesNoWorkspace(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"values":[]}`)
+	}))
+	defer server.Close()
+
+	_, err := NewWithBaseURL(server.URL).Verify(context.Background(), credentials())
+	if err == nil {
+		t.Fatal("Verify accepted a token that sees no workspace")
+	}
+	if !strings.Contains(err.Error(), "read:workspace:bitbucket") {
+		t.Errorf("error = %v, want the scope it is probably missing", err)
+	}
+}
+
+// One workspace the token cannot read must not empty the picker of every
+// Bitbucket repository the account does have.
+func TestListReposKeepsTheWorkspacesItCanRead(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/user/workspaces":
+			fmt.Fprint(w, `{"values":[{"slug":"acme"},{"slug":"locked"}]}`)
+		case "/repositories/locked":
+			w.WriteHeader(http.StatusForbidden)
+			fmt.Fprint(w, `{"type":"error","error":{"message":"Access denied"}}`)
+		default:
+			fmt.Fprint(w, `{"values":[{"full_name":"acme/widgets","mainbranch":{"name":"main"},
+				"links":{"clone":[{"name":"https","href":"https://bitbucket.org/acme/widgets.git"}]}}]}`)
+		}
+	}))
+	defer server.Close()
+
+	repos, err := NewWithBaseURL(server.URL).ListRepos(context.Background(), credentials())
+	if err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	if len(repos) != 1 || repos[0].FullName != "acme/widgets" {
+		t.Errorf("repositories = %+v, want the readable workspace's", repos)
+	}
+}
+
+// Every workspace refusing is a different thing: there is nothing to show and a
+// reason to give, so it is an error rather than an empty list.
+func TestListReposFailsWhenNoWorkspaceCanBeRead(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/user/workspaces" {
+			fmt.Fprint(w, `{"values":[{"slug":"acme"}]}`)
+			return
+		}
+		w.WriteHeader(http.StatusForbidden)
+		fmt.Fprint(w, `{"type":"error","error":{"message":"Access denied"}}`)
+	}))
+	defer server.Close()
+
+	_, err := NewWithBaseURL(server.URL).ListRepos(context.Background(), credentials())
+	if !errors.Is(err, provider.ErrUnauthorized) {
+		t.Errorf("error = %v, want provider.ErrUnauthorized", err)
+	}
+}

@@ -14,6 +14,7 @@ package bitbucket
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -120,8 +121,16 @@ func (c *Client) workspaces(ctx context.Context, cred provider.Credentials) ([]s
 // scoped for what Hexagon actually does would be refused there while being
 // perfectly able to list and clone.
 func (c *Client) Verify(ctx context.Context, cred provider.Credentials) (provider.Account, error) {
-	if _, err := c.workspaces(ctx, cred); err != nil {
+	workspaces, err := c.workspaces(ctx, cred)
+	if err != nil {
 		return provider.Account{}, err
+	}
+	// A token that authenticates but sees no workspace can never list a
+	// repository, because repositories are asked for one workspace at a time.
+	// Accepting it moves the failure to the session picker, which has no way to
+	// say why an account it shows as connected contributes nothing.
+	if len(workspaces) == 0 {
+		return provider.Account{}, errors.New("bitbucket: the token sees no workspace: check that it carries read:workspace:bitbucket and that its account is a member of the workspaces you expect")
 	}
 	name, avatar := c.accountName(ctx, cred)
 	return provider.Account{
@@ -179,23 +188,35 @@ func (c *Client) ListRepos(ctx context.Context, cred provider.Credentials) ([]pr
 		return nil, err
 	}
 
-	var repos []provider.Repo
+	// One workspace the token cannot read costs that workspace, not the whole
+	// listing: failing outright would empty the picker of every Bitbucket
+	// repository over a single one nobody asked for.
+	var (
+		repos    []provider.Repo
+		problems []error
+	)
 	for _, workspace := range workspaces {
 		found, err := c.workspaceRepos(ctx, cred, workspace, maxRepoPages)
 		if err != nil {
-			return nil, err
+			problems = append(problems, err)
+			continue
 		}
 		repos = append(repos, found...)
+	}
+	if len(problems) > 0 && len(problems) == len(workspaces) {
+		return nil, errors.Join(problems...)
 	}
 	return repos, nil
 }
 
 // workspaceRepos lists one workspace, following pages up to maxPages.
 func (c *Client) workspaceRepos(ctx context.Context, cred provider.Credentials, workspace string, maxPages int) ([]provider.Repo, error) {
+	// Deliberately without a role filter. The URL is already scoped to one
+	// workspace the account belongs to, so role=member only adds a requirement
+	// of explicit per-repository membership, which hides everything the account
+	// reads through a workspace-level or group grant — the normal shape of a
+	// team workspace, and the reason Bitbucket once listed nothing at all.
 	next := c.baseURL + "/repositories/" + url.PathEscape(workspace) + "?" + url.Values{
-		// The account's own repositories in that workspace, rather than every
-		// repository it can see.
-		"role":    {"member"},
 		"pagelen": {"100"},
 		"sort":    {"-updated_on"},
 	}.Encode()

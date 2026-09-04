@@ -84,8 +84,12 @@ func (l *Lister) List(ctx context.Context, userID string) (Listing, error) {
 		p, err := l.registry.Get(kind)
 		if err != nil {
 			// A row for a provider this build does not know: worth reporting,
-			// not worth failing the whole listing over.
+			// not worth failing the whole listing over. Under the lock like
+			// every other write: goroutines started for earlier kinds are
+			// already writing this map.
+			mu.Lock()
 			failed[kind] = err
+			mu.Unlock()
 			continue
 		}
 

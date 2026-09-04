@@ -42,8 +42,14 @@ func (s *Server) handleListRepos(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Per provider, because the shape of a listing bug is a provider that
+	// contributes nothing while reporting no failure — invisible in the
+	// response, and until this line invisible in the log as well.
+	counts := map[provider.Kind]int{}
+
 	out := listingResponse{Repos: make([]repoResponse, 0, len(listing.Repos))}
 	for _, repo := range listing.Repos {
+		counts[repo.Provider]++
 		out.Repos = append(out.Repos, repoResponse{
 			Provider:      repo.Provider,
 			FullName:      repo.FullName,
@@ -61,5 +67,6 @@ func (s *Server) handleListRepos(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("provider listing failed", "login", user.GitHubLogin, "provider", kind, "err", err)
 		out.Failed[string(kind)] = err.Error()
 	}
+	s.log.Debug("repository listing", "login", user.GitHubLogin, "counts", counts, "failed", len(listing.Failed))
 	writeJSON(w, http.StatusOK, out)
 }
