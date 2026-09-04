@@ -398,7 +398,7 @@ file, which wins over the defaults.**
 | `HEXAGON_GITHUB_API_URL` | `github.apiUrl` | `https://api.github.com` | Override for GitHub Enterprise |
 | `HEXAGON_BITBUCKET_API_URL` | `bitbucket.apiUrl` | `https://api.bitbucket.org/2.0` | Override |
 | `HEXAGON_SECRET_KEY` | `secretKey` | `<data dir>/secret.key` | 32 bytes, base64. Generated on first run |
-| `HEXAGON_DEBUG` | `debug` | — | Set to anything for debug logging |
+| `HEXAGON_DEBUG` | `debug` | — | Set to anything for debug logging; from the settings page it applies without a restart |
 | `HEXAGON_CLAUDE_CREDENTIALS` | `claude.credentials` | `~/.claude/.credentials.json` | Mounted read-only into a session that resolves to no Claude account. Empty disables the mount. Also the file the machine-wide login writes |
 | `ANTHROPIC_API_KEY` | `claude.anthropicApiKey` | — | Handed to a session that resolves to no Claude account |
 | `HEXAGON_CLAUDE_BINARY` | `claude.binary` | `claude` on `PATH`, then `~/.local/bin/claude` | Rewrites a Dockerfile or a compose file from the Images page. Without one, that runs in a container instead |

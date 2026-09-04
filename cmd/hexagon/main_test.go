@@ -72,7 +72,7 @@ func TestBuildDepsStartsWithNoGitHubLoginConfigured(t *testing.T) {
 		PublicURL:  "http://127.0.0.1:8080",
 		SecretKey:  key,
 		ConfigPath: filepath.Join(t.TempDir(), "config.json"),
-	}, st, nil, slog.New(slog.DiscardHandler))
+	}, st, nil, slog.New(slog.DiscardHandler), new(slog.LevelVar))
 	if err != nil {
 		t.Fatalf("buildDeps with no OAuth settings: %v", err)
 	}

@@ -220,7 +220,13 @@ func (s *Server) handleCreateClaudeAccount(w http.ResponseWriter, r *http.Reques
 	if kind != store.ClaudeAccountKindLogin && s.editor != nil {
 		ctx, cancel := context.WithTimeout(r.Context(), sourceEditTimeout)
 		defer cancel()
+		// The length is here because the other half of a refused credential is
+		// what the browser sent: a token cut short by a paste and one the API
+		// refused produce the same answer from the CLI.
+		s.log.Debug("checking a new claude credential", "login", user.GitHubLogin,
+			"kind", kind, "secret_len", len(secret), "in_container", s.editorInContainer)
 		if err := s.editor.Check(ctx, claudex.Credential{Kind: kind, Secret: secret}); err != nil {
+			s.log.Info("claude credential rejected", "login", user.GitHubLogin, "kind", kind, "err", err)
 			// The CLI's own words, not ours: what is wrong with a credential is
 			// something only it knows.
 			writeError(w, http.StatusBadRequest, "that credential was rejected — "+err.Error())
@@ -301,7 +307,12 @@ func (s *Server) handleUpdateClaudeAccount(w http.ResponseWriter, r *http.Reques
 		if s.editor != nil {
 			ctx, cancel := context.WithTimeout(r.Context(), sourceEditTimeout)
 			defer cancel()
+			s.log.Debug("checking a replacement claude credential", "login", user.GitHubLogin,
+				"account", account.ID, "kind", account.Kind, "secret_len", len(secret),
+				"in_container", s.editorInContainer)
 			if err := s.editor.Check(ctx, claudex.Credential{Kind: account.Kind, Secret: secret}); err != nil {
+				s.log.Info("claude credential rejected", "login", user.GitHubLogin,
+					"account", account.ID, "kind", account.Kind, "err", err)
 				writeError(w, http.StatusBadRequest, "that credential was rejected — "+err.Error())
 				return
 			}

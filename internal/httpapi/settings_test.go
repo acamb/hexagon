@@ -3,6 +3,7 @@ package httpapi
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -403,5 +404,42 @@ func TestSettingsNameWhatTheEnvironmentIsSupplying(t *testing.T) {
 	settings := env.settings()
 	if !strings.Contains(strings.Join(settings.FromEnvironment, ","), "git.userName") {
 		t.Errorf("fromEnvironment = %v, want the setting a variable is supplying named", settings.FromEnvironment)
+	}
+}
+
+// Debug logging is turned on to watch something that is going wrong now, so a
+// save that only took effect at the next restart would arrive after the run it
+// was meant to explain.
+func TestSettingsApplyDebugLoggingWithoutARestart(t *testing.T) {
+	env := newSettingsEnv(t)
+	if env.deps.LogLevel.Level() != slog.LevelInfo {
+		t.Fatalf("level = %v before the save, want info", env.deps.LogLevel.Level())
+	}
+
+	resp := env.sendJSON(http.MethodPut, "/api/settings", `{"debug": true}`)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", resp.StatusCode, env.bodyString(resp))
+	}
+	var settings settingsResponse
+	env.decode(resp, &settings)
+
+	if env.deps.LogLevel.Level() != slog.LevelDebug {
+		t.Errorf("level = %v, want debug as soon as it is saved", env.deps.LogLevel.Level())
+	}
+	if !settings.Running.Debug || !settings.Saved.Debug {
+		t.Errorf("running/saved debug = %v/%v, want both true", settings.Running.Debug, settings.Saved.Debug)
+	}
+	if settings.RestartRequired {
+		t.Error("restartRequired = true after changing only debug logging, want false")
+	}
+
+	// And back again: a level that could only be raised would be worse than one
+	// that needed a restart.
+	env.decode(env.sendJSON(http.MethodPut, "/api/settings", `{"debug": false}`), &settings)
+	if env.deps.LogLevel.Level() != slog.LevelInfo {
+		t.Errorf("level = %v after turning it off, want info", env.deps.LogLevel.Level())
+	}
+	if settings.Running.Debug {
+		t.Error("running debug = true after turning it off")
 	}
 }

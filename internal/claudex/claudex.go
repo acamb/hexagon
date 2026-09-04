@@ -14,10 +14,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ErrUnavailable reports that no Claude Code binary was found, so the feature
@@ -84,11 +86,38 @@ func environment(cred Credential) []string {
 	return append(out, assignments...)
 }
 
+// describe says what a credential looks like without disclosing it: the kind it
+// was filed under, the prefix Anthropic gives each of its two token types, and
+// the length.
+//
+// The prefix is the whole point. A token from `claude setup-token` begins
+// sk-ant-oat01 and a console key begins sk-ant-api03; each is handed over in a
+// different variable, so one pasted under the other's kind is refused with a
+// 401 that says nothing about the mix-up. The log line says it.
+func describe(cred Credential) string {
+	if cred.Secret == "" {
+		if cred.File != "" {
+			return cred.Kind + "/file"
+		}
+		return cred.Kind + "/none"
+	}
+	prefix := "unrecognised"
+	for _, known := range []string{"sk-ant-oat01", "sk-ant-api03", "sk-ant-admin01"} {
+		if strings.HasPrefix(cred.Secret, known) {
+			prefix = known
+			break
+		}
+	}
+	return fmt.Sprintf("%s/%s/%d chars", cred.Kind, prefix, len(cred.Secret))
+}
+
 // Runner invokes the CLI. The zero value is unusable: build one with New.
 type Runner struct {
 	binary string
 	// model is empty unless configured, in which case the CLI picks its own.
 	model string
+	// log is optional: nil discards, which is what the tests want.
+	log *slog.Logger
 }
 
 // New resolves the binary to run. Preference goes to an explicitly configured
@@ -127,7 +156,24 @@ func executable(path string) error {
 // WithModel returns a runner that asks for a specific model. An empty name
 // leaves the choice to the CLI's own configuration.
 func (r *Runner) WithModel(model string) *Runner {
-	return &Runner{binary: r.binary, model: model}
+	return &Runner{binary: r.binary, model: model, log: r.log}
+}
+
+// WithLogger returns a runner that says what it is doing at debug level. What
+// it has to say is everything a rejected credential does not put in the one
+// line the user is shown: which binary ran, what shape of secret it was handed,
+// and the CLI's own diagnostics, which never reach the answer.
+func (r *Runner) WithLogger(log *slog.Logger) *Runner {
+	return &Runner{binary: r.binary, model: r.model, log: log}
+}
+
+// logger is the runner's logger, or one that discards: a nil logger is normal
+// here, and a nil check at every call site is not.
+func (r *Runner) logger() *slog.Logger {
+	if r.log == nil {
+		return slog.New(slog.DiscardHandler)
+	}
+	return r.log
 }
 
 // The two things Claude Code can be asked to rewrite. The values are the
@@ -340,13 +386,21 @@ func (r *Runner) Edit(ctx context.Context, cred Credential, kind, content, instr
 
 // run executes the binary, with the prompt on its standard input.
 func (r *Runner) run(ctx context.Context, cred Credential, in invocation) ([]byte, error) {
+	log := r.logger()
 	cmd := exec.CommandContext(ctx, r.binary, in.flags(r.model)...)
 	cmd.Stdin = strings.NewReader(in.prompt)
 	cmd.Env = environment(cred)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 
-	if err := cmd.Run(); err != nil {
+	log.Debug("running claude code", "binary", r.binary, "credential", describe(cred),
+		"model", r.model, "variable", firstName(cred.Env()))
+	started := time.Now()
+	err := cmd.Run()
+	log.Debug("claude code returned", "took", time.Since(started).Round(time.Millisecond),
+		"err", err, "stdout", firstLine(stdout.String()), "stderr", firstLine(stderr.String()))
+
+	if err != nil {
 		if ctx.Err() != nil {
 			return nil, fmt.Errorf("claude code took too long: %w", ctx.Err())
 		}
@@ -380,6 +434,16 @@ func isEnvelope(output []byte) bool {
 // would send the user off to check the wrong thing.
 func (r *Runner) Check(ctx context.Context, cred Credential) error {
 	return check(ctx, r, cred)
+}
+
+// firstName is the name of the first assignment, for a log line that says which
+// variable the credential travelled in without saying what was in it.
+func firstName(assignments []string) string {
+	if len(assignments) == 0 {
+		return "none"
+	}
+	name, _, _ := strings.Cut(assignments[0], "=")
+	return name
 }
 
 // firstLine keeps an error message to one line: these end up in a JSON error

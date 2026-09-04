@@ -287,6 +287,8 @@ func (c *Container) run(ctx context.Context, cred Credential, in invocation) ([]
 		return nil, fmt.Errorf("start the container claude code runs in: %w", err)
 	}
 
+	c.log.Debug("running claude code in a container", "image", image.Ref, "container", id,
+		"credential", describe(cred), "model", c.model, "mounted_credentials", len(binds) == 1)
 	out, code, err := c.docker.RunExec(ctx, id, []string{"sh", "-c", c.script(in)})
 	if err != nil {
 		if ctx.Err() != nil {
@@ -295,13 +297,30 @@ func (c *Container) run(ctx context.Context, cred Credential, in invocation) ([]
 		return nil, fmt.Errorf("claude code failed: %w", err)
 	}
 	if code != 0 {
-		// The answer first, for the reason the binary's own path gives: the CLI
-		// reports a refused credential in its exit status and in a document that
-		// says what was wrong with it, and only the second is worth reading.
-		if isEnvelope([]byte(out)) {
+		// The answer, for the reason the binary's own path gives: the CLI
+		// reports a refused credential in its exit status and in a document
+		// that says what was wrong with it, and only the second is worth
+		// reading.
+		answered := isEnvelope([]byte(out))
+
+		// The CLI's diagnostics live in a file, so reading them is another exec
+		// into a container that is about to be removed. It is done when it will
+		// be used: to explain a failure that has no answer, or because debug
+		// logging asked for everything — and what a 401 was really about is in
+		// there and in nothing that reaches the user.
+		var diagnostics string
+		debug := c.log.Enabled(ctx, slog.LevelDebug)
+		if debug || !answered {
+			diagnostics, _, _ = c.docker.RunExec(context.WithoutCancel(ctx), id, []string{"cat", stderrFile})
+		}
+		if debug {
+			c.log.Debug("claude code failed in its container", "container", id, "exit", code,
+				"stdout", firstLine(out), "stderr", firstLine(diagnostics))
+		}
+
+		if answered {
 			return []byte(out), nil
 		}
-		diagnostics, _, _ := c.docker.RunExec(context.WithoutCancel(ctx), id, []string{"cat", stderrFile})
 		return nil, fmt.Errorf("claude code failed (exit %d): %s", code, firstLine(diagnostics))
 	}
 	return []byte(out), nil

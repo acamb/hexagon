@@ -53,7 +53,8 @@ const form = reactive({
 const shadowed = computed(() => new Set(settings.value?.fromEnvironment ?? []))
 
 // A setting whose saved value the running process has not picked up. The three
-// the gate holds are applied on save, so they never appear here.
+// the gate holds are applied on save, and so are the git identity and debug
+// logging, so none of those ever appear here.
 const waiting = computed(() => {
   const s = settings.value
   if (!s) return new Set<string>()
@@ -63,7 +64,6 @@ const waiting = computed(() => {
     ['insecureHttp', s.running.insecureHttp, s.saved.insecureHttp],
     ['dataDir', s.running.dataDir, s.saved.dataDir],
     ['workspaceRoot', s.running.workspaceRoot, s.saved.workspaceRoot],
-    ['debug', s.running.debug, s.saved.debug],
     ['github.apiUrl', s.running.github.apiUrl, s.saved.github.apiUrl],
     ['bitbucket.apiUrl', s.running.bitbucket.apiUrl, s.saved.bitbucket.apiUrl],
     ['claude.credentials', s.running.claude.credentials, s.saved.claude.credentials],
@@ -263,7 +263,11 @@ function message(e: unknown): string {
             <input type="checkbox" v-model="form.debug" />
             <span>Debug logging</span>
           </label>
-          <p class="hint"><code>HEXAGON_DEBUG</code>, one line per request.</p>
+          <p class="hint">
+            <code>HEXAGON_DEBUG</code>, one line per request, plus what the server was doing
+            when something failed. It takes effect as soon as it is saved: the moment it is
+            wanted is the middle of a problem, not the next restart.
+          </p>
         </section>
 
         <section class="card">

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -307,7 +308,36 @@ func (s *Server) applySettings(ctx context.Context, user *store.User, patch conf
 	// handing it to the manager is the whole of applying it — which is why the
 	// page stops asking for a restart on account of these two.
 	s.sessions.SetGitIdentity(candidate.GitUserName, candidate.GitUserEmail)
+	// Debug logging is applied at once for the same reason, and a better one:
+	// it is turned on to watch something that is going wrong now, and a restart
+	// to pick it up would throw away the run it was meant to explain.
+	s.setDebugLogging(candidate.Debug)
 	return nil
+}
+
+// setDebugLogging moves the level the running logger reads. It is a no-op when
+// the caller built the server without a level, which is what the tests do.
+func (s *Server) setDebugLogging(on bool) {
+	if s.logLevel == nil {
+		return
+	}
+	level := slog.LevelInfo
+	if on {
+		level = slog.LevelDebug
+	}
+	if s.logLevel.Level() != level {
+		s.logLevel.Set(level)
+		s.log.Info("log level changed", "level", level)
+	}
+}
+
+// debugLogging reports what the running logger is doing, which after a save is
+// not necessarily what this process started with.
+func (s *Server) debugLogging() bool {
+	if s.logLevel == nil {
+		return s.cfg.Debug
+	}
+	return s.logLevel.Level() <= slog.LevelDebug
 }
 
 // settingsSnapshot describes the settings this server is running on beside the
@@ -335,6 +365,7 @@ func (s *Server) settingsSnapshot() (settingsResponse, error) {
 		running.GitHub.AllowedUsers = allowlist.Entries()
 	}
 	running.Git.UserName, running.Git.UserEmail = s.sessions.GitIdentity()
+	running.Debug = s.debugLogging()
 
 	return settingsResponse{
 		ConfigPath:         s.cfg.ConfigPath,

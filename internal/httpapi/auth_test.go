@@ -252,6 +252,9 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		Compose:        compose,
 		Frontend:       fstest.MapFS{"index.html": {Data: []byte("<!doctype html>")}},
 		Log:            slog.New(slog.DiscardHandler),
+		// The level the settings page moves. A real one, so a test can read
+		// what a save did to it.
+		LogLevel: new(slog.LevelVar),
 	}
 
 	server := httptest.NewServer(New(deps))

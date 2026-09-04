@@ -411,3 +411,21 @@ The honest summary is that validating before the rename makes a save from this
 page strictly less able to break the instance than the hand edit it replaces —
 with the exception of the two settings a hand edit is still the only way to
 change, which is where they were before.
+
+## Amendment: debug logging applies at once
+
+Two settings were always applied by a save rather than by the next restart: the
+gate's three, and the git identity. Debug logging has joined them, and it has a
+better claim than either.
+
+Nobody turns debug logging on in advance. It is turned on in the middle of
+something going wrong — a credential the server rejects, an image that will not
+build — and a level that waited for a restart would arrive after the run it was
+meant to explain, on a process that had thrown the state away. So the logger
+reads a `slog.LevelVar` instead of a fixed level: `main` builds it, hands it to
+`httpapi.Deps`, and `applySettings` moves it beside `SetGitIdentity`. The page
+reports the live level as the running value, so it stops asking for a restart it
+no longer needs.
+
+Nothing else about the setting changed: it is still the `debug` key and still
+`HEXAGON_DEBUG`, whose presence still wins over the file.

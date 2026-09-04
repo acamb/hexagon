@@ -74,7 +74,7 @@ func run(configPath string) error {
 	if err != nil {
 		return err
 	}
-	log := newLogger(cfg.Debug)
+	log, level := newLogger(cfg.Debug)
 	if cfg.ConfigFile != "" {
 		log.Info("configuration loaded", "file", cfg.ConfigFile)
 	}
@@ -133,7 +133,7 @@ func run(configPath string) error {
 	}
 	pingCancel()
 
-	deps, err := buildDeps(cfg, st, docker, log)
+	deps, err := buildDeps(cfg, st, docker, log, level)
 	if err != nil {
 		return err
 	}
@@ -201,7 +201,7 @@ func run(configPath string) error {
 // refuses every request that is not part of setting it up. That is not a
 // weaker rule than before, when a missing allowlist was a startup error — it is
 // the same rule with somewhere to go from.
-func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slog.Logger) (httpapi.Deps, error) {
+func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slog.Logger, level *slog.LevelVar) (httpapi.Deps, error) {
 	frontend, err := hexagon.FrontendFS()
 	if err != nil {
 		return httpapi.Deps{}, fmt.Errorf("load frontend: %w", err)
@@ -274,6 +274,7 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 		Compose:        composeImages,
 		Frontend:       frontend,
 		Log:            log,
+		LogLevel:       level,
 	}
 
 	// The image Hexagon builds for itself, and the two things that need it: the
@@ -290,7 +291,7 @@ func buildDeps(cfg *config.Config, st *store.Store, docker dockerx.API, log *slo
 	// the feature silently absent, which is the reason for the fallback and for
 	// telling the UI which of the two it got.
 	if runner, err := claudex.New(cfg.ClaudeBinary); err == nil {
-		deps.Editor = runner.WithModel(cfg.ClaudeModel)
+		deps.Editor = runner.WithModel(cfg.ClaudeModel).WithLogger(log)
 	} else {
 		log.Info("no claude binary: image sources will be edited through a container", "err", err)
 		deps.Editor = claudex.NewContainer(docker, defaultImage,
@@ -382,11 +383,23 @@ func pruneRevokedSessions(ctx context.Context, st *store.Store, allowlist *auth.
 	}
 }
 
-// newLogger returns a text logger, at debug level when debug logging is on.
-func newLogger(debug bool) *slog.Logger {
-	level := slog.LevelInfo
+// newLogger returns a text logger and the level it reads, which the settings
+// page moves while the server runs.
+//
+// The level is a variable rather than a constant because of when debug logging
+// is wanted: never in advance, always in the middle of something going wrong.
+// One that took effect at the next restart would be turned on after the
+// evidence had gone.
+func newLogger(debug bool) (*slog.Logger, *slog.LevelVar) {
+	level := new(slog.LevelVar)
+	level.Set(logLevel(debug))
+	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level})), level
+}
+
+// logLevel is the one place the debug setting becomes a level.
+func logLevel(debug bool) slog.Level {
 	if debug {
-		level = slog.LevelDebug
+		return slog.LevelDebug
 	}
-	return slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: level}))
+	return slog.LevelInfo
 }

@@ -81,6 +81,9 @@ type Deps struct {
 	Compose  ComposeValidator
 	Frontend fs.FS
 	Log      *slog.Logger
+	// LogLevel is the level Log reads, so the settings page can move it without
+	// a restart. Optional: without it the debug setting waits for one.
+	LogLevel *slog.LevelVar
 }
 
 // Server carries the dependencies shared by the handlers.
@@ -102,6 +105,7 @@ type Server struct {
 	defaultImage      DefaultImage
 	compose           ComposeValidator
 	log               *slog.Logger
+	logLevel          *slog.LevelVar
 	frontend          fs.FS
 	started           time.Time
 	// limiter bounds what one address can ask of the routes that answer without
@@ -129,6 +133,7 @@ func New(deps Deps) http.Handler {
 		defaultImage:      deps.DefaultImage,
 		compose:           deps.Compose,
 		log:               deps.Log,
+		logLevel:          deps.LogLevel,
 		frontend:          deps.Frontend,
 		started:           time.Now(),
 		limiter:           newIPLimiter(deps.Config.PublicRatePerMinute),

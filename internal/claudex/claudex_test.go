@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -291,5 +292,55 @@ func TestEditRefusesAnUnknownKind(t *testing.T) {
 	_, err := runner.Edit(context.Background(), Credential{}, "readme", "x", "y")
 	if err == nil || !strings.Contains(err.Error(), "no such editable file") {
 		t.Errorf("err = %v, want it to name the unknown kind", err)
+	}
+}
+
+// What the debug log is for. A refused credential says the same thing whichever
+// of the two token types was pasted under the other's kind, and the prefix is
+// what tells them apart — so it belongs in the log, and the secret does not.
+func TestDebugLoggingDescribesTheCredentialWithoutDisclosingIt(t *testing.T) {
+	runner, _ := fakeClaude(t, `{"is_error":true,"result":"API Error: 401 unauthorized"}`, 1)
+
+	var logged strings.Builder
+	log := slog.New(slog.NewTextHandler(&logged, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	secret := "sk-ant-oat01-not-a-real-token"
+
+	err := runner.WithLogger(log).Check(context.Background(),
+		Credential{Kind: KindAPIKey, Secret: secret})
+	if err == nil {
+		t.Fatal("Check accepted a credential the CLI refused")
+	}
+
+	out := logged.String()
+	for _, want := range []string{
+		// The kind it was filed under, beside the prefix that says what it
+		// really is: this pair is the mix-up, in one line.
+		"api_key/sk-ant-oat01",
+		"ANTHROPIC_API_KEY",
+		"401",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("debug log does not mention %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, secret) {
+		t.Errorf("the secret itself reached the log:\n%s", out)
+	}
+}
+
+func TestDescribeSaysWhatThereIsToSay(t *testing.T) {
+	for _, c := range []struct {
+		cred Credential
+		want string
+	}{
+		{Credential{Kind: KindOAuthToken, Secret: "sk-ant-oat01-xxxx"}, "oauth_token/sk-ant-oat01/17 chars"},
+		{Credential{Kind: KindAPIKey, Secret: "sk-ant-api03-xxxx"}, "api_key/sk-ant-api03/17 chars"},
+		{Credential{Kind: KindAPIKey, Secret: "pasted the wrong thing"}, "api_key/unrecognised/22 chars"},
+		{Credential{Kind: KindLogin, File: "/tmp/creds.json"}, "login/file"},
+		{Credential{}, "/none"},
+	} {
+		if got := describe(c.cred); got != c.want {
+			t.Errorf("describe(%q) = %q, want %q", c.cred.Kind, got, c.want)
+		}
 	}
 }
