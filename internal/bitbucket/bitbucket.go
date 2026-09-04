@@ -84,9 +84,19 @@ type account struct {
 }
 
 // workspacePage is one page of GET /2.0/user/workspaces.
+//
+// Each value is a membership, not a workspace — {"type":"workspace_access",
+// "administrator":false,"workspace":{"slug":…}} — so the slug is one level
+// down. Reading a flat slug as well costs three lines and covers the shape
+// every other workspace document in this API has, which matters because
+// getting this wrong produces no error at all: empty slugs, no workspace, no
+// repository, and nothing anywhere saying why.
 type workspacePage struct {
 	Values []struct {
-		Slug string `json:"slug"`
+		Slug      string `json:"slug"`
+		Workspace struct {
+			Slug string `json:"slug"`
+		} `json:"workspace"`
 	} `json:"values"`
 	Next string `json:"next"`
 }
@@ -105,9 +115,13 @@ func (c *Client) workspaces(ctx context.Context, cred provider.Credentials) ([]s
 		if _, err := c.get(ctx, cred, next, &batch); err != nil {
 			return nil, err
 		}
-		for _, workspace := range batch.Values {
-			if workspace.Slug != "" {
-				slugs = append(slugs, workspace.Slug)
+		for _, membership := range batch.Values {
+			slug := membership.Workspace.Slug
+			if slug == "" {
+				slug = membership.Slug
+			}
+			if slug != "" {
+				slugs = append(slugs, slug)
 			}
 		}
 		next = batch.Next
@@ -213,9 +227,9 @@ func (c *Client) ListRepos(ctx context.Context, cred provider.Credentials) ([]pr
 func (c *Client) workspaceRepos(ctx context.Context, cred provider.Credentials, workspace string, maxPages int) ([]provider.Repo, error) {
 	// Deliberately without a role filter. The URL is already scoped to one
 	// workspace the account belongs to, so role=member only adds a requirement
-	// of explicit per-repository membership, which hides everything the account
-	// reads through a workspace-level or group grant — the normal shape of a
-	// team workspace, and the reason Bitbucket once listed nothing at all.
+	// of explicit per-repository membership, and the only thing that can
+	// exclude is a repository the account reaches through a workspace-level or
+	// group grant — which it can clone perfectly well.
 	next := c.baseURL + "/repositories/" + url.PathEscape(workspace) + "?" + url.Values{
 		"pagelen": {"100"},
 		"sort":    {"-updated_on"},

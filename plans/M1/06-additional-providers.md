@@ -192,41 +192,57 @@ inside its own terminal.
 ## Amendment 3: a listing that succeeded and returned nothing
 
 Reported after the feature shipped: the session picker showed only GitHub
-repositories, with the Bitbucket account connected in the Accounts page and no
-error anywhere. That combination is diagnostic. A provider that fails lands in
-`Listing.Failed` and the picker prints "Bitbucket could not be reached", so
-nothing failed: `ListRepos` returned an empty slice and a nil error.
+repositories, with the Bitbucket account connected and no error anywhere. That
+combination is diagnostic. A provider that fails lands in `Listing.Failed` and
+the picker prints "Bitbucket could not be reached", so nothing had failed:
+`ListRepos` returned an empty slice and a nil error.
 
-Three separate pieces of the design made that state silent, and all three are
-now fixed.
+**The cause was the shape of one document.** `GET /2.0/user/workspaces` does not
+answer with workspaces, it answers with *memberships*:
 
-**`role=member` was the bug.** The per-workspace listing asked
-`GET /2.0/repositories/{workspace}?role=member`, on the reasoning that it should
-show "the account's own repositories rather than every repository it can see".
-But the URL is already scoped to one workspace the account belongs to, and
-`role=member` on top of that means *explicit* per-repository membership — so
-every repository read through a workspace-level or group grant, which is how a
-team workspace is normally set up, was filtered out by Bitbucket itself. The
-filter is gone, with a comment saying why it must not come back.
+```json
+{"values":[{"type":"workspace_access","administrator":false,
+            "workspace":{"type":"workspace_base","slug":"…"}}]}
+```
 
-**An empty workspace list connected happily.** `Verify` only checked that
-`GET /2.0/user/workspaces` did not fail. A token that authenticates but sees no
-workspace can never list a repository, since repositories are asked for one
-workspace at a time; accepting it moved the failure to the picker, which had no
-way to explain it. Connecting now refuses that token and names the scope —
-`read:workspace:bitbucket` — it is most likely missing.
+The client read `slug` at the top level of each value, one level above where it
+is. Every slug came out empty, every empty slug was skipped, the workspace list
+was therefore empty, and — because repositories are only ever asked for inside a
+workspace — no repository call was made at all. Nothing in that chain is an
+error. It is the same class of mistake as the two amendments above, and it
+survived a full test suite because the stub server was written from the same
+wrong assumption as the code: both had the flat shape, so they agreed with each
+other and not with Bitbucket. The fixtures now carry the payload the real API
+returned, and the parser reads the nested slug with the flat one as a fallback.
 
-**One bad workspace hid all the others.** `ListRepos` returned on the first
-workspace error, so a single workspace the token cannot read emptied the whole
-Bitbucket half of the list. Failures are now collected and the walk continues;
-the error is returned only when no workspace could be read at all.
+Three further changes came out of the same trail, each of them a reason the bug
+was invisible rather than a cause of it:
 
-Two smaller things came out of the same trail. `Lister.List` wrote
-`failed[kind]` for an unknown provider outside the mutex, while goroutines for
-earlier kinds wrote the same map under it — a concurrent map write, now locked.
-And the picker built its provider tabs from the repositories that came back, so
-a provider contributing nothing was indistinguishable from one nobody had
-connected: the tabs now come from the connected accounts, an empty one says the
-provider returned no repositories, and the 100-row cap applies per provider
-rather than to a merged list sorted by date, where a long GitHub history could
-push an entire account past the end.
+- **`Verify` accepted a token that sees no workspace.** It only checked that the
+  call did not fail, so an account that can never list a repository connected
+  happily and the failure moved to the picker, which had nothing to say about
+  it. Connecting now refuses it and names the scope, `read:workspace:bitbucket`,
+  that is the likely reason. This is what turned the silence into the message
+  that led to the diagnosis.
+- **One unreadable workspace hid all the others.** `ListRepos` returned on the
+  first workspace error. Failures are now collected and the walk continues; the
+  error is returned only when no workspace could be read at all.
+- **The picker built its provider tabs from the repositories that came back**, so
+  a provider contributing nothing was indistinguishable from one nobody had
+  connected. The tabs now come from the connected accounts, an empty one says
+  the provider returned no repositories, and the 100-row cap applies per
+  provider rather than to a merged list sorted by date, where a long GitHub
+  history could push an entire account past the end.
+
+The per-workspace listing also dropped its `role=member` filter. That was not
+the bug — the account that reported this reads its repositories either way — but
+the filter asks for *explicit* per-repository membership on a URL that is already
+scoped to one workspace, so it can only ever hide repositories the account
+reaches through a workspace-level or group grant. There is nothing it usefully
+excludes.
+
+Two smaller things: `Lister.List` wrote `failed[kind]` for an unknown provider
+outside the mutex while goroutines for earlier kinds wrote the same map under it
+— a concurrent map write, now locked — and `handleListRepos` logs the count per
+provider at `Debug`, so the next listing that comes back mysteriously short can
+be answered from the log instead of from a bisect.

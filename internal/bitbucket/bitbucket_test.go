@@ -18,7 +18,7 @@ func credentials() provider.Credentials {
 }
 
 // bitbucketAPI stands in for api.bitbucket.org after CHANGE-2770: repositories
-// exist only inside a workspace, so a listing is one call for the workspaces
+// exist only inside a workspace, so a listing is one call for the memberships
 // and one per workspace, each paginated by a URL in the body.
 func bitbucketAPI(t *testing.T, authorization *string) *httptest.Server {
 	t.Helper()
@@ -29,7 +29,7 @@ func bitbucketAPI(t *testing.T, authorization *string) *httptest.Server {
 
 		switch {
 		case r.URL.Path == "/user/workspaces":
-			fmt.Fprint(w, `{"values":[{"slug":"acme"},{"slug":"other"}]}`)
+			fmt.Fprint(w, `{"values":[{"type":"workspace_access","workspace":{"slug":"acme"}},{"type":"workspace_access","workspace":{"slug":"other"}}]}`)
 		case r.URL.Path == "/repositories/acme" && r.URL.Query().Get("page") == "2":
 			fmt.Fprint(w, `{"values":[{
 				"full_name":"acme/second","is_private":true,"updated_on":"2026-02-02T10:00:00.123456+00:00",
@@ -111,7 +111,7 @@ func TestVerifyIdentifiesTheAccount(t *testing.T) {
 			fmt.Fprint(w, `{"username":"alice-bb","links":{"avatar":{"href":"https://example.test/a.png"}}}`)
 			return
 		}
-		fmt.Fprint(w, `{"values":[{"slug":"acme"}]}`)
+		fmt.Fprint(w, `{"values":[{"type":"workspace_access","workspace":{"slug":"acme"}}]}`)
 	}))
 	defer server.Close()
 
@@ -143,7 +143,7 @@ func TestVerifySurvivesAnAccountEndpointItCannotRead(t *testing.T) {
 			fmt.Fprint(w, `{"type":"error","error":{"message":"Your token does not have the required scopes"}}`)
 			return
 		}
-		fmt.Fprint(w, `{"values":[{"slug":"acme"}]}`)
+		fmt.Fprint(w, `{"values":[{"type":"workspace_access","workspace":{"slug":"acme"}}]}`)
 	}))
 	defer server.Close()
 
@@ -213,7 +213,7 @@ func TestListReposStartsFromTheWorkspacesEndpoint(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		asked = append(asked, r.URL.Path)
 		if r.URL.Path == "/user/workspaces" {
-			fmt.Fprint(w, `{"values":[{"slug":"acme"}]}`)
+			fmt.Fprint(w, `{"values":[{"type":"workspace_access","workspace":{"slug":"acme"}}]}`)
 			return
 		}
 		fmt.Fprint(w, `{"values":[{"full_name":"acme/widgets","mainbranch":{"name":"main"},
@@ -278,7 +278,7 @@ func TestWorkspaceListingAsksForEveryRepositoryNotJustExplicitMemberships(t *tes
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		queries = append(queries, r.URL.RawQuery)
 		if r.URL.Path == "/user/workspaces" {
-			fmt.Fprint(w, `{"values":[{"slug":"acme"}]}`)
+			fmt.Fprint(w, `{"values":[{"type":"workspace_access","workspace":{"slug":"acme"}}]}`)
 			return
 		}
 		if r.URL.Query().Has("role") {
@@ -330,7 +330,7 @@ func TestListReposKeepsTheWorkspacesItCanRead(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/user/workspaces":
-			fmt.Fprint(w, `{"values":[{"slug":"acme"},{"slug":"locked"}]}`)
+			fmt.Fprint(w, `{"values":[{"type":"workspace_access","workspace":{"slug":"acme"}},{"type":"workspace_access","workspace":{"slug":"locked"}}]}`)
 		case "/repositories/locked":
 			w.WriteHeader(http.StatusForbidden)
 			fmt.Fprint(w, `{"type":"error","error":{"message":"Access denied"}}`)
@@ -355,7 +355,7 @@ func TestListReposKeepsTheWorkspacesItCanRead(t *testing.T) {
 func TestListReposFailsWhenNoWorkspaceCanBeRead(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/user/workspaces" {
-			fmt.Fprint(w, `{"values":[{"slug":"acme"}]}`)
+			fmt.Fprint(w, `{"values":[{"type":"workspace_access","workspace":{"slug":"acme"}}]}`)
 			return
 		}
 		w.WriteHeader(http.StatusForbidden)
@@ -366,5 +366,42 @@ func TestListReposFailsWhenNoWorkspaceCanBeRead(t *testing.T) {
 	_, err := NewWithBaseURL(server.URL).ListRepos(context.Background(), credentials())
 	if !errors.Is(err, provider.ErrUnauthorized) {
 		t.Errorf("error = %v, want provider.ErrUnauthorized", err)
+	}
+}
+
+// The regression this whole package was rewritten for: GET /2.0/user/workspaces
+// answers with memberships, and the slug is nested inside each of them. Reading
+// it at the top level yields empty strings, which is not an error anywhere — no
+// workspace, no repository asked for, and a connected account that lists
+// nothing. The payload here is the shape the real API returned.
+func TestWorkspacesReadTheSlugOutOfTheMembership(t *testing.T) {
+	var asked []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		asked = append(asked, r.URL.Path)
+		if r.URL.Path == "/user/workspaces" {
+			fmt.Fprint(w, `{"values":[
+				{"type":"workspace_access","administrator":false,
+				 "workspace":{"type":"workspace_base","uuid":"{2a33244c-52bc-44f9-94a4-576287aeb303}",
+				              "slug":"gamo92","links":{"avatar":{"href":"https://bitbucket.org/workspaces/gamo92/avatar/"}}}},
+				{"slug":"flat"}
+			]}`)
+			return
+		}
+		fmt.Fprint(w, `{"values":[{"full_name":"gamo92/monorepo","mainbranch":{"name":"main"},
+			"links":{"clone":[{"name":"https","href":"https://bitbucket.org/gamo92/monorepo.git"}]}}]}`)
+	}))
+	defer server.Close()
+
+	repos, err := NewWithBaseURL(server.URL).ListRepos(context.Background(), credentials())
+	if err != nil {
+		t.Fatalf("ListRepos: %v", err)
+	}
+	// Both shapes are read: the membership the API sends, and a bare workspace
+	// document, which is what every other workspace endpoint answers with.
+	if strings.Join(asked, " ") != "/user/workspaces /repositories/gamo92 /repositories/flat" {
+		t.Fatalf("asked %v, want the nested slug and the flat one", asked)
+	}
+	if len(repos) != 2 || repos[0].FullName != "gamo92/monorepo" {
+		t.Errorf("repositories = %+v", repos)
 	}
 }
