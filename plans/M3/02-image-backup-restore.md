@@ -282,7 +282,7 @@ out of the container, which is the boundary AGENTS.md actually names.
 
 ### Downloading is this codebase's first file download
 
-`GET /api/images/backups/{id}/file` answers with `application/gzip`, a
+`GET /api/transfers/{id}/file` answers with `application/gzip`, a
 `Content-Disposition: attachment` naming the archive, and
 `http.ServeContent` over the staged file — which gets `Content-Length` and range
 requests for free, so an interrupted download can resume.
@@ -316,16 +316,26 @@ is a narrow window, and it is the trade this takes.
 
 ## API
 
-Four endpoints, all in the `protected` map:
+Seven endpoints, all in the `protected` map. The transfer-listing four ended up
+at `/api/transfers` rather than nested under `/api/images/backups` as first
+written here: `GET /api/images/{id}/log` (wildcard, then literal) and `GET
+/api/images/backups/{id}` (literal, then wildcard) both match
+`/api/images/backups/log`, and `net/http.ServeMux` refuses to register two
+patterns where neither is more specific than the other — it is not an
+ambiguity this package gets to resolve at request time, it is a panic at
+startup. A backup and a restore both being rows in one list is exactly the
+reason `/api/transfers` reads right anyway: it is not an images sub-resource,
+it is its own thing.
 
-- `POST /api/images/{id}/backup` — body `{"withImage": true}`, answers 202 with
-  the transfer row. Refuses with 409 when the image is not `ready` and the export
+- `POST /api/images/{id}/backup` — body `{"withSpec": true, "withImage":
+  true}`, chosen independently and at least one required, answers 202 with the
+  transfer row. Refuses with 409 when the image is not `ready` and the export
   was asked for: there is nothing to save yet.
-- `GET /api/images/backups` and `GET /api/images/backups/{id}` — the transfer
-  rows for the user, which is what the page polls.
-- `GET /api/images/backups/{id}/file` — the archive, as above. 409 while it is
-  not `ready`.
-- `DELETE /api/images/backups/{id}` — the row and the file.
+- `GET /api/transfers` and `GET /api/transfers/{id}` — the transfer rows for
+  the user, which is what the page polls.
+- `GET /api/transfers/{id}/file` — the archive, as above. 409 while it is not
+  `ready`.
+- `DELETE /api/transfers/{id}` — the row and the file.
 - `POST /api/images/restore` — the upload, answering the inspection:
 
 ```json

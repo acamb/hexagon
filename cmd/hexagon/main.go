@@ -118,6 +118,7 @@ func run(configPath string) error {
 	} else if n > 0 {
 		log.Info("marked interrupted sessions as failed", "count", n)
 	}
+	failInterruptedTransfers(context.Background(), st, cfg.TransfersDir, log)
 
 	docker, err := dockerx.New(cfg.DockerHost)
 	if err != nil {
@@ -171,6 +172,8 @@ func run(configPath string) error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	go runTransferJanitor(ctx, st, cfg.TransfersDir, log)
 
 	errc := make(chan error, 1)
 	go func() {

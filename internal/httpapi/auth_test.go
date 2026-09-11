@@ -184,6 +184,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 		ClaudeAccountsDir: claudeAccountsDir,
 		DataDir:           dataDir,
 		WorkspaceRoot:     workspaces,
+		TransfersDir:      filepath.Join(dataDir, "transfers"),
 		// Where the first-time wizard would write. Nothing is there until a
 		// test puts it there.
 		ConfigPath: filepath.Join(t.TempDir(), "config.json"),

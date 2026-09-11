@@ -110,6 +110,19 @@ func (s *Store) ImageByID(ctx context.Context, userID, id string) (*Image, error
 	return img, err
 }
 
+// ImageByName returns one of the user's images by its name, or ErrNotFound. It
+// is what a restore checks before importing, to say whether the name it is
+// about to use already belongs to something.
+func (s *Store) ImageByName(ctx context.Context, userID, name string) (*Image, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT `+imageColumns+` FROM images WHERE user_id = ? AND name = ?`, userID, name)
+	img, err := scanImage(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrNotFound
+	}
+	return img, err
+}
+
 // SetImageBuildLog stores the output produced so far, so the UI can follow a
 // build while it runs.
 func (s *Store) SetImageBuildLog(ctx context.Context, id, log string) error {
@@ -131,6 +144,32 @@ func (s *Store) UpdateImageSource(ctx context.Context, userID, id, dockerfile, c
 		dockerfile, compose, ImageStatusBuilding, id, userID)
 	if err != nil {
 		return fmt.Errorf("update image source: %w", err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
+
+// UpdateImageForRestore replaces an existing image's whole spec with the one a
+// restore's import is overwriting it with, and puts it back into the build
+// queue. Unlike UpdateImageSource, which only ever replaces the Dockerfile and
+// compose content of an image that keeps its own source type, this can change
+// sourceType and registryRef too: the backup being imported may not have come
+// from the same kind of image the row held before. It returns ErrNotFound when
+// the image is not the caller's.
+func (s *Store) UpdateImageForRestore(ctx context.Context, userID, id, sourceType, dockerfile, compose, registryRef string) error {
+	res, err := s.db.ExecContext(ctx, `
+		UPDATE images
+		SET source_type = ?, dockerfile = ?, compose = ?, registry_ref = ?, status = ?, build_log = '', error = ''
+		WHERE id = ? AND user_id = ?`,
+		sourceType, dockerfile, compose, registryRef, ImageStatusBuilding, id, userID)
+	if err != nil {
+		return fmt.Errorf("update image for restore: %w", err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {

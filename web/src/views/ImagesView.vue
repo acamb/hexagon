@@ -6,7 +6,14 @@ import Notice from '../components/Notice.vue'
 import AskClaude from '../components/AskClaude.vue'
 import Spinner from '../components/Spinner.vue'
 import StatusDot from '../components/StatusDot.vue'
-import { ApiError, api, type Image, type ImageSource } from '../api'
+import {
+  ApiError,
+  api,
+  type Image,
+  type ImageSource,
+  type RestoreInspection,
+  type Transfer,
+} from '../api'
 
 const images = ref<Image[]>([])
 const error = ref<string | null>(null)
@@ -74,6 +81,150 @@ watch(autoScroll, (following) => {
 })
 
 const building = computed(() => images.value.some((i) => i.status === 'building'))
+
+// Backing up an image, one panel open at a time, the same way editing does.
+const backupOpenId = ref<string | null>(null)
+const backupWithSpec = ref(true)
+const backupWithImage = ref(false)
+const backingUp = ref<string | null>(null)
+// The size docker reports for the image being backed up, read from the Stats
+// page's own data when the panel opens: roughly how large asking for the
+// export will make the file, not exact enough to be worth its own endpoint.
+const backupImageSize = ref<number | null>(null)
+
+const transfers = ref<Transfer[]>([])
+const transfersInFlight = computed(() =>
+  transfers.value.some((t) => t.status === 'pending' || t.status === 'running'),
+)
+const removingTransfer = ref<string | null>(null)
+
+// Restoring: a file is uploaded and inspected, then the reader chooses what to
+// do with what came back.
+const restoreFileInput = ref<HTMLInputElement | null>(null)
+const restoring = ref(false)
+const restoreInspection = ref<RestoreInspection | null>(null)
+const restoreOverwriteConfirm = ref(false)
+const importing = ref(false)
+
+function formatBytes(bytes: number): string {
+  if (bytes <= 0) return '0 B'
+  const units = ['B', 'KB', 'MB', 'GB', 'TB']
+  const exp = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1)
+  const value = bytes / 1024 ** exp
+  return `${exp === 0 ? value : value.toFixed(1)} ${units[exp]}`
+}
+
+async function refreshTransfers() {
+  try {
+    transfers.value = await api.transfers.list()
+  } catch (e) {
+    error.value = message(e)
+  }
+}
+
+async function removeTransfer(t: Transfer) {
+  removingTransfer.value = t.id
+  try {
+    await api.transfers.remove(t.id)
+    await refreshTransfers()
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    removingTransfer.value = null
+  }
+}
+
+async function toggleBackup(image: Image) {
+  if (backupOpenId.value === image.id) {
+    backupOpenId.value = null
+    return
+  }
+  backupOpenId.value = image.id
+  backupWithSpec.value = image.sourceType !== 'registry'
+  backupWithImage.value = image.status === 'ready'
+  backupImageSize.value = null
+  try {
+    const stats = await api.stats.get()
+    backupImageSize.value = stats.docker.images.find((i) => i.tags.includes(image.imageRef ?? ''))?.size ?? null
+  } catch {
+    // The size is a convenience; the dialog works without it.
+  }
+}
+
+async function startBackup(image: Image) {
+  backingUp.value = image.id
+  try {
+    await api.images.backup(image.id, { withSpec: backupWithSpec.value, withImage: backupWithImage.value })
+    backupOpenId.value = null
+    await refreshTransfers()
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    backingUp.value = null
+  }
+}
+
+function pickRestoreFile() {
+  restoreFileInput.value?.click()
+}
+
+async function onRestoreFileChosen(e: Event) {
+  const input = e.target as HTMLInputElement
+  const file = input.files?.[0]
+  input.value = ''
+  if (!file) return
+
+  restoring.value = true
+  error.value = null
+  restoreInspection.value = null
+  restoreOverwriteConfirm.value = false
+  try {
+    restoreInspection.value = await api.images.restore(file)
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    restoring.value = false
+  }
+}
+
+// Spec-only restore never creates anything: it fills in the create form
+// exactly as if the Dockerfile and compose file had been typed by hand, and
+// the reader presses "Build image" themselves.
+function loadRestoredFilesIntoForm() {
+  const insp = restoreInspection.value
+  if (!insp) return
+  name.value = insp.name
+  sourceType.value = insp.sourceType
+  dockerfile.value = insp.dockerfile ?? ''
+  compose.value = insp.compose ?? ''
+  cancelRestore()
+}
+
+async function importRestoredImage() {
+  const insp = restoreInspection.value
+  if (!insp) return
+  if (insp.nameExists && !restoreOverwriteConfirm.value) {
+    restoreOverwriteConfirm.value = true
+    return
+  }
+  importing.value = true
+  error.value = null
+  try {
+    await api.images.import(insp.id, { name: insp.name, overwrite: insp.nameExists })
+    cancelRestore()
+    await refresh()
+    await refreshTransfers()
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    importing.value = false
+  }
+}
+
+function cancelRestore() {
+  restoreInspection.value = null
+  restoreOverwriteConfirm.value = false
+}
 
 async function refresh() {
   try {
@@ -173,22 +324,24 @@ function message(e: unknown): string {
 }
 
 // The build runs on the server, so the page follows it by polling: every second
-// while something is building, every five otherwise.
+// while something is building or a transfer is in flight, every five otherwise.
 let timer: number
 function schedule() {
   window.clearInterval(timer)
   timer = window.setInterval(
     async () => {
       await refresh()
+      await refreshTransfers()
       if (openLogId.value) await refreshLog()
     },
-    building.value || openLogId.value ? 1000 : 5000,
+    building.value || openLogId.value || transfersInFlight.value ? 1000 : 5000,
   )
 }
-watch([building, openLogId], schedule)
+watch([building, openLogId, transfersInFlight], schedule)
 
 onMounted(async () => {
   await refresh()
+  await refreshTransfers()
   schedule()
   try {
     const template = await api.images.template()
@@ -208,14 +361,63 @@ onUnmounted(() => window.clearInterval(timer))
   <AppHeader />
 
   <main class="shell">
-    <h1>Images</h1>
-    <p class="intro">
-      Base images sessions run from. An image must provide <code>git</code>, <code>tmux</code> and
-      <code>claude</code> on the <code>PATH</code>; the repository is not baked in, it arrives as a
-      bind mount on <code>/workspace</code>.
-    </p>
+    <div class="heading">
+      <div>
+        <h1>Images</h1>
+        <p class="intro">
+          Base images sessions run from. An image must provide <code>git</code>, <code>tmux</code> and
+          <code>claude</code> on the <code>PATH</code>; the repository is not baked in, it arrives as a
+          bind mount on <code>/workspace</code>.
+        </p>
+      </div>
+      <div>
+        <button type="button" :disabled="restoring" @click="pickRestoreFile">
+          <Spinner v-if="restoring" />Restore from backup…
+        </button>
+        <input
+          ref="restoreFileInput"
+          type="file"
+          accept=".gz,.tar.gz,application/gzip"
+          class="visually-hidden"
+          @change="onRestoreFileChosen"
+        />
+      </div>
+    </div>
 
     <Notice v-if="error" kind="error" :message="error" class="alert" @dismiss="error = null" />
+
+    <div v-if="restoreInspection" class="restore-panel">
+      <h2>Restoring "{{ restoreInspection.name }}"</h2>
+      <p class="hint">
+        Source: {{ restoreInspection.sourceType }}<template v-if="restoreInspection.hasImage">
+          · image export included, {{ formatBytes(restoreInspection.imageSize ?? 0) }}</template>
+      </p>
+
+      <div v-if="!restoreOverwriteConfirm" class="restore-choices">
+        <button type="button" @click="loadRestoredFilesIntoForm">Load the files into the form</button>
+        <button
+          v-if="restoreInspection.hasImage"
+          type="button"
+          :disabled="importing"
+          @click="importRestoredImage"
+        >
+          <Spinner v-if="importing" />Import the image
+        </button>
+        <button type="button" class="link" @click="cancelRestore">Cancel</button>
+      </div>
+
+      <div v-else class="restore-overwrite">
+        <p>
+          An image named "{{ restoreInspection.name }}" already exists. Importing replaces its
+          Dockerfile, compose file and image with this backup's. Existing sessions keep their current
+          container until it is rebuilt.
+        </p>
+        <button type="button" class="danger" :disabled="importing" @click="importRestoredImage">
+          <Spinner v-if="importing" />Overwrite and import
+        </button>
+        <button type="button" @click="cancelRestore">Cancel</button>
+      </div>
+    </div>
 
     <form class="form" @submit.prevent="create">
       <label class="field">
@@ -305,6 +507,9 @@ onUnmounted(() => window.clearInterval(timer))
             <button type="button" @click="toggleLog(image)">
               {{ openLogId === image.id ? 'Hide log' : 'Log' }}
             </button>
+            <button type="button" @click="toggleBackup(image)">
+              {{ backupOpenId === image.id ? 'Cancel backup' : 'Backup' }}
+            </button>
             <button
               type="button"
               class="danger"
@@ -357,6 +562,26 @@ onUnmounted(() => window.clearInterval(timer))
           </button>
         </form>
 
+        <div v-if="backupOpenId === image.id" class="backup-pane">
+          <label class="checkbox">
+            <input type="checkbox" v-model="backupWithSpec" />
+            Dockerfile / compose
+          </label>
+          <label class="checkbox">
+            <input type="checkbox" v-model="backupWithImage" :disabled="image.status !== 'ready'" />
+            Image export
+            <span v-if="image.status !== 'ready'" class="hint">(only once the image is ready)</span>
+            <span v-else-if="backupImageSize" class="hint">(roughly {{ formatBytes(backupImageSize) }})</span>
+          </label>
+          <button
+            type="button"
+            :disabled="backingUp === image.id || (!backupWithSpec && !backupWithImage)"
+            @click="startBackup(image)"
+          >
+            <Spinner v-if="backingUp === image.id" />Start backup
+          </button>
+        </div>
+
         <div v-if="openLogId === image.id" class="log-pane">
           <label class="follow">
             <input type="checkbox" v-model="autoScroll" />
@@ -368,6 +593,39 @@ onUnmounted(() => window.clearInterval(timer))
     </ul>
 
     <p v-if="!images.length" class="empty">No images yet.</p>
+
+    <template v-if="transfers.length">
+      <h2 class="transfers-heading">Backups and restores</h2>
+      <ul class="list">
+        <li v-for="t in transfers" :key="t.id">
+          <div class="row">
+            <div class="identity">
+              <strong>{{ t.name || '(unnamed)' }}</strong>
+              <code>{{ t.direction }}{{ t.withImage ? ' · with image' : ' · spec only' }}</code>
+            </div>
+            <StatusDot :status="t.status" />
+            <div class="actions">
+              <a
+                v-if="t.status === 'ready' && t.direction === 'backup'"
+                :href="api.transfers.downloadUrl(t.id)"
+                download
+              >
+                Download{{ t.size ? ` (${formatBytes(t.size)})` : '' }}
+              </a>
+              <button
+                type="button"
+                class="danger"
+                :disabled="removingTransfer === t.id"
+                @click="removeTransfer(t)"
+              >
+                <Spinner v-if="removingTransfer === t.id" />Delete
+              </button>
+            </div>
+          </div>
+          <p v-if="t.error" class="error inline">{{ t.error }}</p>
+        </li>
+      </ul>
+    </template>
   </main>
 </template>
 
@@ -384,6 +642,59 @@ h1 {
 
 .intro {
   margin: 0 0 2rem;
+  color: var(--text-muted);
+}
+
+.heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.restore-panel {
+  display: grid;
+  gap: 0.75rem;
+  padding: 1.25rem;
+  margin-bottom: 2rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.restore-panel h2 {
+  margin: 0;
+  font-size: 1.05rem;
+}
+
+.restore-choices,
+.restore-overwrite {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.restore-overwrite {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.restore-overwrite p {
+  margin: 0;
   color: var(--text-muted);
 }
 
@@ -570,5 +881,31 @@ button:disabled {
 
 .empty {
   color: var(--text-muted);
+}
+
+.backup-pane {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-top: 0.75rem;
+  padding-top: 0.9rem;
+  border-top: 1px solid var(--border);
+}
+
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
+.checkbox .hint {
+  margin: 0;
+}
+
+.transfers-heading {
+  margin: 2.5rem 0 0.75rem;
+  font-size: 1.1rem;
 }
 </style>

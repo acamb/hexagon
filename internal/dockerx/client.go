@@ -37,6 +37,17 @@ type API interface {
 	RemoveImage(ctx context.Context, ref string) error
 	// InspectImage returns the content-addressable id ref currently resolves to.
 	InspectImage(ctx context.Context, ref string) (string, error)
+	// SaveImage writes ref as a `docker save` tar stream to w, uncompressed:
+	// the caller decides whether and how to compress it.
+	SaveImage(ctx context.Context, ref string, w io.Writer) error
+	// LoadImage reads a `docker save` tar stream from r and loads it into the
+	// daemon, writing progress to logs. The tag the loaded image ends up under
+	// is whatever it was saved with — the caller learns it from the backup's own
+	// manifest, not from this call, and retags it with TagImage.
+	LoadImage(ctx context.Context, r io.Reader, logs io.Writer) error
+	// TagImage adds target as a second name for the image source already
+	// resolves to.
+	TagImage(ctx context.Context, source, target string) error
 	// ListImages returns every image the daemon holds, with its size and the
 	// number of containers based on it.
 	ListImages(ctx context.Context) ([]ImageSummary, error)

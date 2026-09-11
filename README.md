@@ -111,6 +111,46 @@ Installing `claude` on the server is still worth it if you use this a lot: put i
 `PATH` of the account the server runs as, or name it with `claude.binary`, and the box uses
 it instead.
 
+### Backing up and restoring an image
+
+Every image row has a **Backup** button, next to Edit, Log and Delete. A dialog offers two
+things to save independently — the Dockerfile and compose file, and the image itself — with
+at least one required and the image export unavailable until the image is `ready`. The job
+runs on the server; the transfers list below the images shows it moving from running to
+ready, with a Download link once it is.
+
+The archive is a plain `.tar.gz`, openable with nothing but `tar`:
+
+```
+hexagon-<name>-<timestamp>.tar.gz
+├── spec/
+│   ├── image.json        (name, source type, registry reference, saved tag)
+│   ├── Dockerfile         (when the Dockerfile/compose half was saved)
+│   └── compose.yaml       (for a compose image, same condition)
+└── image.tar.gz           (only when the image export was saved — a plain `docker save | gzip`)
+```
+
+`spec/image.json` is what a restore reads to know what it is looking at; the two source
+files are exactly what was in the image, and `image.tar.gz` loads with a bare
+`docker load < image.tar.gz` on any machine, Hexagon or not.
+
+**Restore**, at the top of the Images page, uploads an archive and shows what is in it: the
+name, the source type, and whether an image is included and roughly how large. From there:
+
+- **Load the files into the form** does not create anything — it fills in the Dockerfile
+  and compose fields of the create form above, exactly as if you had pasted them, and you
+  press *Build image* yourself.
+- **Import the image** (offered only when the archive has one) loads it into Docker and
+  wires it into an image row directly — no build, ready as soon as the load finishes. If the
+  name is already taken, you are asked to confirm before it overwrites that image in place:
+  the row keeps its id and its local tag, so every session already using it keeps working
+  off its current container until it is next rebuilt, which is the point at which the
+  restored content takes over.
+
+A staged upload and a finished backup are kept for 24 hours and then removed automatically —
+download or import what you need before then. Backups and restores in progress or waiting to
+be collected both show up in the same transfers list.
+
 ### Published ports
 
 ![The new-session options: what to start, which token to pass, VS Code, and the published

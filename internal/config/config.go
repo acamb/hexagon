@@ -82,6 +82,11 @@ type Config struct {
 	// shape of DatabasePath: there is nothing here for an operator to choose.
 	ClaudeAccountsDir string
 
+	// TransfersDir holds a staged image backup or restore archive per
+	// image_transfers row, one directory per transfer id. Derived, in the same
+	// shape as ClaudeAccountsDir.
+	TransfersDir string
+
 	// Git identity used for clones and for commits made inside containers.
 	GitUserName  string // HEXAGON_GIT_USER_NAME, git.userName
 	GitUserEmail string // HEXAGON_GIT_USER_EMAIL, git.userEmail
@@ -244,6 +249,7 @@ func load(path string, explicit bool) (*Config, error) {
 		ClaudeBinary:      expandHome(home, pick("HEXAGON_CLAUDE_BINARY", f.Claude.Binary, "")),
 		ClaudeModel:       pick("HEXAGON_CLAUDE_MODEL", f.Claude.Model, ""),
 		ClaudeAccountsDir: filepath.Join(dataDir, "claude-accounts"),
+		TransfersDir:      filepath.Join(dataDir, "transfers"),
 
 		GitUserName:  pick("HEXAGON_GIT_USER_NAME", f.Git.UserName, ""),
 		GitUserEmail: pick("HEXAGON_GIT_USER_EMAIL", f.Git.UserEmail, ""),

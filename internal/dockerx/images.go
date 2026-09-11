@@ -107,6 +107,43 @@ func (c *Client) RemoveImage(ctx context.Context, ref string) error {
 	return nil
 }
 
+// SaveImage writes ref as a `docker save` tar stream to w, uncompressed: the
+// caller decides whether and how to compress it.
+func (c *Client) SaveImage(ctx context.Context, ref string, w io.Writer) error {
+	body, err := c.cli.ImageSave(ctx, []string{ref})
+	if err != nil {
+		return fmt.Errorf("save image %s: %w", ref, err)
+	}
+	defer body.Close()
+
+	if _, err := io.Copy(w, body); err != nil {
+		return fmt.Errorf("save image %s: %w", ref, err)
+	}
+	return nil
+}
+
+// LoadImage reads a `docker save` tar stream from r and loads it into the
+// daemon, writing progress to logs. A failure during the load is reported
+// inside that same progress stream, the way BuildImage's is.
+func (c *Client) LoadImage(ctx context.Context, r io.Reader, logs io.Writer) error {
+	resp, err := c.cli.ImageLoad(ctx, r)
+	if err != nil {
+		return fmt.Errorf("start load: %w", err)
+	}
+	defer resp.Body.Close()
+
+	return decodeProgress(resp.Body, logs)
+}
+
+// TagImage adds target as a second name for the image source already resolves
+// to.
+func (c *Client) TagImage(ctx context.Context, source, target string) error {
+	if err := c.cli.ImageTag(ctx, source, target); err != nil {
+		return fmt.Errorf("tag image %s as %s: %w", source, target, err)
+	}
+	return nil
+}
+
 // tarDockerfile wraps a Dockerfile in the tar archive the build endpoint
 // expects. Hexagon builds have no build context beyond the Dockerfile itself,
 // so COPY and ADD of local paths will not work — by design: the image describes

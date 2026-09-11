@@ -132,6 +132,24 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return body as T
 }
 
+// uploadRestore posts a File body with the archive's own content type and
+// parses the JSON inspection back. The first api.ts helper that is not
+// request<T>: a File cannot go through the Content-Type request already sets
+// for every other mutating call, because it is not JSON.
+async function uploadRestore(file: File | Blob): Promise<RestoreInspection> {
+  const response = await fetch('/api/images/restore', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: { Accept: 'application/json', 'Content-Type': 'application/gzip' },
+    body: file,
+  })
+  const body = await response.json().catch(() => null)
+  if (!response.ok) {
+    throw new ApiError(response.status, body?.error ?? response.statusText)
+  }
+  return body as RestoreInspection
+}
+
 // 'compose' is an advanced image: a Dockerfile and a compose file together. The
 // Dockerfile still describes the container Claude Code runs in and builds like
 // any other; the compose file describes the services beside it.
@@ -196,6 +214,52 @@ export interface NewImage {
 export interface ImageSourceUpdate {
   dockerfile: string
   compose?: string
+}
+
+// A backup on its way out of Hexagon, or a restore on its way in: a file
+// staged on the server, a job that is or is not finished with it, and a
+// lifetime after which the janitor removes both.
+export type TransferDirection = 'backup' | 'restore'
+export type TransferStatus = 'pending' | 'running' | 'ready' | 'failed'
+
+export interface Transfer {
+  id: string
+  direction: TransferDirection
+  imageId?: string
+  name: string
+  status: TransferStatus
+  withImage: boolean
+  size?: number
+  error?: string
+  createdAt: string
+  expiresAt: string
+}
+
+// What backing up an image asks for: withSpec is the Dockerfile and compose
+// file, withImage the image export. Chosen independently, and at least one is
+// required.
+export interface NewBackup {
+  withSpec: boolean
+  withImage: boolean
+}
+
+// What uploading a backup archive answers with: the spec, already read out of
+// it, and enough about its image half to offer the two restore choices.
+export interface RestoreInspection {
+  id: string
+  name: string
+  sourceType: ImageSource
+  dockerfile?: string
+  compose?: string
+  hasImage: boolean
+  imageSize?: number
+  nameExists: boolean
+  existingImageId?: string
+}
+
+export interface ImportRequest {
+  name: string
+  overwrite: boolean
 }
 
 // The host's CPU, memory and filesystems, for the Stats page. usedPercent is
@@ -583,5 +647,23 @@ export const api = {
         method: 'POST',
         body: JSON.stringify({ kind, content, instruction }),
       }),
+    backup: (id: string, options: NewBackup) =>
+      request<Transfer>(`/images/${id}/backup`, { method: 'POST', body: JSON.stringify(options) }),
+    // Stages the archive and answers with what it found, without importing
+    // anything yet.
+    restore: (file: File | Blob) => uploadRestore(file),
+    // Only the full restore path posts here: a spec-only restore just fills in
+    // the create form with what restore() already returned.
+    import: (transferId: string, req: ImportRequest) =>
+      request<Image>(`/images/restore/${transferId}/import`, { method: 'POST', body: JSON.stringify(req) }),
+  },
+
+  transfers: {
+    list: () => request<Transfer[]>('/transfers'),
+    remove: (id: string) => request<null>(`/transfers/${id}`, { method: 'DELETE' }),
+    // A plain navigation, in the shape of api.claude.loginTerminal: `<a
+    // download>` rather than a fetch into memory, which for a multi-gigabyte
+    // archive is the whole point.
+    downloadUrl: (id: string) => `/api/transfers/${id}/file`,
   },
 }

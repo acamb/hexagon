@@ -7,7 +7,7 @@ as described in [AGENTS.md](../../AGENTS.md).
 | # | Point | Analysis | State |
 |---|---|---|---|
 | 1 | Stats page | [01-stats-page.md](01-stats-page.md) | to do |
-| 2 | Backup and restore of images | [02-image-backup-restore.md](02-image-backup-restore.md) | to do |
+| 2 | Backup and restore of images | [02-image-backup-restore.md](02-image-backup-restore.md) | done |
 | 3 | Export workspace | [03-export-workspace.md](03-export-workspace.md) | to do |
 
 M3's statement numbers nothing: its three points are headings, where M1 and M2

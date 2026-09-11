@@ -63,6 +63,16 @@ type fakeDocker struct {
 	diskUsageErr    error
 	pruneContainers dockerx.Pruned
 	pruneErr        error
+
+	saveErr error
+	loadErr error
+	tagErr  error
+	saved   []string
+	// loaded is what LoadImage was asked to load, one entry per call, so a test
+	// can tell a restore loaded the archive's own image.tar.gz rather than
+	// something else.
+	loaded []string
+	tagged [][2]string
 }
 
 func newFakeDocker() *fakeDocker { return &fakeDocker{containers: map[string]*fakeContainer{}} }
@@ -116,6 +126,42 @@ func (f *fakeDocker) InspectImage(_ context.Context, ref string) (string, error)
 		return f.digest, nil
 	}
 	return "digest:" + ref, nil
+}
+
+// SaveImage writes a small fake tar stream that names ref, which is enough for
+// a test to tell one saved image from another without shelling out to a real
+// daemon.
+func (f *fakeDocker) SaveImage(_ context.Context, ref string, w io.Writer) error {
+	f.mu.Lock()
+	f.saved = append(f.saved, ref)
+	err := f.saveErr
+	f.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	_, werr := io.WriteString(w, "fake-image-tar:"+ref)
+	return werr
+}
+
+func (f *fakeDocker) LoadImage(_ context.Context, r io.Reader, logs io.Writer) error {
+	content, _ := io.ReadAll(r)
+	f.mu.Lock()
+	f.loaded = append(f.loaded, string(content))
+	err := f.loadErr
+	f.mu.Unlock()
+	if err != nil {
+		fmt.Fprintf(logs, "load failed: %s\n", err)
+		return err
+	}
+	fmt.Fprintf(logs, "Loaded image: %s\n", content)
+	return nil
+}
+
+func (f *fakeDocker) TagImage(_ context.Context, source, target string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tagged = append(f.tagged, [2]string{source, target})
+	return f.tagErr
 }
 
 func (f *fakeDocker) AttachExec(_ context.Context, req dockerx.ExecRequest) (*dockerx.Exec, error) {

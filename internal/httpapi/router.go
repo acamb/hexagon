@@ -186,6 +186,21 @@ func New(deps Deps) http.Handler {
 		"POST /api/images/{id}/rebuild": s.handleRebuildImage,
 		"DELETE /api/images/{id}":       s.handleDeleteImage,
 
+		"POST /api/images/{id}/backup":         s.handleCreateBackup,
+		"POST /api/images/restore":             s.handleRestoreUpload,
+		"POST /api/images/restore/{id}/import": s.handleImportTransfer,
+
+		// A backup and a restore are both rows in the same transfers list, which
+		// is why these live at their own path rather than nested under
+		// /api/images: "GET /api/images/{id}/log" and "GET
+		// /api/images/backups/{id}" would both match "/api/images/backups/log"
+		// and net/http's ServeMux refuses to register two patterns neither of
+		// which is more specific than the other.
+		"GET /api/transfers":           s.handleListTransfers,
+		"GET /api/transfers/{id}":      s.handleGetTransfer,
+		"GET /api/transfers/{id}/file": s.handleDownloadTransfer,
+		"DELETE /api/transfers/{id}":   s.handleDeleteTransfer,
+
 		"GET /api/stats":                   s.handleGetStats,
 		"POST /api/stats/prune/images":     s.handlePruneImages,
 		"POST /api/stats/prune/containers": s.handlePruneContainers,

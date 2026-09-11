@@ -161,12 +161,24 @@ func (s *Server) guardStateChanges(next http.Handler) http.Handler {
 			return
 		}
 		// The VS Code proxy carries a whole other application's traffic, which is
-		// not JSON and cannot be made to be. It stays behind requireAuth and the
-		// same-origin check like every other endpoint; only the content type rule
-		// is lifted.
-		if ct := r.Header.Get("Content-Type"); !isVSCodeProxyPath(r.URL.Path) && !strings.HasPrefix(ct, "application/json") {
-			writeError(w, http.StatusUnsupportedMediaType, "expected Content-Type: application/json")
-			return
+		// not JSON and cannot be made to be; the restore upload carries an
+		// archive, which cannot be JSON without base64 and a third more bytes.
+		// Both stay behind requireAuth and the same-origin check like every
+		// other endpoint; only the content type rule is lifted, and only on
+		// these two exact paths.
+		ct := r.Header.Get("Content-Type")
+		switch {
+		case isVSCodeProxyPath(r.URL.Path):
+		case isRestoreUploadPath(r.URL.Path):
+			if !strings.HasPrefix(ct, "application/gzip") {
+				writeError(w, http.StatusUnsupportedMediaType, "expected Content-Type: application/gzip")
+				return
+			}
+		default:
+			if !strings.HasPrefix(ct, "application/json") {
+				writeError(w, http.StatusUnsupportedMediaType, "expected Content-Type: application/json")
+				return
+			}
 		}
 		next.ServeHTTP(w, r)
 	})
