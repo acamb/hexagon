@@ -247,7 +247,7 @@ onUnmounted(() => window.clearInterval(timer))
             <td>{{ formatBytes(image.size) }}</td>
             <td>{{ formatAge(image.created) }}</td>
             <td>{{ image.containers }}</td>
-            <td class="badges">
+            <td>
               <span v-if="image.inUse" class="badge in-use">In use</span>
               <span v-if="image.registered" class="badge registered">Registered</span>
               <span v-if="image.dangling" class="badge dangling">Dangling</span>
@@ -386,12 +386,6 @@ button:disabled {
 .images th {
   color: var(--text-muted);
   font-weight: 500;
-}
-
-.badges {
-  display: flex;
-  gap: 0.35rem;
-  flex-wrap: wrap;
 }
 
 .badge {
