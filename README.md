@@ -48,6 +48,21 @@ rather than a terminal that closes.
 The **tmux keys** button in the header opens the shortcuts worth knowing, starting with how
 to scroll back through the output.
 
+### Exporting a workspace
+
+The **Export /workspace** button, on the session card and on the session page, downloads
+`/workspace` as a `workspace.tar.gz` — nothing else: not `$HOME`, not a compose project's
+named volumes. It is read straight from the clone on the host rather than from the
+container, so it works for a stopped, failed or gone session exactly as it does for a
+running one, and it is never staged on the server — the archive streams straight into the
+download and nothing of it is kept once it finishes.
+
+Pressing it checks first, and only offers the download if `/workspace` actually exists; a
+session still being cloned does not offer it at all. A running session is read live, the
+same way `tar` reads any directory that is still being written to: a file created after the
+export passed its directory will not be in it, and one being written when the export reaches
+it lands however much of it existed at that moment.
+
 ### Images
 
 ![The Images page: a Dockerfile, the three kinds of source, and the box that asks Claude Code

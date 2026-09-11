@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/store"
@@ -339,16 +338,9 @@ func (m *Manager) removeWorkspace(dir string) error {
 	if dir == "" {
 		return nil
 	}
-	root, err := filepath.Abs(m.cfg.WorkspaceRoot)
+	target, err := resolveInsideWorkspaceRoot(m.cfg.WorkspaceRoot, dir)
 	if err != nil {
 		return err
-	}
-	target, err := filepath.Abs(dir)
-	if err != nil {
-		return err
-	}
-	if target == root || !strings.HasPrefix(target, root+string(os.PathSeparator)) {
-		return fmt.Errorf("refusing to remove %s: it is not inside %s", target, root)
 	}
 	return os.RemoveAll(target)
 }

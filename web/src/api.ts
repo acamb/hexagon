@@ -441,6 +441,15 @@ export interface SessionClaudeAccount {
   claudeAccountId: string
 }
 
+// The answer to the probe the export button runs before it navigates
+// anywhere. files and bytes are absent together with exists false: there is
+// nothing to report for a directory that is not there.
+export interface WorkspaceInfo {
+  exists: boolean
+  files?: number
+  bytes?: number
+}
+
 // The providers this build knows. The value is what the API sends and stores,
 // so it is part of the contract rather than a label.
 export type ProviderKind = 'github' | 'bitbucket'
@@ -578,6 +587,13 @@ export const api = {
     stop: (id: string) => request<Session>(`/sessions/${id}/stop`, { method: 'POST' }),
     remove: (id: string, purge: boolean) =>
       request<null>(`/sessions/${id}?purge=${purge}`, { method: 'DELETE' }),
+    // Checked before workspaceUrl is ever navigated to: the button must tell
+    // the user there is nothing to export before it tries, not after.
+    workspaceInfo: (id: string) => request<WorkspaceInfo>(`/sessions/${id}/workspace/info`),
+    // A plain navigation, in the shape of api.claude.loginTerminal and
+    // api.transfers.downloadUrl: `<a download>` rather than a fetch into
+    // memory, and the archive is never staged anywhere to fetch back from.
+    workspaceUrl: (id: string) => `/api/sessions/${id}/workspace`,
   },
 
   repos: (refresh = false) => request<RepoListing>(`/repos${refresh ? '?refresh=1' : ''}`),

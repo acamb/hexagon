@@ -51,6 +51,25 @@ async function act(session: Session, action: 'start' | 'stop') {
   }
 }
 
+// Probes before it ever navigates anywhere: "segnalato all'utente subito
+// prima di tentare il backup" means the check happens on the click, not on
+// page load, so what the user is told is true at the moment they asked.
+async function exportWorkspace(session: Session) {
+  busy.value = session.id
+  try {
+    const info = await api.sessions.workspaceInfo(session.id)
+    if (!info.exists) {
+      error.value = `${session.title} has no /workspace directory to export.`
+      return
+    }
+    window.location.href = api.sessions.workspaceUrl(session.id)
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    busy.value = null
+  }
+}
+
 function armDelete(session: Session) {
   confirming.value = session.id
   purge.value = false
@@ -189,6 +208,14 @@ onUnmounted(() => window.clearInterval(timer))
             @click="editingClaudeAccount = session"
           >
             Account
+          </button>
+          <button
+            v-if="session.status !== 'creating' && session.status !== 'cloning'"
+            type="button"
+            :disabled="busy === session.id"
+            @click="exportWorkspace(session)"
+          >
+            <Spinner v-if="busy === session.id" />Export /workspace
           </button>
           <button type="button" class="danger" @click="armDelete(session)">Delete</button>
         </div>

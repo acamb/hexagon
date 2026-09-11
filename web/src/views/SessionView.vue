@@ -20,7 +20,7 @@ const session = ref<Session | null>(null)
 const error = ref<string | null>(null)
 // Which action is in flight, not merely whether one is: all three controls are
 // disabled while any of them runs, but only the one that was clicked spins.
-const running = ref<'start' | 'stop' | 'autoClaude' | null>(null)
+const running = ref<'start' | 'stop' | 'autoClaude' | 'export' | null>(null)
 // Set when the switch is flipped on a session that is already up: the tmux
 // session it is running was created with, or without, Claude Code as its
 // command, so the change is only visible after a restart.
@@ -154,6 +154,25 @@ async function stop() {
   }
 }
 
+// Probes before it ever navigates anywhere: "segnalato all'utente subito
+// prima di tentare il backup" means the check happens on the click, not on
+// page load, so what the user is told is true at the moment they asked.
+async function exportWorkspace() {
+  running.value = 'export'
+  try {
+    const info = await api.sessions.workspaceInfo(sessionId)
+    if (!info.exists) {
+      error.value = 'This session has no /workspace directory to export.'
+      return
+    }
+    window.location.href = api.sessions.workspaceUrl(sessionId)
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    running.value = null
+  }
+}
+
 function message(e: unknown): string {
   if (e instanceof ApiError) return e.message
   return e instanceof Error ? e.message : String(e)
@@ -266,10 +285,24 @@ onUnmounted(() => window.clearTimeout(timer))
           >
             Account
           </button>
+          <button
+            v-if="session.status !== 'creating' && session.status !== 'cloning'"
+            type="button"
+            :disabled="running !== null"
+            @click="exportWorkspace"
+          >
+            <Spinner v-if="running === 'export'" />Export /workspace
+          </button>
           <button type="button" @click="cheatsheetOpen = true">tmux keys</button>
           <button type="button" @click="router.push({ name: 'sessions' })">All sessions</button>
         </div>
       </div>
+
+      <p v-if="session.status !== 'creating' && session.status !== 'cloning'" class="export-hint">
+        Export /workspace downloads only the <code>/workspace</code> directory, not the home
+        directory or a compose project's volumes, and it is read live: a running session is
+        archived while it is being written to.
+      </p>
 
       <TerminalPane
         v-if="session.status === 'running'"
@@ -435,6 +468,14 @@ a.button {
 
 a.button:hover {
   border-color: var(--accent);
+}
+
+.export-hint {
+  margin: 0;
+  padding: 0.4rem 1.5rem;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-size: 0.82rem;
 }
 
 .terminal {

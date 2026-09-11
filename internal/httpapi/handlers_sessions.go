@@ -519,6 +519,72 @@ func (s *Server) handleDeleteSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// workspaceInfoResponse answers the probe the export button runs before it
+// navigates anywhere. Files and bytes are omitted with exists false: there is
+// nothing to report for a directory that is not there.
+type workspaceInfoResponse struct {
+	Exists bool  `json:"exists"`
+	Files  int   `json:"files,omitempty"`
+	Bytes  int64 `json:"bytes,omitempty"`
+}
+
+// handleWorkspaceInfo answers whether a session's /workspace exists on the
+// host and how big it is, so the browser can warn the user before it ever
+// tries the download — see plans/M3/03-export-workspace.md.
+func (s *Server) handleWorkspaceInfo(w http.ResponseWriter, r *http.Request) {
+	found, ok := s.sessionOr404(w, r)
+	if !ok {
+		return
+	}
+	if found.Status == store.SessionStatusCreating || found.Status == store.SessionStatusCloning {
+		writeError(w, http.StatusConflict, "the workspace is still being prepared")
+		return
+	}
+
+	info, err := s.sessions.WorkspaceInfo(found)
+	if err != nil {
+		s.log.Error("read workspace info", "session", found.ID, "err", err)
+		writeError(w, http.StatusInternalServerError, "cannot read the workspace")
+		return
+	}
+	writeJSON(w, http.StatusOK, workspaceInfoResponse{Exists: info.Exists, Files: info.Files, Bytes: info.Bytes})
+}
+
+// handleExportWorkspace streams a gzip-compressed tar of a session's
+// /workspace. The archive is built from the host directory bind mounted into
+// the container, never from the container itself, so this works for a
+// stopped, failed or gone session exactly as it does for a running one — see
+// plans/M3/03-export-workspace.md for why.
+//
+// Nothing is staged on this server: WriteWorkspaceArchive writes straight
+// into the response, which is why a failure part way through cannot become a
+// different status code. It can only be logged; the truncated, un-trailered
+// gzip stream is what tells the browser the download did not finish.
+func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
+	found, ok := s.sessionOr404(w, r)
+	if !ok {
+		return
+	}
+
+	info, err := s.sessions.WorkspaceInfo(found)
+	if err != nil {
+		s.log.Error("read workspace info", "session", found.ID, "err", err)
+		writeError(w, http.StatusInternalServerError, "cannot read the workspace")
+		return
+	}
+	if !info.Exists {
+		writeError(w, http.StatusNotFound, "this session has no workspace directory")
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/gzip")
+	w.Header().Set("Content-Disposition", `attachment; filename="workspace.tar.gz"`)
+	w.WriteHeader(http.StatusOK)
+	if err := s.sessions.WriteWorkspaceArchive(r.Context(), found, w); err != nil {
+		s.log.Error("export workspace", "session", found.ID, "err", err)
+	}
+}
+
 func (s *Server) reportLifecycleError(w http.ResponseWriter, action string, found *store.Session, err error) {
 	if errors.Is(err, session.ErrNoContainer) {
 		writeError(w, http.StatusConflict, "this session has no container yet")
