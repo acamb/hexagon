@@ -14,6 +14,17 @@ import (
 	"github.com/docker/docker/pkg/jsonmessage"
 )
 
+// ImageSummary is one image as the daemon reports it: not a Hexagon row, but
+// what "docker images" would show. Containers is how many containers, running
+// or not, are based on it — without that count every image looks unused.
+type ImageSummary struct {
+	ID         string
+	Tags       []string
+	Size       int64
+	Created    time.Time
+	Containers int64
+}
+
 // BuildImage builds a single-file build context containing dockerfile and tags
 // the result. Build output is streamed to logs as it arrives.
 func (c *Client) BuildImage(ctx context.Context, dockerfile, tag string, logs io.Writer) error {
@@ -63,6 +74,28 @@ func (c *Client) PullImage(ctx context.Context, ref string, logs io.Writer) erro
 	defer body.Close()
 
 	return decodeProgress(body, logs)
+}
+
+// ListImages returns every image the daemon holds, container counts included:
+// the Engine API computes those unconditionally, so nothing has to be asked for
+// separately.
+func (c *Client) ListImages(ctx context.Context) ([]ImageSummary, error) {
+	images, err := c.cli.ImageList(ctx, image.ListOptions{All: true})
+	if err != nil {
+		return nil, fmt.Errorf("list images: %w", err)
+	}
+
+	out := make([]ImageSummary, 0, len(images))
+	for _, img := range images {
+		out = append(out, ImageSummary{
+			ID:         img.ID,
+			Tags:       img.RepoTags,
+			Size:       img.Size,
+			Created:    time.Unix(img.Created, 0),
+			Containers: img.Containers,
+		})
+	}
+	return out, nil
 }
 
 // RemoveImage deletes a local image by reference or id.

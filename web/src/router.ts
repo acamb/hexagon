@@ -6,6 +6,7 @@ import SessionView from './views/SessionView.vue'
 import SessionsView from './views/SessionsView.vue'
 import SettingsView from './views/SettingsView.vue'
 import SetupView from './views/SetupView.vue'
+import StatsView from './views/StatsView.vue'
 import { load } from './session'
 
 export const router = createRouter({
@@ -13,6 +14,7 @@ export const router = createRouter({
   routes: [
     { path: '/', name: 'sessions', component: SessionsView },
     { path: '/images', name: 'images', component: ImagesView },
+    { path: '/stats', name: 'stats', component: StatsView },
     { path: '/accounts', name: 'accounts', component: AccountsView },
     { path: '/settings', name: 'settings', component: SettingsView },
     { path: '/sessions/:id', name: 'session', component: SessionView },

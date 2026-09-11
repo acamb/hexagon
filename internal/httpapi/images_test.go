@@ -56,6 +56,13 @@ type fakeDocker struct {
 	// container is the far end of the attached exec: writing to it is output
 	// from the container, reading from it is what the user typed.
 	container net.Conn
+
+	images          []dockerx.ImageSummary
+	listImagesErr   error
+	diskUsage       dockerx.DiskUsage
+	diskUsageErr    error
+	pruneContainers dockerx.Pruned
+	pruneErr        error
 }
 
 func newFakeDocker() *fakeDocker { return &fakeDocker{containers: map[string]*fakeContainer{}} }

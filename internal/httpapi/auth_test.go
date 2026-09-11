@@ -171,9 +171,19 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	claudeCredentials := filepath.Join(workspaces, "claude", ".credentials.json")
 	claudeAccountsDir := filepath.Join(workspaces, "claude-accounts")
 
+	// DataDir and WorkspaceRoot back real, existing directories: the Stats page
+	// statfs's them, and a path that is not there yet would fail the read
+	// rather than exercise it.
+	dataDir := t.TempDir()
+	if err := os.MkdirAll(workspaces, 0o700); err != nil {
+		t.Fatalf("create workspaces dir: %v", err)
+	}
+
 	cfg := &config.Config{
 		Addr: "127.0.0.1:0", PublicURL: "http://127.0.0.1:8080", ClaudeCredentials: claudeCredentials,
 		ClaudeAccountsDir: claudeAccountsDir,
+		DataDir:           dataDir,
+		WorkspaceRoot:     workspaces,
 		// Where the first-time wizard would write. Nothing is there until a
 		// test puts it there.
 		ConfigPath: filepath.Join(t.TempDir(), "config.json"),

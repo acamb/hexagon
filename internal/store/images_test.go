@@ -234,3 +234,42 @@ func TestCountSessionsUsingImage(t *testing.T) {
 		t.Errorf("count = %d, want 1", n)
 	}
 }
+
+// AllImageRefs is deliberately not scoped to a user: the Stats page's image
+// prune has to protect every user's images, since a Docker image is a
+// daemon-wide object with no user of its own.
+func TestAllImageRefsIsNotScopedToOneUser(t *testing.T) {
+	ctx := context.Background()
+	s := testStore(t)
+	alice := testUser(t, s, "alice", 1)
+	bob := testUser(t, s, "bob", 2)
+
+	if _, err := s.CreateImage(ctx, &Image{UserID: alice.ID, Name: "alice-base",
+		SourceType: ImageSourceDockerfile, ImageRef: "hexagon/img-1:latest", Status: ImageStatusReady}); err != nil {
+		t.Fatalf("create alice's image: %v", err)
+	}
+	if _, err := s.CreateImage(ctx, &Image{UserID: bob.ID, Name: "bob-base",
+		SourceType: ImageSourceRegistry, RegistryRef: "busybox", ImageRef: "docker.io/library/busybox:latest",
+		Status: ImageStatusReady}); err != nil {
+		t.Fatalf("create bob's image: %v", err)
+	}
+	// A pending image has no ref yet; it must not show up as an empty string.
+	if _, err := s.CreateImage(ctx, &Image{UserID: alice.ID, Name: "alice-pending",
+		SourceType: ImageSourceDockerfile, Status: ImageStatusBuilding}); err != nil {
+		t.Fatalf("create alice's pending image: %v", err)
+	}
+
+	refs, err := s.AllImageRefs(ctx)
+	if err != nil {
+		t.Fatalf("AllImageRefs: %v", err)
+	}
+	want := map[string]bool{"hexagon/img-1:latest": true, "docker.io/library/busybox:latest": true}
+	if len(refs) != len(want) {
+		t.Fatalf("refs = %v, want %v", refs, want)
+	}
+	for _, ref := range refs {
+		if !want[ref] {
+			t.Errorf("unexpected ref %q", ref)
+		}
+	}
+}

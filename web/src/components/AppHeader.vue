@@ -41,6 +41,7 @@ async function signOut() {
     <nav :class="{ open: menuOpen }">
       <RouterLink :to="{ name: 'sessions' }" @click="closeMenu">Sessions</RouterLink>
       <RouterLink :to="{ name: 'images' }" @click="closeMenu">Images</RouterLink>
+      <RouterLink :to="{ name: 'stats' }" @click="closeMenu">Stats</RouterLink>
       <RouterLink :to="{ name: 'accounts' }" @click="closeMenu">Accounts</RouterLink>
       <RouterLink :to="{ name: 'settings' }" @click="closeMenu">Settings</RouterLink>
 

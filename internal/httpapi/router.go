@@ -16,6 +16,7 @@ import (
 	"github.com/andrea/hexagon/internal/claudex"
 	"github.com/andrea/hexagon/internal/config"
 	"github.com/andrea/hexagon/internal/dockerx"
+	"github.com/andrea/hexagon/internal/hostinfo"
 	"github.com/andrea/hexagon/internal/provider"
 	"github.com/andrea/hexagon/internal/session"
 	"github.com/andrea/hexagon/internal/store"
@@ -84,6 +85,9 @@ type Deps struct {
 	// LogLevel is the level Log reads, so the settings page can move it without
 	// a restart. Optional: without it the debug setting waits for one.
 	LogLevel *slog.LevelVar
+	// HostSampler reads the host's CPU, memory and filesystems for the Stats
+	// page. Optional: nil uses hostinfo.NewSampler, the real /proc reader.
+	HostSampler HostSampler
 }
 
 // Server carries the dependencies shared by the handlers.
@@ -108,6 +112,10 @@ type Server struct {
 	logLevel          *slog.LevelVar
 	frontend          fs.FS
 	started           time.Time
+	// hostSampler reads the host's CPU, memory and filesystems for the Stats
+	// page. It is created once and kept on the server, not per request: it
+	// holds the previous CPU sample a percentage is computed against.
+	hostSampler HostSampler
 	// limiter bounds what one address can ask of the routes that answer without
 	// a session.
 	limiter *ipLimiter
@@ -115,6 +123,11 @@ type Server struct {
 
 // New builds the router.
 func New(deps Deps) http.Handler {
+	hostSampler := deps.HostSampler
+	if hostSampler == nil {
+		hostSampler = hostinfo.NewSampler()
+	}
+
 	s := &Server{
 		cfg:               deps.Config,
 		store:             deps.Store,
@@ -136,6 +149,7 @@ func New(deps Deps) http.Handler {
 		logLevel:          deps.LogLevel,
 		frontend:          deps.Frontend,
 		started:           time.Now(),
+		hostSampler:       hostSampler,
 		limiter:           newIPLimiter(deps.Config.PublicRatePerMinute),
 	}
 
@@ -171,6 +185,10 @@ func New(deps Deps) http.Handler {
 		"GET /api/images/{id}/log":      s.handleImageLog,
 		"POST /api/images/{id}/rebuild": s.handleRebuildImage,
 		"DELETE /api/images/{id}":       s.handleDeleteImage,
+
+		"GET /api/stats":                   s.handleGetStats,
+		"POST /api/stats/prune/images":     s.handlePruneImages,
+		"POST /api/stats/prune/containers": s.handlePruneContainers,
 
 		"GET /api/repos":                  s.handleListRepos,
 		"GET /api/accounts":               s.handleListAccounts,

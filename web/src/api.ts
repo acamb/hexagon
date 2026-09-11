@@ -198,6 +198,78 @@ export interface ImageSourceUpdate {
   compose?: string
 }
 
+// The host's CPU, memory and filesystems, for the Stats page. usedPercent is
+// absent on the first read after the server started: hostinfo has only one
+// /proc/stat sample so far, and a percentage against boot would be wrong in a
+// way nobody would notice. available is false on a platform with no /proc, in
+// which case everything else here is absent too.
+export interface HostCPU {
+  cores: number
+  usedPercent?: number
+  load: [number, number, number]
+}
+
+export interface HostMemory {
+  total: number
+  available: number
+}
+
+export interface HostFilesystem {
+  path: string
+  total: number
+  free: number
+}
+
+export interface HostStats {
+  available: boolean
+  cpu?: HostCPU
+  memory?: HostMemory
+  filesystems?: HostFilesystem[]
+}
+
+// What images, containers, volumes and build cache cost on the daemon, in
+// bytes, the way `docker system df` reports it.
+export interface DockerUsage {
+  images: number
+  containers: number
+  volumes: number
+  buildCache: number
+}
+
+// One image as the daemon holds it, not a Hexagon row. inUse means a
+// container, running or stopped, is based on it; registered means a Hexagon
+// image row points at it, which is enough on its own to keep the prune button
+// from touching it, whether or not anything is using it right now.
+export interface DockerImage {
+  id: string
+  tags: string[]
+  size: number
+  created: string
+  containers: number
+  inUse: boolean
+  registered: boolean
+  dangling: boolean
+}
+
+export interface DockerStats {
+  host: string
+  // False when host names a daemon on a different machine from this server:
+  // the host gauges and these figures then describe two different computers.
+  sameMachine: boolean
+  usage: DockerUsage
+  images: DockerImage[]
+}
+
+export interface Stats {
+  host: HostStats
+  docker: DockerStats
+}
+
+export interface PruneResult {
+  removed: number
+  reclaimed: number
+}
+
 export type SessionStatus =
   | 'creating'
   | 'cloning'
@@ -489,6 +561,12 @@ export const api = {
           ? `/api/claude/accounts/${id}/login/terminal?image=${encodeURIComponent(imageId)}`
           : `/api/claude/accounts/${id}/login/terminal`,
     },
+  },
+
+  stats: {
+    get: () => request<Stats>('/stats'),
+    pruneImages: () => request<PruneResult>('/stats/prune/images', { method: 'POST' }),
+    pruneContainers: () => request<PruneResult>('/stats/prune/containers', { method: 'POST' }),
   },
 
   images: {

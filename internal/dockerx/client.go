@@ -37,6 +37,16 @@ type API interface {
 	RemoveImage(ctx context.Context, ref string) error
 	// InspectImage returns the content-addressable id ref currently resolves to.
 	InspectImage(ctx context.Context, ref string) (string, error)
+	// ListImages returns every image the daemon holds, with its size and the
+	// number of containers based on it.
+	ListImages(ctx context.Context) ([]ImageSummary, error)
+	// DiskUsage reports what images, containers, volumes and build cache cost
+	// on the daemon, the way `docker system df` does.
+	DiskUsage(ctx context.Context) (DiskUsage, error)
+	// PruneContainers removes every stopped container the daemon holds except
+	// Hexagon's own, in one call: the exclusion is a label filter, not a list
+	// this package enumerates and deletes by hand.
+	PruneContainers(ctx context.Context) (Pruned, error)
 
 	// AttachExec runs an interactive command in a container and returns the
 	// attached streams.

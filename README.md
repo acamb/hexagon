@@ -143,6 +143,30 @@ shared by all of them.
 Unlike the ports above, this is a creation-time choice and stays one: the mount is part of
 the container, and there is no equivalent of the rebuild for it.
 
+### Stats
+
+The **Stats** page answers the question an operator asks before starting another session: is
+there room. Three gauges at the top show the CPU, memory and disk of the machine the server
+process runs on; the CPU gauge shows the load average until a second reading lets it compute a
+percentage. Below that is the daemon's own accounting — the same figures `docker system df`
+reports — and the full list of images Docker holds, not just the ones Hexagon knows about,
+sorted largest first, each tagged **In use** when a container is based on it and
+**Registered** when a row on the Images page points at it.
+
+Two buttons reclaim disk space, each behind a confirmation naming what it will remove:
+
+- **Prune unused images** removes an image only if no container is based on it *and* no image
+  row points at it. An idle image that is still registered is left alone on purpose — it is
+  what a stopped session would otherwise have to rebuild from scratch to start again.
+- **Prune stopped containers** removes every stopped container the daemon holds except the
+  ones Hexagon manages, through a single filtered call — nothing Hexagon created can be
+  touched by this button.
+
+Neither button touches named volumes or the build cache, both of which are reported above them
+for the same reason as everything else on the page: a size is worth showing even when nothing
+here offers to reclaim it. Volumes hold a session's own data, and the build cache is what
+makes the next build fast.
+
 ### Accounts
 
 ![The Accounts page: the connected providers, and the list of Claude accounts sessions can run

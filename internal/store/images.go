@@ -193,6 +193,31 @@ func (s *Store) CountSessionsUsingImage(ctx context.Context, imageID string) (in
 	return n, nil
 }
 
+// AllImageRefs returns the image_ref of every image row, across every user.
+//
+// Deliberately not scoped to a user: it feeds the Stats page's image prune,
+// which protects a Docker image, a daemon-wide object with no user of its own.
+// Scoping this to the caller would let one user's prune delete a ref another
+// user's row still points at — the one case where the unscoped query is the
+// safe choice rather than a bypass of it.
+func (s *Store) AllImageRefs(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT image_ref FROM images WHERE image_ref != ''`)
+	if err != nil {
+		return nil, fmt.Errorf("list all image refs: %w", err)
+	}
+	defer rows.Close()
+
+	refs := []string{}
+	for rows.Next() {
+		var ref string
+		if err := rows.Scan(&ref); err != nil {
+			return nil, err
+		}
+		refs = append(refs, ref)
+	}
+	return refs, rows.Err()
+}
+
 // scanner is satisfied by both *sql.Row and *sql.Rows.
 type scanner interface {
 	Scan(dest ...any) error
