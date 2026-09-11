@@ -251,6 +251,7 @@ export interface RestoreInspection {
   sourceType: ImageSource
   dockerfile?: string
   compose?: string
+  registryRef?: string
   hasImage: boolean
   imageSize?: number
   nameExists: boolean
@@ -677,6 +678,10 @@ export const api = {
   transfers: {
     list: () => request<Transfer[]>('/transfers'),
     remove: (id: string) => request<null>(`/transfers/${id}`, { method: 'DELETE' }),
+    // Reads a staged transfer's spec without creating or changing anything —
+    // what opens the restore panel from a row already on the server, backup or
+    // unimported upload alike.
+    inspect: (id: string) => request<RestoreInspection>(`/transfers/${id}/inspection`),
     // A plain navigation, in the shape of api.claude.loginTerminal: `<a
     // download>` rather than a fetch into memory, which for a multi-gigabyte
     // archive is the whole point.

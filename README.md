@@ -166,6 +166,13 @@ A staged upload and a finished backup are kept for 24 hours and then removed aut
 download or import what you need before then. Backups and restores in progress or waiting to
 be collected both show up in the same transfers list.
 
+Every row in that list that holds an archive — a finished backup, or an upload nobody
+imported — also has a **Restore** button, so a backup already on the server can be restored
+without downloading it and uploading it back. It opens the same panel, with the same two
+choices, and a name field prefilled from the archive's own name: leave it as it is to restore
+into the image it was taken from (you are asked to confirm the overwrite), or change it to
+bring the backup back as a copy beside the original.
+
 ### Published ports
 
 ![The new-session options: what to start, which token to pass, VS Code, and the published

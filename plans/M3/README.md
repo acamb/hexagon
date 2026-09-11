@@ -9,8 +9,9 @@ as described in [AGENTS.md](../../AGENTS.md).
 | 1 | Stats page | [01-stats-page.md](01-stats-page.md) | to do |
 | 2 | Backup and restore of images | [02-image-backup-restore.md](02-image-backup-restore.md) | done |
 | 3 | Export workspace | [03-export-workspace.md](03-export-workspace.md) | done |
+| 4 | Restore loaded backups | [04-restore-loaded-backups.md](04-restore-loaded-backups.md) | to do |
 
-M3's statement numbers nothing: its three points are headings, where M1 and M2
+M3's statement numbers nothing: its four points are headings, where M1 and M2
 used a numbered list. The numbers above are this index's, assigned in the order
 the statement makes them, and the filenames follow from them.
 
@@ -37,6 +38,12 @@ request: the archive is built from the host directory that is bind mounted at
 `/workspace` rather than read out of the container, so the export still works
 for a session that is stopped, failed or `gone`. The reasoning is in the
 analysis, under "Reading of the request".
+
+Point 4 was added after point 2 was done, and closes a gap it left open: a
+backup, or an upload nobody imported, is a restore archive already on the server,
+and the only way to restore it was to download it and upload it again. It adds
+no transfer machinery. It is one read-only route into point 2's existing restore
+panel, plus the import accepting a backup row as well as an upload.
 
 Point 1 also records one deliberate exception to a rule AGENTS.md calls
 non-optional. The query that decides which images the prune must protect is not

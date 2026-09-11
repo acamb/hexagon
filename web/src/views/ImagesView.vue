@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import AppHeader from '../components/AppHeader.vue'
 import Notice from '../components/Notice.vue'
@@ -98,13 +98,35 @@ const transfersInFlight = computed(() =>
 )
 const removingTransfer = ref<string | null>(null)
 
-// Restoring: a file is uploaded and inspected, then the reader chooses what to
-// do with what came back.
+// Restoring: a fresh upload or an already-staged transfer is inspected, then
+// the reader chooses what to do with what came back. The name the panel
+// offers starts as the manifest's own, but it is edited in the panel, not
+// read from the inspection again — that is what lets the same backup come
+// back as a copy beside the image it was taken from.
 const restoreFileInput = ref<HTMLInputElement | null>(null)
 const restoring = ref(false)
 const restoreInspection = ref<RestoreInspection | null>(null)
+const restoreName = ref('')
 const restoreOverwriteConfirm = ref(false)
 const importing = ref(false)
+// Which row's own Restore button is loading its inspection, separate from
+// `restoring`, which drives the header upload button's spinner.
+const inspectingId = ref<string | null>(null)
+const restorePanelEl = ref<HTMLElement | null>(null)
+
+// Whether the typed name collides with one of the caller's images, decided
+// live against the current list rather than the inspection's own nameExists —
+// that answer is only ever about the manifest's name, at the moment of the
+// upload.
+const restoreNameExists = computed(() =>
+  images.value.some((i) => i.name === restoreName.value.trim()),
+)
+
+// Retyping the name after seeing the overwrite confirmation must not carry the
+// confirmation over to a different, unconfirmed image.
+watch(restoreName, () => {
+  restoreOverwriteConfirm.value = false
+})
 
 function formatBytes(bytes: number): string {
   if (bytes <= 0) return '0 B'
@@ -179,11 +201,35 @@ async function onRestoreFileChosen(e: Event) {
   restoreInspection.value = null
   restoreOverwriteConfirm.value = false
   try {
-    restoreInspection.value = await api.images.restore(file)
+    const insp = await api.images.restore(file)
+    restoreInspection.value = insp
+    restoreName.value = insp.name
   } catch (e) {
     error.value = message(e)
   } finally {
     restoring.value = false
+  }
+}
+
+// Opens the same panel from a row already on the server — a backup, or a
+// restore upload nobody imported — instead of from a fresh upload: this is
+// the GET that reads the archive's spec without creating or changing
+// anything.
+async function restoreFromTransfer(t: Transfer) {
+  inspectingId.value = t.id
+  error.value = null
+  restoreInspection.value = null
+  restoreOverwriteConfirm.value = false
+  try {
+    const insp = await api.transfers.inspect(t.id)
+    restoreInspection.value = insp
+    restoreName.value = insp.name
+    await nextTick()
+    restorePanelEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  } catch (e) {
+    error.value = message(e)
+  } finally {
+    inspectingId.value = null
   }
 }
 
@@ -193,24 +239,26 @@ async function onRestoreFileChosen(e: Event) {
 function loadRestoredFilesIntoForm() {
   const insp = restoreInspection.value
   if (!insp) return
-  name.value = insp.name
+  name.value = restoreName.value.trim()
   sourceType.value = insp.sourceType
   dockerfile.value = insp.dockerfile ?? ''
   compose.value = insp.compose ?? ''
+  registryRef.value = insp.registryRef ?? ''
   cancelRestore()
 }
 
 async function importRestoredImage() {
   const insp = restoreInspection.value
   if (!insp) return
-  if (insp.nameExists && !restoreOverwriteConfirm.value) {
+  const overwrite = restoreNameExists.value
+  if (overwrite && !restoreOverwriteConfirm.value) {
     restoreOverwriteConfirm.value = true
     return
   }
   importing.value = true
   error.value = null
   try {
-    await api.images.import(insp.id, { name: insp.name, overwrite: insp.nameExists })
+    await api.images.import(insp.id, { name: restoreName.value.trim(), overwrite })
     cancelRestore()
     await refresh()
     await refreshTransfers()
@@ -224,6 +272,7 @@ async function importRestoredImage() {
 function cancelRestore() {
   restoreInspection.value = null
   restoreOverwriteConfirm.value = false
+  restoreName.value = ''
 }
 
 async function refresh() {
@@ -386,19 +435,26 @@ onUnmounted(() => window.clearInterval(timer))
 
     <Notice v-if="error" kind="error" :message="error" class="alert" @dismiss="error = null" />
 
-    <div v-if="restoreInspection" class="restore-panel">
+    <div v-if="restoreInspection" ref="restorePanelEl" class="restore-panel">
       <h2>Restoring "{{ restoreInspection.name }}"</h2>
       <p class="hint">
         Source: {{ restoreInspection.sourceType }}<template v-if="restoreInspection.hasImage">
           · image export included, {{ formatBytes(restoreInspection.imageSize ?? 0) }}</template>
       </p>
 
+      <label class="field">
+        <span>Name</span>
+        <input v-model="restoreName" required maxlength="64" />
+      </label>
+
       <div v-if="!restoreOverwriteConfirm" class="restore-choices">
-        <button type="button" @click="loadRestoredFilesIntoForm">Load the files into the form</button>
+        <button type="button" :disabled="!restoreName.trim()" @click="loadRestoredFilesIntoForm">
+          Load the files into the form
+        </button>
         <button
           v-if="restoreInspection.hasImage"
           type="button"
-          :disabled="importing"
+          :disabled="importing || !restoreName.trim()"
           @click="importRestoredImage"
         >
           <Spinner v-if="importing" />Import the image
@@ -408,7 +464,7 @@ onUnmounted(() => window.clearInterval(timer))
 
       <div v-else class="restore-overwrite">
         <p>
-          An image named "{{ restoreInspection.name }}" already exists. Importing replaces its
+          An image named "{{ restoreName }}" already exists. Importing replaces its
           Dockerfile, compose file and image with this backup's. Existing sessions keep their current
           container until it is rebuilt.
         </p>
@@ -612,6 +668,14 @@ onUnmounted(() => window.clearInterval(timer))
               >
                 Download{{ t.size ? ` (${formatBytes(t.size)})` : '' }}
               </a>
+              <button
+                v-if="t.status === 'ready'"
+                type="button"
+                :disabled="inspectingId === t.id"
+                @click="restoreFromTransfer(t)"
+              >
+                <Spinner v-if="inspectingId === t.id" />Restore
+              </button>
               <button
                 type="button"
                 class="danger"

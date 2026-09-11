@@ -196,10 +196,11 @@ func New(deps Deps) http.Handler {
 		// /api/images/backups/{id}" would both match "/api/images/backups/log"
 		// and net/http's ServeMux refuses to register two patterns neither of
 		// which is more specific than the other.
-		"GET /api/transfers":           s.handleListTransfers,
-		"GET /api/transfers/{id}":      s.handleGetTransfer,
-		"GET /api/transfers/{id}/file": s.handleDownloadTransfer,
-		"DELETE /api/transfers/{id}":   s.handleDeleteTransfer,
+		"GET /api/transfers":                 s.handleListTransfers,
+		"GET /api/transfers/{id}":            s.handleGetTransfer,
+		"GET /api/transfers/{id}/file":       s.handleDownloadTransfer,
+		"GET /api/transfers/{id}/inspection": s.handleInspectTransfer,
+		"DELETE /api/transfers/{id}":         s.handleDeleteTransfer,
 
 		"GET /api/stats":                   s.handleGetStats,
 		"POST /api/stats/prune/images":     s.handlePruneImages,

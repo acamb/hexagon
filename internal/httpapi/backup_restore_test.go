@@ -223,12 +223,15 @@ func TestTransfersAreScopedToTheirOwner(t *testing.T) {
 	if got := env.do(http.MethodGet, "/api/transfers/"+theirs.ID+"/file", nil).StatusCode; got != http.StatusNotFound {
 		t.Errorf("GET a foreign transfer's file = %d, want 404", got)
 	}
+	if got := env.do(http.MethodGet, "/api/transfers/"+theirs.ID+"/inspection", nil).StatusCode; got != http.StatusNotFound {
+		t.Errorf("GET a foreign transfer's inspection = %d, want 404", got)
+	}
 }
 
 func TestBackupEndpointsRequireASession(t *testing.T) {
 	env := newTestEnv(t, "alice")
 
-	for _, path := range []string{"/api/transfers", "/api/transfers/x", "/api/transfers/x/file"} {
+	for _, path := range []string{"/api/transfers", "/api/transfers/x", "/api/transfers/x/file", "/api/transfers/x/inspection"} {
 		if got := env.do(http.MethodGet, path, nil).StatusCode; got != http.StatusUnauthorized {
 			t.Errorf("GET %s without a session = %d, want 401", path, got)
 		}
@@ -425,4 +428,199 @@ func TestImportWhoseLoadFailsLeavesTheImageFailed(t *testing.T) {
 	if tr.Status != store.TransferStatusReady {
 		t.Errorf("transfer status after a failed import = %q, want ready: the staged archive is still good", tr.Status)
 	}
+}
+
+// --- Inspecting and restoring a staged transfer: M3.4 ---
+
+func TestInspectTransferAnswersAReadyBackupsSpec(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	img := env.readyImage("base")
+
+	var created transferResponse
+	env.decode(env.postJSON("/api/images/"+img.ID+"/backup", `{"withSpec":true,"withImage":true}`), &created)
+	env.waitForTransferStatus(created.ID, store.TransferStatusReady)
+
+	var insp restoreInspectionResponse
+	env.decode(env.do(http.MethodGet, "/api/transfers/"+created.ID+"/inspection", nil), &insp)
+	if insp.Name != "base" || insp.SourceType != "dockerfile" || !insp.HasImage {
+		t.Errorf("inspection = %+v", insp)
+	}
+	if !strings.Contains(insp.Dockerfile, "busybox") {
+		t.Errorf("dockerfile = %q", insp.Dockerfile)
+	}
+}
+
+// A registry image has no Dockerfile to lose, so it is the image most likely
+// to be backed up spec-only, and a spec-only registry backup is nothing but
+// the reference: the inspection has to carry it.
+func TestInspectTransferCarriesTheRegistryReference(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	var img imageResponse
+	env.decode(env.postJSON("/api/images", `{"name":"pulled","sourceType":"registry","registryRef":"node:22-bookworm-slim"}`), &img)
+	env.waitForImageStatus(img.ID, store.ImageStatusReady)
+
+	var created transferResponse
+	env.decode(env.postJSON("/api/images/"+img.ID+"/backup", `{"withSpec":true,"withImage":false}`), &created)
+	env.waitForTransferStatus(created.ID, store.TransferStatusReady)
+
+	var insp restoreInspectionResponse
+	env.decode(env.do(http.MethodGet, "/api/transfers/"+created.ID+"/inspection", nil), &insp)
+	if insp.RegistryRef != "node:22-bookworm-slim" {
+		t.Errorf("registryRef = %q, want the pulled reference", insp.RegistryRef)
+	}
+}
+
+// A backup still being written has no archive to read yet.
+func TestInspectTransferRefusedWhileNotReady(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	now := time.Now()
+	created, err := env.store.CreateTransfer(context.Background(), &store.ImageTransfer{
+		UserID: env.userID(), Direction: store.TransferDirectionBackup, ImageID: "img-x", Name: "base",
+		Status: store.TransferStatusRunning, CreatedAt: now, ExpiresAt: now.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("CreateTransfer: %v", err)
+	}
+
+	resp := env.do(http.MethodGet, "/api/transfers/"+created.ID+"/inspection", nil)
+	if resp.StatusCode != http.StatusConflict {
+		t.Errorf("status = %d, want 409", resp.StatusCode)
+	}
+}
+
+// Importing a backup over the image it was taken from is a restore in place:
+// same id, same local tag, and the tag the load just applied must not be the
+// one this removes as the "foreign" tag left behind by the load.
+func TestImportAcceptsABackupOverItsOwnSourceImage(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	img := env.readyImage("base")
+	originalRef := img.ImageRef
+
+	var created transferResponse
+	env.decode(env.postJSON("/api/images/"+img.ID+"/backup", `{"withSpec":true,"withImage":true}`), &created)
+	env.waitForTransferStatus(created.ID, store.TransferStatusReady)
+
+	resp := env.postJSON("/api/images/restore/"+created.ID+"/import", `{"name":"base","overwrite":true}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+	var imported imageResponse
+	env.decode(resp, &imported)
+	if imported.ID != img.ID {
+		t.Errorf("imported id = %q, want the same image kept: %q", imported.ID, img.ID)
+	}
+
+	ready := env.waitForImageStatus(imported.ID, store.ImageStatusReady)
+	if ready.ImageRef != originalRef {
+		t.Errorf("image ref = %q, want the same local tag kept: %q", ready.ImageRef, originalRef)
+	}
+	for _, ref := range env.docker.removed {
+		if ref == originalRef {
+			t.Errorf("removed = %v, must not remove the tag the load just applied", env.docker.removed)
+		}
+	}
+
+	tr, err := env.store.TransferByID(context.Background(), env.userID(), created.ID)
+	if err != nil {
+		t.Fatalf("TransferByID: %v", err)
+	}
+	if tr.ImageID != img.ID {
+		t.Errorf("backup row's imageId = %q, want the source image %q kept", tr.ImageID, img.ID)
+	}
+}
+
+// Restoring a backup under a new name must not untag the image it was taken
+// from. The manifest's ImageRef is that image's own local tag, not a foreign
+// one: only a restore from elsewhere can safely lose the tag it arrived
+// under after retagging.
+func TestImportingABackupUnderANewNameKeepsTheSourceImageIntact(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	img := env.readyImage("base")
+	sourceRef := img.ImageRef
+
+	var created transferResponse
+	env.decode(env.postJSON("/api/images/"+img.ID+"/backup", `{"withSpec":true,"withImage":true}`), &created)
+	env.waitForTransferStatus(created.ID, store.TransferStatusReady)
+
+	resp := env.postJSON("/api/images/restore/"+created.ID+"/import", `{"name":"base-copy","overwrite":false}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+	var imported imageResponse
+	env.decode(resp, &imported)
+	if imported.ID == img.ID {
+		t.Fatalf("import under a new name reused the source image's id")
+	}
+	env.waitForImageStatus(imported.ID, store.ImageStatusReady)
+
+	source, err := env.store.ImageByID(context.Background(), env.userID(), img.ID)
+	if err != nil {
+		t.Fatalf("ImageByID: %v", err)
+	}
+	if source.ImageRef != sourceRef || source.Status != store.ImageStatusReady {
+		t.Errorf("source image = %+v, want it untouched at %q", source, sourceRef)
+	}
+	for _, ref := range env.docker.removed {
+		if ref == sourceRef {
+			t.Errorf("removed = %v, must not untag the still-live source image %q", env.docker.removed, sourceRef)
+		}
+	}
+
+	tr, err := env.store.TransferByID(context.Background(), env.userID(), created.ID)
+	if err != nil {
+		t.Fatalf("TransferByID: %v", err)
+	}
+	if tr.ImageID != img.ID {
+		t.Errorf("backup row's imageId = %q, want the source image %q kept", tr.ImageID, img.ID)
+	}
+}
+
+// A spec-only backup has no image.tar.gz to import, whichever direction asked
+// for the archive.
+func TestImportingASpecOnlyBackupIsRefused(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	img := env.readyImage("base")
+
+	var created transferResponse
+	env.decode(env.postJSON("/api/images/"+img.ID+"/backup", `{"withSpec":true,"withImage":false}`), &created)
+	env.waitForTransferStatus(created.ID, store.TransferStatusReady)
+
+	resp := env.postJSON("/api/images/restore/"+created.ID+"/import", `{"name":"base-copy","overwrite":false}`)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+// A restore upload the reader cancelled, or whose import failed, is staged and
+// good for 24 hours: it can be inspected again from the transfers list and
+// imported later, without uploading again.
+func TestAnUploadNeverImportedCanBeInspectedAndImportedLater(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	raw := fullArchive(t, "uploaded", "some/other:latest", []byte("layer-bytes"))
+	var insp restoreInspectionResponse
+	env.decode(env.postRaw("/api/images/restore", raw, map[string]string{"Content-Type": "application/gzip"}), &insp)
+
+	var again restoreInspectionResponse
+	env.decode(env.do(http.MethodGet, "/api/transfers/"+insp.ID+"/inspection", nil), &again)
+	if again.Name != "uploaded" || !again.HasImage {
+		t.Errorf("re-inspection = %+v", again)
+	}
+
+	resp := env.postJSON("/api/images/restore/"+insp.ID+"/import", `{"name":"uploaded","overwrite":false}`)
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("status = %d, want 202", resp.StatusCode)
+	}
+	var imported imageResponse
+	env.decode(resp, &imported)
+	env.waitForImageStatus(imported.ID, store.ImageStatusReady)
 }

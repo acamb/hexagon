@@ -35,10 +35,37 @@ type restoreInspectionResponse struct {
 	SourceType      string `json:"sourceType"`
 	Dockerfile      string `json:"dockerfile,omitempty"`
 	Compose         string `json:"compose,omitempty"`
+	RegistryRef     string `json:"registryRef,omitempty"`
 	HasImage        bool   `json:"hasImage"`
 	ImageSize       int64  `json:"imageSize,omitempty"`
 	NameExists      bool   `json:"nameExists"`
 	ExistingImageID string `json:"existingImageId,omitempty"`
+}
+
+// newRestoreInspectionResponse builds the response both the upload and the
+// inspection route answer with, so the two ways into the restore panel cannot
+// drift apart: the manifest's own fields, plus whether the name it carries is
+// already claimed by one of the caller's images.
+func (s *Server) newRestoreInspectionResponse(ctx context.Context, userID, transferID string, insp backup.Inspection) restoreInspectionResponse {
+	nameExists, existingID := false, ""
+	switch existing, err := s.store.ImageByName(ctx, userID, insp.Name); {
+	case err == nil:
+		nameExists, existingID = true, existing.ID
+	case !errors.Is(err, store.ErrNotFound):
+		s.log.Error("check existing image name", "err", err)
+	}
+	return restoreInspectionResponse{
+		ID:              transferID,
+		Name:            insp.Name,
+		SourceType:      insp.SourceType,
+		Dockerfile:      insp.Dockerfile,
+		Compose:         insp.Compose,
+		RegistryRef:     insp.RegistryRef,
+		HasImage:        insp.HasImage,
+		ImageSize:       insp.ImageSize,
+		NameExists:      nameExists,
+		ExistingImageID: existingID,
+	}
 }
 
 // handleRestoreUpload stages an uploaded backup archive under DataDir,
@@ -114,25 +141,30 @@ func (s *Server) handleRestoreUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	nameExists, existingID := false, ""
-	switch existing, err := s.store.ImageByName(r.Context(), s.user(r).ID, insp.Name); {
-	case err == nil:
-		nameExists, existingID = true, existing.ID
-	case !errors.Is(err, store.ErrNotFound):
-		s.log.Error("check existing image name", "err", err)
+	writeJSON(w, http.StatusOK, s.newRestoreInspectionResponse(r.Context(), s.user(r).ID, created.ID, insp))
+}
+
+// handleInspectTransfer answers what a staged transfer's archive holds,
+// without creating or changing anything: it is what lets a backup already
+// sitting on the server, or a restore upload nobody imported, open the same
+// panel a fresh upload does, no download-and-reupload required. A GET, since
+// it changes nothing.
+func (s *Server) handleInspectTransfer(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.transferOr404(w, r)
+	if !ok {
+		return
+	}
+	if t.Status != store.TransferStatusReady || t.Path == "" {
+		writeError(w, http.StatusConflict, "this transfer is not staged yet")
+		return
 	}
 
-	writeJSON(w, http.StatusOK, restoreInspectionResponse{
-		ID:              created.ID,
-		Name:            insp.Name,
-		SourceType:      insp.SourceType,
-		Dockerfile:      insp.Dockerfile,
-		Compose:         insp.Compose,
-		HasImage:        insp.HasImage,
-		ImageSize:       insp.ImageSize,
-		NameExists:      nameExists,
-		ExistingImageID: existingID,
-	})
+	insp, err := inspectArchive(t.Path)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "cannot read the staged archive: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, s.newRestoreInspectionResponse(r.Context(), s.user(r).ID, t.ID, insp))
 }
 
 // stageUpload writes the request body to path, bounded to declared bytes: a
@@ -189,19 +221,16 @@ type importRequest struct {
 	Overwrite bool   `json:"overwrite"`
 }
 
-// handleImportTransfer imports a staged restore's image: loads it into the
-// daemon, retags it, and links the row that just went ready back to the
-// transfer. The request returns as soon as the image row exists; progress is
-// followed through the image's own log, exactly as a build's is — see
+// handleImportTransfer imports a staged transfer's image, restore or backup
+// alike: loads it into the daemon, retags it, and — for a restore — links the
+// row that just went ready back to the transfer. The request returns as soon
+// as the image row exists; progress is followed through the image's own log,
+// exactly as a build's is — see
 // plans/M3/02-image-backup-restore.md for why this reuses "building" rather
 // than adding a status.
 func (s *Server) handleImportTransfer(w http.ResponseWriter, r *http.Request) {
 	t, ok := s.transferOr404(w, r)
 	if !ok {
-		return
-	}
-	if t.Direction != store.TransferDirectionRestore {
-		writeError(w, http.StatusBadRequest, "not a restore")
 		return
 	}
 	if t.Status != store.TransferStatusReady {
@@ -334,8 +363,17 @@ func (s *Server) startImportImage(t *store.ImageTransfer, img *store.Image, sour
 			s.log.Error("record image import result", "id", img.ID, "err", err)
 		}
 		if status == store.ImageStatusReady {
-			if err := s.store.FinishTransfer(finishCtx, t.ID, store.TransferStatusReady, img.ID, t.Path, t.Size, ""); err != nil {
-				s.log.Error("link restore transfer to image", "id", t.ID, "err", err)
+			// A restore row's image_id is the image the import produced, so it
+			// follows the row. A backup row's image_id is the image the backup was
+			// taken from, and it can be restored more than once under different
+			// names — leaving it empty here leaves the column alone, through
+			// FinishTransfer's own COALESCE.
+			linkedImageID := ""
+			if t.Direction == store.TransferDirectionRestore {
+				linkedImageID = img.ID
+			}
+			if err := s.store.FinishTransfer(finishCtx, t.ID, store.TransferStatusReady, linkedImageID, t.Path, t.Size, ""); err != nil {
+				s.log.Error("link transfer to image", "id", t.ID, "err", err)
 			}
 		}
 		// A failed import leaves the transfer row alone: the staged archive is
@@ -346,9 +384,13 @@ func (s *Server) startImportImage(t *store.ImageTransfer, img *store.Image, sour
 }
 
 // importImage loads the staged archive's image.tar.gz, retags the reference it
-// names as the row's own local tag, and removes the foreign tag — guarded
-// against the case where it is already the tag being applied, which would
-// otherwise delete what was just loaded.
+// names as the row's own local tag, and removes the foreign tag left behind by
+// the load — guarded against two cases where that tag is not foreign at all:
+// it is already the tag being applied, which would otherwise delete what was
+// just loaded, or it is another image row's own live reference, which a
+// restore uploaded from elsewhere can never collide with but a backup made on
+// this instance can. A backup's manifest names its source image's own tag, and
+// restoring it under a new name must not untag the image it was taken from.
 func (s *Server) importImage(ctx context.Context, t *store.ImageTransfer, img *store.Image, sourceRef string, logs io.Writer) error {
 	if sourceRef == "" {
 		return errors.New("backup manifest has no image reference")
@@ -367,12 +409,34 @@ func (s *Server) importImage(ctx context.Context, t *store.ImageTransfer, img *s
 		return fmt.Errorf("tag imported image: %w", err)
 	}
 	if sourceRef != img.ImageRef {
-		if err := s.docker.RemoveImage(ctx, sourceRef); err != nil {
-			s.log.Warn("remove the foreign tag left by a restore", "ref", sourceRef, "err", err)
+		switch claimed, err := s.refClaimedByAnImage(ctx, sourceRef); {
+		case err != nil:
+			s.log.Warn("check whether the foreign tag is claimed", "ref", sourceRef, "err", err)
+		case !claimed:
+			if err := s.docker.RemoveImage(ctx, sourceRef); err != nil {
+				s.log.Warn("remove the foreign tag left by a restore", "ref", sourceRef, "err", err)
+			}
 		}
 	}
 	if _, err := s.docker.InspectImage(ctx, img.ImageRef); err != nil {
 		return fmt.Errorf("inspect imported image: %w", err)
 	}
 	return nil
+}
+
+// refClaimedByAnImage reports whether ref is some image row's own local
+// reference. Unscoped across every user, the same as the prune this reuses
+// AllImageRefs from: whether a tag is safe to remove is a daemon-wide
+// question, not one this caller's rows alone can answer.
+func (s *Server) refClaimedByAnImage(ctx context.Context, ref string) (bool, error) {
+	refs, err := s.store.AllImageRefs(ctx)
+	if err != nil {
+		return false, err
+	}
+	for _, r := range refs {
+		if r == ref {
+			return true, nil
+		}
+	}
+	return false, nil
 }
