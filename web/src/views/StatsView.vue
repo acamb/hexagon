@@ -257,6 +257,10 @@ onUnmounted(() => window.clearInterval(timer))
       </table>
       <p v-else class="hint">No images on the daemon.</p>
     </section>
+
+    <section v-if="!stats">
+      <Spinner></Spinner>Loading stats...
+    </section>
   </main>
 </template>
 
