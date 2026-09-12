@@ -1,3 +1,7 @@
 2026-09-04 - v0.2.1:
     - fixed session rebuild to keep the same underlying image
     - better mobile experience
+2026-09-12 - v0.3.0:
+    - stats page
+    - Backup / restore images
+    - Backup a workspace in a session
