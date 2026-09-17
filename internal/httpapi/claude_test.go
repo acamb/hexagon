@@ -711,3 +711,24 @@ func TestClaudeAccountAffectsSessionsCreatedAfterwards(t *testing.T) {
 		t.Error("no session container carried the default claude account")
 	}
 }
+
+// An image prune, here or from a terminal, can take the default image away
+// after it was built. The login that discovers it gone is the one that orders
+// it built again: the user has no button for an image that is not on their
+// Images page, and used to be left with the daemon's "No such image".
+func TestClaudeLoginRebuildsTheDefaultImageWhenItIsGone(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	env.docker.createErr = dockerx.ErrImageNotFound
+
+	_, resp, err := env.dialClaudeLogin("", testOrigin)
+	if err == nil {
+		t.Fatal("the handshake succeeded with no image to run in")
+	}
+	if resp == nil || resp.StatusCode != http.StatusConflict {
+		t.Errorf("status = %v, want 409", statusOf(resp))
+	}
+	if got := env.defaultImage.invalidations(); got != 1 {
+		t.Errorf("invalidations = %d, want 1: a missing default image has to be built again", got)
+	}
+}

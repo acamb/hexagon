@@ -187,3 +187,35 @@ func testUser2(t *testing.T, env *testEnv) string {
 	}
 	return user.ID
 }
+
+// The image Hexagon builds for itself has no row anywhere, and being idle is
+// its normal state — so an unprotected prune removed it, and the next browser
+// login failed with the daemon's "No such image".
+func TestPruneImagesLeavesTheDefaultImage(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	env.docker.setImages([]dockerx.ImageSummary{
+		{ID: "sha256:default", Tags: []string{"hexagon-default:test"}, Size: 100},
+		{ID: "sha256:unused", Tags: []string{"stale:latest"}, Size: 40},
+	})
+
+	var result pruneResponse
+	env.decode(env.postJSON("/api/stats/prune/images", ""), &result)
+	if result.Removed != 1 || result.Reclaimed != 40 {
+		t.Errorf("result = %+v, want {Removed:1 Reclaimed:40}", result)
+	}
+	if contains(env.docker.removedImages(), "sha256:default") {
+		t.Error("the prune removed the default image, which nothing else can build back")
+	}
+
+	// And the page says so before the button is pressed: what prune protects and
+	// what the Stats list offers to remove have to be the same set.
+	var stats statsResponse
+	env.decode(env.do(http.MethodGet, "/api/stats", nil), &stats)
+	for _, img := range stats.Docker.Images {
+		if img.ID == "sha256:default" && !img.Registered {
+			t.Error("the default image is listed as removable, but the prune keeps it")
+		}
+	}
+}

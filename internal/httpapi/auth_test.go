@@ -77,14 +77,36 @@ type testEnv struct {
 // that cares sets the state; every other one gets an image that is ready, which
 // is what a server that has been up for a minute has.
 type fakeDefaultImage struct {
-	mu    sync.Mutex
-	state claudex.State
+	mu          sync.Mutex
+	state       claudex.State
+	invalidated int
 }
 
 func (f *fakeDefaultImage) State() claudex.State {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.state
+}
+
+func (f *fakeDefaultImage) Ref() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.state.Ref
+}
+
+// Invalidate records that the image was reported missing; the real one starts a
+// build here, which at this level is exactly what a test wants to observe.
+func (f *fakeDefaultImage) Invalidate() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.invalidated++
+	f.state = claudex.State{Ref: f.state.Ref, Building: true}
+}
+
+func (f *fakeDefaultImage) invalidations() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.invalidated
 }
 
 func (f *fakeDefaultImage) set(state claudex.State) {

@@ -342,3 +342,39 @@ func (s *slowDocker) BuildImage(ctx context.Context, dockerfile, tag string, log
 	<-s.block
 	return s.fakeDocker.BuildImage(ctx, dockerfile, tag, logs)
 }
+
+// An image prune can take the image away between the build that made it and the
+// call that needs it. The call that finds it gone starts the build again rather
+// than passing the daemon's "No such image" on: nothing else ever would, and the
+// user has no way to ask for this image themselves.
+func TestContainerRebuildsTheImageWhenItHasBeenRemoved(t *testing.T) {
+	docker := &fakeDocker{}
+	image := readyImage(t, docker)
+	runner := NewContainer(docker, image, "1000:1000", "", "", slog.New(slog.DiscardHandler))
+
+	docker.mu.Lock()
+	docker.createErr = dockerx.ErrImageNotFound
+	docker.mu.Unlock()
+
+	err := runner.Check(context.Background(), Credential{})
+	if err == nil {
+		t.Fatal("Check succeeded with an image the daemon no longer holds")
+	}
+	if !strings.Contains(err.Error(), "being built again") {
+		t.Errorf("error = %q, want it to say the image is being built again", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		docker.mu.Lock()
+		builds := len(docker.builds)
+		docker.mu.Unlock()
+		if builds == 2 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	docker.mu.Lock()
+	defer docker.mu.Unlock()
+	t.Errorf("built %d times, want the removed image built a second time", len(docker.builds))
+}

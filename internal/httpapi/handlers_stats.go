@@ -77,7 +77,8 @@ type dockerImageResponse struct {
 	Containers int64     `json:"containers"`
 	// InUse means a container, running or stopped, is based on this image.
 	InUse bool `json:"inUse"`
-	// Registered means a row in the images table points at this image. It can
+	// Registered means Hexagon keeps this image: a row in the images table
+	// points at it, or it is the default image Hexagon built for itself. It can
 	// be true while InUse is false: the image is idle right now and the prune
 	// leaves it alone anyway, because the next session from it should not have
 	// to rebuild.
@@ -114,7 +115,7 @@ func (s *Server) handleGetStats(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "cannot read docker disk usage")
 		return
 	}
-	registered, err := s.registeredImageRefs(r.Context())
+	registered, err := s.protectedImageRefs(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot list registered images")
 		return
@@ -136,17 +137,29 @@ func (s *Server) handleGetStats(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// registeredImageRefs loads AllImageRefs as a set, logging its own failure so
-// every caller reports the same message.
-func (s *Server) registeredImageRefs(ctx context.Context) (map[string]bool, error) {
+// protectedImageRefs is every image tag the prune must leave alone: the ones
+// Hexagon rows point at, plus the default image Hexagon builds for itself.
+//
+// That last one has no row anywhere, so before it was named here the prune
+// removed it as unused and the next browser login or source edit failed with
+// the daemon's "No such image" — the image being idle is precisely its normal
+// state. Only the tag in use now is protected: an older hexagon-default hash,
+// left over from a change to the reference Dockerfile, is exactly what a prune
+// is for.
+//
+// It logs its own failure so every caller reports the same message.
+func (s *Server) protectedImageRefs(ctx context.Context) (map[string]bool, error) {
 	refs, err := s.store.AllImageRefs(ctx)
 	if err != nil {
 		s.log.Error("list all image refs", "err", err)
 		return nil, err
 	}
-	set := make(map[string]bool, len(refs))
+	set := make(map[string]bool, len(refs)+1)
 	for _, ref := range refs {
 		set[ref] = true
+	}
+	if s.defaultImage != nil {
+		set[s.defaultImage.Ref()] = true
 	}
 	return set, nil
 }
@@ -235,10 +248,10 @@ type pruneResponse struct {
 	Reclaimed uint64 `json:"reclaimed"`
 }
 
-// handlePruneImages removes every image no container is based on and no row in
-// the images table points at. It never uses ImagesPrune: that would delete the
-// image behind every stopped session, which stays registered on purpose so the
-// next start does not have to rebuild.
+// handlePruneImages removes every image no container is based on and
+// protectedImageRefs does not name. It never uses ImagesPrune: that would
+// delete the image behind every stopped session, which stays registered on
+// purpose so the next start does not have to rebuild.
 func (s *Server) handlePruneImages(w http.ResponseWriter, r *http.Request) {
 	if err := s.docker.Ping(r.Context()); err != nil {
 		writeError(w, http.StatusServiceUnavailable, "docker is unreachable")
@@ -251,7 +264,7 @@ func (s *Server) handlePruneImages(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "cannot prune images")
 		return
 	}
-	registered, err := s.registeredImageRefs(r.Context())
+	registered, err := s.protectedImageRefs(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "cannot prune images")
 		return

@@ -38,6 +38,13 @@ type SourceEditor interface {
 // with, which is a state the UI is told about rather than a startup failure.
 type DefaultImage interface {
 	State() claudex.State
+	// Ref is the tag the image is built under, asked for without starting
+	// anything: the image prune has to recognise it to leave it alone, and a
+	// prune that triggered a build would be the opposite of what was pressed.
+	Ref() string
+	// Invalidate reports that the image behind that tag is gone from the daemon,
+	// so it is built again.
+	Invalidate()
 }
 
 // ComposeValidator refuses a compose file that asks for something a session

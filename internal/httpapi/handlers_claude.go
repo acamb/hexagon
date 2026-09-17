@@ -443,6 +443,23 @@ func (s *Server) loginImage(w http.ResponseWriter, r *http.Request) (string, boo
 	return "", false
 }
 
+// claudeLoginImageGone answers a login whose image the daemon no longer holds,
+// and starts the default image again when that is the one that went missing.
+//
+// A pruned image is the likely cause, and the user has no way to ask for the
+// build themselves: the image belongs to Hexagon, not to their Images page. So
+// the request that discovered it missing is the one that orders it rebuilt.
+func (s *Server) claudeLoginImageGone(w http.ResponseWriter, imageRef string) {
+	if s.defaultImage != nil && imageRef == s.defaultImage.Ref() {
+		s.log.Warn("the default image is gone, rebuilding it", "image", imageRef)
+		s.defaultImage.Invalidate()
+		writeError(w, http.StatusConflict,
+			"the default image was removed, so it is being built again — try again in a few minutes")
+		return
+	}
+	writeError(w, http.StatusConflict, "that image is no longer on the docker daemon: build it again")
+}
+
 // attachClaudeLoginTerminal bridges a browser WebSocket to containerID's tmux
 // login session. Shared by the machine-wide login and an account's own: both
 // run the same `claude auth login` and the same tmux dance once the container
@@ -504,6 +521,9 @@ func (s *Server) handleClaudeLoginTerminal(w http.ResponseWriter, r *http.Reques
 	case errors.Is(err, session.ErrClaudeLoginUnavailable):
 		writeError(w, http.StatusConflict, "no claude credentials path is configured")
 		return
+	case errors.Is(err, dockerx.ErrImageNotFound):
+		s.claudeLoginImageGone(w, imageRef)
+		return
 	case err != nil:
 		s.log.Error("start claude login", "login", user.GitHubLogin, "err", err)
 		writeError(w, http.StatusInternalServerError, "cannot start the login container")
@@ -548,7 +568,11 @@ func (s *Server) handleClaudeAccountLoginTerminal(w http.ResponseWriter, r *http
 	}
 
 	containerID, err := s.sessions.StartAccountClaudeLogin(r.Context(), account.ID, imageRef)
-	if err != nil {
+	switch {
+	case errors.Is(err, dockerx.ErrImageNotFound):
+		s.claudeLoginImageGone(w, imageRef)
+		return
+	case err != nil:
 		s.log.Error("start claude account login", "account", account.ID, "err", err)
 		writeError(w, http.StatusInternalServerError, "cannot start the login container")
 		return

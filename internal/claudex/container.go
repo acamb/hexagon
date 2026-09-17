@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -120,6 +121,35 @@ func (d *DefaultImage) State() State {
 	d.building, d.lastAttempt = true, time.Now()
 	go d.build()
 	return State{Ref: d.tag, Building: true}
+}
+
+// Ref is the tag the image is built under, whether or not it has ever been
+// built. Unlike State it starts nothing: it is what a caller asks for when it
+// needs to recognise the image — the image prune protects it by name — and
+// starting a build as a side effect of listing images would be absurd.
+func (d *DefaultImage) Ref() string { return d.tag }
+
+// Invalidate says the image behind the tag is gone from the daemon, and starts
+// building it again.
+//
+// It exists because the daemon is not Hexagon's alone: an image prune, here or
+// from a terminal, can remove an image this builder has already recorded as
+// ready, and the failure that follows is a container creation refused with "No
+// such image" — a dead end for a user who cannot ask for the build themselves.
+//
+// The build starts here rather than on the next State call: lastAttempt is
+// recent after a successful build, so State would spend retryAfter reporting
+// neither ready, nor building, nor an error.
+func (d *DefaultImage) Invalidate() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.ready, d.lastError = false, ""
+	if d.building {
+		return
+	}
+	d.building, d.lastAttempt = true, time.Now()
+	go d.build()
 }
 
 // build runs one build to completion on its own context: whoever asked for the
@@ -273,6 +303,16 @@ func (c *Container) run(ctx context.Context, cred Credential, in invocation) ([]
 		User:       c.user,
 		Labels:     map[string]string{dockerx.LabelRole: containerRole},
 	})
+	if errors.Is(err, dockerx.ErrImageNotFound) {
+		// The image was there when it was built and is not there now: something
+		// removed it behind Hexagon's back. Start it again and say so, rather
+		// than repeating the daemon's "No such image" at a user who has no
+		// button for it.
+		c.log.Warn("the image claude code runs in is gone, rebuilding it", "image", image.Ref)
+		c.image.Invalidate()
+		return nil, fmt.Errorf("the image claude code runs in was removed, so it is being built again — " +
+			"try again in a few minutes")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create the container claude code runs in: %w", err)
 	}

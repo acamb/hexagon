@@ -127,6 +127,13 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (strin
 
 	created, err := c.cli.ContainerCreate(ctx, config, hostConfig, nil, nil, spec.Name)
 	if err != nil {
+		// A 404 here is never the container — it does not exist yet, that is the
+		// point of the call. It is the image, and saying so lets the caller
+		// rebuild it instead of reporting "No such image" to a user who has no
+		// way to act on it.
+		if client.IsErrNotFound(err) {
+			return "", fmt.Errorf("create container: %w", ErrImageNotFound)
+		}
 		return "", fmt.Errorf("create container: %w", err)
 	}
 	return created.ID, nil

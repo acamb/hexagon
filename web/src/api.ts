@@ -302,9 +302,10 @@ export interface DockerUsage {
 }
 
 // One image as the daemon holds it, not a Hexagon row. inUse means a
-// container, running or stopped, is based on it; registered means a Hexagon
-// image row points at it, which is enough on its own to keep the prune button
-// from touching it, whether or not anything is using it right now.
+// container, running or stopped, is based on it; registered means Hexagon keeps
+// it — an image row points at it, or it is the default image Hexagon built for
+// itself — which is enough on its own to keep the prune button from touching it,
+// whether or not anything is using it right now.
 export interface DockerImage {
   id: string
   tags: string[]

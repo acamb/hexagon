@@ -14,6 +14,12 @@ import (
 	"github.com/docker/docker/pkg/jsonmessage"
 )
 
+// ErrImageNotFound reports an image the daemon does not hold. It is what a
+// container creation answers when the image it names is gone — pruned from
+// under a tag Hexagon still believes in, most often — and the caller's cue to
+// build it again rather than to pass the daemon's wording on.
+var ErrImageNotFound = errors.New("image not found")
+
 // ImageSummary is one image as the daemon reports it: not a Hexagon row, but
 // what "docker images" would show. Containers is how many containers, running
 // or not, are based on it — without that count every image looks unused.
