@@ -146,6 +146,39 @@ func TestPruneImagesLeavesRegisteredInUseAndOtherUsersImages(t *testing.T) {
 	}
 }
 
+// The image Hexagon builds for itself to run Claude Code without a host binary
+// has no row in the images table, so without this it looks unused to prune the
+// moment its own "ask Claude" container — created and removed around every
+// call — is gone. Deleting it here is what used to leave the next "ask Claude"
+// failing against the daemon with "No such image".
+func TestPruneImagesLeavesTheDefaultClaudeImage(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+
+	env.docker.setImages([]dockerx.ImageSummary{
+		{ID: "sha256:default", Tags: []string{env.defaultImage.Tag()}, Size: 100},
+		{ID: "sha256:unused", Tags: []string{"stale:latest"}, Size: 40},
+	})
+
+	var result pruneResponse
+	env.decode(env.postJSON("/api/stats/prune/images", ""), &result)
+
+	if result.Removed != 1 || result.Reclaimed != 40 {
+		t.Errorf("result = %+v, want {Removed:1 Reclaimed:40}", result)
+	}
+	if contains(env.docker.removedImages(), "sha256:default") {
+		t.Error("pruned the image Hexagon runs Claude Code's editor in")
+	}
+
+	var stats statsResponse
+	env.decode(env.do(http.MethodGet, "/api/stats", nil), &stats)
+	for _, img := range stats.Docker.Images {
+		if img.ID == "sha256:default" && !img.Registered {
+			t.Errorf("default image = %+v, want it reported as registered", img)
+		}
+	}
+}
+
 func TestPruneContainersGoesThroughTheFilteredCall(t *testing.T) {
 	env := newTestEnv(t, "alice")
 	env.signIn()

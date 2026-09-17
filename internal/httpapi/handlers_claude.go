@@ -418,6 +418,16 @@ func (s *Server) loginImage(w http.ResponseWriter, r *http.Request) (string, boo
 		}
 		switch image := s.defaultImage.State(); {
 		case image.Ready:
+			// State only reports what the last build did, never what the daemon
+			// still holds: an image removed by hand, or a prune that ran before
+			// this tag was protected, leaves this true with nothing behind it.
+			if _, err := s.docker.InspectImage(r.Context(), image.Ref); err != nil {
+				s.defaultImage.Invalidate()
+				s.defaultImage.State()
+				writeError(w, http.StatusConflict,
+					"the default image has gone missing — rebuilding it now, try again in a minute")
+				return "", false
+			}
 			return image.Ref, true
 		case image.Error != "":
 			writeError(w, http.StatusServiceUnavailable, "the default image could not be built: "+image.Error)

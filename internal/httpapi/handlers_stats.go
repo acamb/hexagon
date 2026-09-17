@@ -77,10 +77,11 @@ type dockerImageResponse struct {
 	Containers int64     `json:"containers"`
 	// InUse means a container, running or stopped, is based on this image.
 	InUse bool `json:"inUse"`
-	// Registered means a row in the images table points at this image. It can
-	// be true while InUse is false: the image is idle right now and the prune
-	// leaves it alone anyway, because the next session from it should not have
-	// to rebuild.
+	// Registered means a row in the images table points at this image, or it
+	// is the image Hexagon builds for itself to run Claude Code without a host
+	// binary. It can be true while InUse is false: the image is idle right now
+	// and the prune leaves it alone anyway, because the next session — or the
+	// next "ask Claude" — should not have to rebuild.
 	Registered bool `json:"registered"`
 	Dangling   bool `json:"dangling"`
 }
@@ -137,16 +138,23 @@ func (s *Server) handleGetStats(w http.ResponseWriter, r *http.Request) {
 }
 
 // registeredImageRefs loads AllImageRefs as a set, logging its own failure so
-// every caller reports the same message.
+// every caller reports the same message. The image Hexagon builds for itself —
+// the browser login and the source editor run Claude Code in it when the host
+// has no binary — has no row of its own, so it is added alongside them: without
+// this a prune run between two "ask Claude" calls deletes it, and the next one
+// fails against the daemon instead of rebuilding.
 func (s *Server) registeredImageRefs(ctx context.Context) (map[string]bool, error) {
 	refs, err := s.store.AllImageRefs(ctx)
 	if err != nil {
 		s.log.Error("list all image refs", "err", err)
 		return nil, err
 	}
-	set := make(map[string]bool, len(refs))
+	set := make(map[string]bool, len(refs)+1)
 	for _, ref := range refs {
 		set[ref] = true
+	}
+	if s.defaultImage != nil {
+		set[s.defaultImage.Tag()] = true
 	}
 	return set, nil
 }

@@ -77,7 +77,10 @@ type testEnv struct {
 // that cares sets the state; every other one gets an image that is ready, which
 // is what a server that has been up for a minute has.
 type fakeDefaultImage struct {
-	mu    sync.Mutex
+	mu sync.Mutex
+	// tag is constant, the way the real type's is: it names the image
+	// regardless of build state, so Tag must not depend on state.
+	tag   string
 	state claudex.State
 }
 
@@ -85,6 +88,18 @@ func (f *fakeDefaultImage) State() claudex.State {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.state
+}
+
+func (f *fakeDefaultImage) Tag() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.tag
+}
+
+func (f *fakeDefaultImage) Invalidate() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.state = claudex.State{Ref: f.state.Ref}
 }
 
 func (f *fakeDefaultImage) set(state claudex.State) {
@@ -203,7 +218,7 @@ func newTestEnv(t *testing.T, allowedUsers ...string) *testEnv {
 	editor := &fakeEditor{}
 	compose := &fakeCompose{docker: docker}
 	vscode := &fakeVSCode{dir: "/vscode-release"}
-	defaultImage := &fakeDefaultImage{state: claudex.State{Ref: "hexagon-default:test", Ready: true}}
+	defaultImage := &fakeDefaultImage{tag: "hexagon-default:test", state: claudex.State{Ref: "hexagon-default:test", Ready: true}}
 
 	// A closure rather than a value, so a test can rebuild the orchestrator
 	// without `docker compose`: the manager captures its collaborators, and

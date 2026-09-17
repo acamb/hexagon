@@ -34,6 +34,10 @@ type fakeDocker struct {
 	execErr    error
 	// stderr is what `cat` on the diagnostics file answers with.
 	stderr string
+	// inspectErr, when set, is what InspectImage answers every call with — the
+	// image has vanished from the daemon's point of view.
+	inspectErr error
+	inspected  []string
 }
 
 func (f *fakeDocker) BuildImage(_ context.Context, dockerfile, tag string, _ io.Writer) error {
@@ -42,6 +46,16 @@ func (f *fakeDocker) BuildImage(_ context.Context, dockerfile, tag string, _ io.
 	f.builds = append(f.builds, dockerfile)
 	f.buildTags = append(f.buildTags, tag)
 	return f.buildErr
+}
+
+func (f *fakeDocker) InspectImage(_ context.Context, ref string) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.inspected = append(f.inspected, ref)
+	if f.inspectErr != nil {
+		return "", f.inspectErr
+	}
+	return "sha256:" + ref, nil
 }
 
 func (f *fakeDocker) CreateContainer(_ context.Context, spec dockerx.ContainerSpec) (string, error) {
@@ -341,4 +355,43 @@ type slowDocker struct {
 func (s *slowDocker) BuildImage(ctx context.Context, dockerfile, tag string, logs io.Writer) error {
 	<-s.block
 	return s.fakeDocker.BuildImage(ctx, dockerfile, tag, logs)
+}
+
+// The image can vanish between a build finishing and the next "ask Claude"
+// call — a stats-page prune, or `docker rmi` by hand — and State alone cannot
+// tell: it only reports what the last build did. Catching that here, right
+// before the image is needed, turns a daemon "No such image" deep in
+// container creation into a message that says a rebuild is already underway.
+func TestContainerRebuildsAnImageThatVanishedFromTheDaemon(t *testing.T) {
+	docker := &fakeDocker{}
+	image := readyImage(t, docker)
+	runner := NewContainer(docker, image, "1000:1000", "", "", slog.New(slog.DiscardHandler))
+
+	docker.mu.Lock()
+	docker.inspectErr = errors.New("no such image")
+	docker.mu.Unlock()
+
+	err := runner.Check(context.Background(), Credential{})
+	if err == nil {
+		t.Fatal("Check succeeded against an image the daemon no longer has")
+	}
+	if !strings.Contains(err.Error(), "gone missing") {
+		t.Errorf("error = %q, want it to say the image is being rebuilt", err)
+	}
+	if specs, _, _ := docker.calls(); len(specs) != 0 {
+		t.Errorf("created %d containers from an image that was not there", len(specs))
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && !image.State().Ready {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !image.State().Ready {
+		t.Fatal("the image was never rebuilt")
+	}
+	docker.mu.Lock()
+	defer docker.mu.Unlock()
+	if len(docker.builds) != 2 {
+		t.Errorf("built %d times, want the original build plus the rebuild triggered by the vanished image", len(docker.builds))
+	}
 }

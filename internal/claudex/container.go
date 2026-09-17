@@ -21,6 +21,7 @@ import (
 // container path can be tested without a daemon; dockerx.API satisfies it.
 type Docker interface {
 	BuildImage(ctx context.Context, dockerfile, tag string, logs io.Writer) error
+	InspectImage(ctx context.Context, ref string) (string, error)
 	CreateContainer(ctx context.Context, spec dockerx.ContainerSpec) (string, error)
 	StartContainer(ctx context.Context, id string) error
 	RunExec(ctx context.Context, containerID string, cmd []string) (string, int, error)
@@ -92,6 +93,27 @@ type State struct {
 	Building bool
 	// Error is why the last build failed, empty when none has.
 	Error string
+}
+
+// Tag is the reference a container is created from once the image is ready,
+// regardless of whether it has been built yet. Unlike State it never starts a
+// build: it exists for a caller that only needs to name the image, such as
+// prune protecting it, and must not accidentally build it just by asking.
+func (d *DefaultImage) Tag() string {
+	return d.tag
+}
+
+// Invalidate forgets that the build succeeded, so the next State call rebuilds
+// the image instead of handing out a tag the daemon no longer has. It is for
+// the image vanishing out from under this process — a prune, or `docker rmi` —
+// which is not the failure retryAfter guards against, so lastAttempt is reset
+// too rather than waiting out that cooldown.
+func (d *DefaultImage) Invalidate() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.ready = false
+	d.lastError = ""
+	d.lastAttempt = time.Time{}
 }
 
 // State reports the image, and starts building it when there is no build
@@ -227,6 +249,17 @@ func (c *Container) run(ctx context.Context, cred Credential, in invocation) ([]
 	image := c.image.State()
 	switch {
 	case image.Ready:
+		// State only reports what the last build did, never what the daemon
+		// still holds: a prune between builds, or a `docker rmi` by hand, leaves
+		// this true with nothing behind it. Catching that here, right before the
+		// image is needed, is what turns a daemon error deep in container
+		// creation into a message that says what to do about it.
+		if _, err := c.docker.InspectImage(ctx, image.Ref); err != nil {
+			c.image.Invalidate()
+			c.image.State()
+			return nil, fmt.Errorf("this server has no claude code binary, and the image it runs the CLI in " +
+				"has gone missing — rebuilding it now, try again in a minute")
+		}
 	case image.Error != "":
 		return nil, fmt.Errorf("the image claude code runs in could not be built: %s", image.Error)
 	default:

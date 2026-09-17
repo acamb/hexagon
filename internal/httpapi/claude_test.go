@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -439,6 +440,27 @@ func TestClaudeLoginSaysTheDefaultImageIsNotReadyYet(t *testing.T) {
 	}
 	if resp == nil || resp.StatusCode != http.StatusServiceUnavailable {
 		t.Errorf("status = %v, want 503", statusOf(resp))
+	}
+}
+
+// A prune that ran before the default image's tag was protected — or a
+// `docker rmi` by hand — can leave State reporting the image ready while the
+// daemon no longer has it. That used to reach CreateContainer and fail with a
+// raw "No such image"; it must instead say a rebuild is on its way.
+func TestClaudeLoginRebuildsTheDefaultImageWhenItHasVanished(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	env.docker.inspectErr = errors.New("no such image")
+
+	_, resp, err := env.dialClaudeLogin("", testOrigin)
+	if err == nil {
+		t.Fatal("the handshake succeeded against an image the daemon no longer has")
+	}
+	if resp == nil || resp.StatusCode != http.StatusConflict {
+		t.Errorf("status = %v, want 409", statusOf(resp))
+	}
+	if state := env.defaultImage.State(); state.Ready {
+		t.Error("the default image is still reported ready after vanishing from the daemon")
 	}
 }
 
