@@ -93,6 +93,9 @@ func TestCreateSessionProvisionsAContainer(t *testing.T) {
 	if clone.CloneURL != "https://github.test/acme/widgets.git" || clone.Branch != "main" {
 		t.Errorf("clone = %+v", clone)
 	}
+	if clone.Depth != 0 {
+		t.Errorf("clone depth = %d, want 0 — a request that asks for nothing clones everything", clone.Depth)
+	}
 	if clone.Token != "gho_token" {
 		t.Errorf("clone token = %q, want the caller's own", clone.Token)
 	}
@@ -108,6 +111,55 @@ func TestCreateSessionProvisionsAContainer(t *testing.T) {
 	// A writable HOME has to exist before the container mounts it.
 	if _, err := os.Stat(filepath.Join(env.workspaces, created.ID, "home", ".claude")); err != nil {
 		t.Errorf("the agent home was not created: %v", err)
+	}
+}
+
+func TestCreateSessionClonesToTheDepthAsked(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+
+	var created sessionResponse
+	env.decode(env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"repoFullName":"acme/widgets","imageId":%q,"cloneDepth":5}`, image.ID)), &created)
+	if created.CloneDepth != 5 {
+		t.Errorf("cloneDepth on the response = %d, want 5", created.CloneDepth)
+	}
+	env.waitForSessionStatus(created.ID, store.SessionStatusRunning)
+
+	clones := env.cloner.clones()
+	if len(clones) != 1 {
+		t.Fatalf("made %d clones, want 1", len(clones))
+	}
+	if clones[0].Depth != 5 {
+		t.Errorf("clone depth = %d, want 5", clones[0].Depth)
+	}
+
+	// The depth is stored, so a later read reports what the workspace was made
+	// with rather than the default.
+	var fetched sessionResponse
+	env.decode(env.do(http.MethodGet, "/api/sessions/"+created.ID, nil), &fetched)
+	if fetched.CloneDepth != 5 {
+		t.Errorf("cloneDepth after a reread = %d, want 5", fetched.CloneDepth)
+	}
+}
+
+// Refused at the door: a session is a container, a clone and a directory, and a
+// depth git would reject has to fail before any of that exists.
+func TestCreateSessionRejectsANegativeCloneDepth(t *testing.T) {
+	env := newTestEnv(t, "alice")
+	env.signIn()
+	image := env.readyImage("base")
+	env.offerRepo("acme/widgets", "main")
+
+	resp := env.postJSON("/api/sessions", fmt.Sprintf(
+		`{"repoFullName":"acme/widgets","imageId":%q,"cloneDepth":-1}`, image.ID))
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("create status = %d, want 400", resp.StatusCode)
+	}
+	if clones := env.cloner.clones(); len(clones) != 0 {
+		t.Errorf("made %d clones, want none", len(clones))
 	}
 }
 

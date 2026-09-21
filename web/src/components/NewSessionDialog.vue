@@ -38,6 +38,12 @@ const only = ref<ProviderKind | ''>('')
 const failed = ref<Partial<Record<ProviderKind, string>>>({})
 const selected = ref<Repo | null>(null)
 const branch = ref('')
+// Off by default: a session usually wants the history it is working on. This is
+// for the repository whose history is the slow half of provisioning.
+const shallowClone = ref(false)
+// Read only when the box above is ticked. 1 is the answer that makes it worth
+// asking for — the working tree and nothing behind it.
+const cloneDepth = ref(1)
 const imageId = ref('')
 const title = ref('')
 // On by default: running Claude Code is what a session is for. Turning it off
@@ -182,8 +188,16 @@ async function load(refresh = false) {
 }
 
 // Everything a session needs: an image, and a repository unless it was asked to
-// go without one.
-const ready = computed(() => !!imageId.value && (withoutRepo.value || !!selected.value))
+// go without one. The depth belongs here too, because an emptied number field
+// is NaN: without this the button sends it and the server answers the error.
+const ready = computed(() => {
+  if (!imageId.value) return false
+  if (withoutRepo.value) return true
+  if (shallowClone.value && !(Number.isInteger(cloneDepth.value) && cloneDepth.value > 0)) {
+    return false
+  }
+  return !!selected.value
+})
 
 async function submit() {
   if (!ready.value) return
@@ -209,6 +223,7 @@ async function submit() {
             provider: selected.value!.provider,
             repoFullName: selected.value!.fullName,
             branch: branch.value.trim() || undefined,
+            cloneDepth: shallowClone.value ? cloneDepth.value : undefined,
             imageId: imageId.value,
             title: title.value.trim() || undefined,
             autoClaude: autoClaude.value,
@@ -358,6 +373,23 @@ onMounted(() => load())
           </label>
 
           <label v-if="!withoutRepo" class="toggle">
+            <input type="checkbox" v-model="shallowClone" />
+            <span>
+              Shallow clone
+              <em>
+                Clones only the most recent commits of the branch above, which is much faster on a
+                repository with a long history. The other branches are not fetched, and the history
+                inside the session stops at the depth chosen here.
+              </em>
+            </span>
+          </label>
+
+          <label v-if="!withoutRepo && shallowClone" class="field depth">
+            <span>Depth</span>
+            <input v-model.number="cloneDepth" type="number" min="1" />
+          </label>
+
+          <label v-if="!withoutRepo" class="toggle">
             <input type="checkbox" v-model="propagateToken" />
             <span>
               Pass the {{ selected ? providerNames[selected.provider] : 'account' }} token to the
@@ -469,6 +501,12 @@ onMounted(() => load())
 .row {
   display: flex;
   gap: 1rem;
+}
+
+/* A number that is at most a few digits. Left at the width .field gives every
+   other control it would read as a far more important field than it is. */
+.depth {
+  width: 8rem;
 }
 
 .toggle {

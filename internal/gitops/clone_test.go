@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -181,5 +182,73 @@ func TestCloneRejectsAnIncompleteRequest(t *testing.T) {
 	}
 	if err := Clone(context.Background(), Options{CloneURL: "https://example.test/x.git"}); err == nil {
 		t.Error("Clone accepted a request with no destination")
+	}
+}
+
+// deepRepo builds a repository with a history worth truncating: sourceRepo's
+// main branch is one commit, which cannot tell a depth of 1 from all of it.
+func deepRepo(t *testing.T, commits int) string {
+	t.Helper()
+	dir := t.TempDir()
+
+	git(t, dir, "init", "--initial-branch=main", dir)
+	git(t, dir, "config", "user.name", "Source Author")
+	git(t, dir, "config", "user.email", "source@example.test")
+
+	for i := range commits {
+		name := fmt.Sprintf("file-%d.txt", i)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(name+"\n"), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		git(t, dir, "add", name)
+		git(t, dir, "commit", "-m", "commit "+name)
+	}
+	return dir
+}
+
+// localURL is what a depth test has to clone through. git ignores --depth when
+// the source is a path — "--depth is ignored in local clones; use file://
+// instead" — so a test that passed the path would pass whatever Clone did.
+func localURL(dir string) string { return "file://" + dir }
+
+func TestCloneTruncatesTheHistoryToTheDepth(t *testing.T) {
+	isolateGit(t)
+	source := deepRepo(t, 3)
+	dest := filepath.Join(t.TempDir(), "repo")
+
+	if err := Clone(context.Background(), Options{CloneURL: localURL(source), Depth: 1, Dest: dest}); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+
+	if got := git(t, dest, "rev-list", "--count", "HEAD"); got != "1" {
+		t.Errorf("commits in the clone = %s, want 1", got)
+	}
+	if _, err := os.Stat(filepath.Join(dest, ".git", "shallow")); err != nil {
+		t.Errorf("the clone is not shallow: %v", err)
+	}
+	// The depth is a number, not a switch: two means two.
+	deeper := filepath.Join(t.TempDir(), "repo")
+	if err := Clone(context.Background(), Options{CloneURL: localURL(source), Depth: 2, Dest: deeper}); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+	if got := git(t, deeper, "rev-list", "--count", "HEAD"); got != "2" {
+		t.Errorf("commits in the clone = %s, want 2", got)
+	}
+}
+
+func TestCloneWithoutADepthKeepsTheWholeHistory(t *testing.T) {
+	isolateGit(t)
+	source := deepRepo(t, 3)
+	dest := filepath.Join(t.TempDir(), "repo")
+
+	if err := Clone(context.Background(), Options{CloneURL: localURL(source), Dest: dest}); err != nil {
+		t.Fatalf("Clone: %v", err)
+	}
+
+	if got := git(t, dest, "rev-list", "--count", "HEAD"); got != "3" {
+		t.Errorf("commits in the clone = %s, want 3 — the zero depth must clone everything", got)
+	}
+	if _, err := os.Stat(filepath.Join(dest, ".git", "shallow")); !os.IsNotExist(err) {
+		t.Errorf("the clone is shallow, and nothing asked for that: %v", err)
 	}
 }

@@ -217,7 +217,11 @@ type CreateRequest struct {
 	RepoFullName string
 	RepoCloneURL string
 	Branch       string
-	ImageID      string
+	// CloneDepth truncates the clone's history to that many commits. Zero
+	// clones all of it. It only means anything with a repository, and only
+	// once: the clone happens during provisioning and is never redone.
+	CloneDepth int
+	ImageID    string
 	// AutoClaude starts Claude Code in the session's tmux rather than leaving a
 	// shell.
 	AutoClaude bool
@@ -312,6 +316,7 @@ func (m *Manager) Create(ctx context.Context, user *store.User, req CreateReques
 		RepoFullName:    req.RepoFullName,
 		RepoCloneURL:    req.RepoCloneURL,
 		Branch:          req.Branch,
+		CloneDepth:      req.CloneDepth,
 		ImageID:         image.ID,
 		ImageRef:        image.ImageRef,
 		ImageDigest:     digest,
@@ -400,6 +405,7 @@ func (m *Manager) provisionSteps(ctx context.Context, session *store.Session, co
 		err := m.cloner.Clone(ctx, gitops.Options{
 			CloneURL:  session.RepoCloneURL,
 			Branch:    session.Branch,
+			Depth:     session.CloneDepth,
 			Dest:      session.RepoDir,
 			Username:  credentials.Username,
 			Token:     credentials.Secret,

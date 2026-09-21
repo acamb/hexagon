@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -32,6 +33,14 @@ type Options struct {
 	CloneURL string
 	// Branch is checked out after cloning. Empty means the default branch.
 	Branch string
+	// Depth truncates the history to that many commits. Zero clones all of it.
+	//
+	// git implies --single-branch with --depth, so a shallow clone contains the
+	// branch above and no other: inside the session, checking another one out
+	// fails until its refspec is widened. That is deliberate — fetching every
+	// branch tip is most of what asking for a shallow clone was avoiding — and
+	// the new-session dialog says so where it is chosen.
+	Depth int
 	// Dest is the directory to create the working tree in. It must not exist,
 	// or must be empty.
 	Dest string
@@ -63,6 +72,9 @@ func Clone(ctx context.Context, opts Options) error {
 	}
 	if opts.Branch != "" {
 		args = append(args, "--branch", opts.Branch)
+	}
+	if opts.Depth > 0 {
+		args = append(args, "--depth", strconv.Itoa(opts.Depth))
 	}
 	args = append(args, "--", opts.CloneURL, opts.Dest)
 

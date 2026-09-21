@@ -352,6 +352,9 @@ export interface Session {
   // an empty workspace instead of a clone.
   repoFullName: string
   branch: string
+  // How much history the clone was made with, 0 being all of it. Reported for
+  // the record: the clone happened once, when the session was provisioned.
+  cloneDepth: number
   imageId: string
   imageRef: string
   // The account the session is attached to, empty when it is attached to none.
@@ -401,6 +404,9 @@ export interface NewSession {
   // Omitted for a session that starts on an empty workspace.
   repoFullName?: string
   branch?: string
+  // Truncates the clone's history to that many commits. Omitted or 0 clones all
+  // of it. Only meaningful alongside a repository.
+  cloneDepth?: number
   imageId: string
   title?: string
   autoClaude?: boolean

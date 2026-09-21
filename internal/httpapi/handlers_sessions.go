@@ -25,8 +25,11 @@ type sessionResponse struct {
 	Provider     string `json:"provider"`
 	RepoFullName string `json:"repoFullName"`
 	Branch       string `json:"branch"`
-	ImageID      string `json:"imageId"`
-	ImageRef     string `json:"imageRef"`
+	// CloneDepth is how much history the clone was made with, zero being all of
+	// it. Reported but never updated: the clone happened once.
+	CloneDepth int    `json:"cloneDepth"`
+	ImageID    string `json:"imageId"`
+	ImageRef   string `json:"imageRef"`
 	// RepoDir is the directory mounted at /workspace, clone or not.
 	RepoDir    string `json:"repoDir"`
 	Status     string `json:"status"`
@@ -85,6 +88,7 @@ func newSessionResponse(s *store.Session, hostPorts map[int]int) sessionResponse
 		Provider:        s.Provider,
 		RepoFullName:    s.RepoFullName,
 		Branch:          s.Branch,
+		CloneDepth:      s.CloneDepth,
 		ImageID:         s.ImageID,
 		ImageRef:        s.ImageRef,
 		RepoDir:         s.RepoDir,
@@ -147,8 +151,13 @@ type createSessionRequest struct {
 	// empty workspace rather than on a clone.
 	RepoFullName string `json:"repoFullName"`
 	Branch       string `json:"branch"`
-	ImageID      string `json:"imageId"`
-	Title        string `json:"title"`
+	// CloneDepth truncates the clone's history to that many commits. Absent and
+	// zero both mean the whole history, so this is a plain int where the flags
+	// below are pointers: their default differs from their zero value and this
+	// one does not. Ignored without a repository, which is not cloned at all.
+	CloneDepth int    `json:"cloneDepth"`
+	ImageID    string `json:"imageId"`
+	Title      string `json:"title"`
 	// AutoClaude is a pointer so that a client which has never heard of it gets
 	// the default — Claude Code started for them — rather than a bare shell.
 	AutoClaude *bool `json:"autoClaude"`
@@ -189,6 +198,10 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 	}
 	if strings.TrimSpace(req.ImageID) == "" {
 		writeError(w, http.StatusBadRequest, "an image is required")
+		return
+	}
+	if req.CloneDepth < 0 {
+		writeError(w, http.StatusBadRequest, "a clone depth cannot be negative")
 		return
 	}
 
@@ -236,6 +249,9 @@ func (s *Server) handleCreateSession(w http.ResponseWriter, r *http.Request) {
 		}
 		create.Provider, create.RepoFullName = repo.Provider, repo.FullName
 		create.RepoCloneURL, create.Branch = repo.CloneURL, branch
+		// Only here: a session without a repository never reaches a clone, and
+		// a depth stored against one would describe nothing.
+		create.CloneDepth = req.CloneDepth
 	} else {
 		kind := provider.Kind(strings.TrimSpace(req.Provider))
 		switch {

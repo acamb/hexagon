@@ -173,6 +173,19 @@ choices, and a name field prefilled from the archive's own name: leave it as it 
 into the image it was taken from (you are asked to confirm the overwrite), or change it to
 bring the backup back as a copy beside the original.
 
+### Shallow clones
+
+A repository with a long history is the slow half of creating a session, and most of what
+that history costs is never read. Tick **Shallow clone** when you pick the repository and a
+**Depth** field appears beside it: the clone is made with `--depth`, keeping that many
+commits and no more. The default of 1 is the working tree and nothing behind it.
+
+It is a creation-time choice — the clone happens once — and it comes with git's own rule
+attached: `--depth` fetches the selected branch alone, so the other branches are not in the
+clone. Checking one out inside the session means widening the refspec first, with
+`git remote set-branches origin <name>` and a fetch. Leave the box unticked for a session
+that moves between branches.
+
 ### Published ports
 
 ![The new-session options: what to start, which token to pass, VS Code, and the published
