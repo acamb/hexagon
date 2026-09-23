@@ -94,6 +94,7 @@ type composeService struct {
 	Environment   []string          `json:"environment,omitempty"`
 	WorkingDir    string            `json:"working_dir,omitempty"`
 	User          string            `json:"user,omitempty"`
+	GroupAdd      []string          `json:"group_add,omitempty"`
 	Labels        map[string]string `json:"labels,omitempty"`
 	// Volumes take the same host:container[:ro] form dockerx.ContainerSpec.Binds
 	// already has, so the list crosses over untouched.
@@ -132,6 +133,7 @@ func composeOverlay(spec dockerx.ContainerSpec, services []string) ([]byte, erro
 		Environment:   spec.Env,
 		WorkingDir:    spec.WorkingDir,
 		User:          spec.User,
+		GroupAdd:      spec.GroupAdd,
 		Labels:        spec.Labels,
 		Volumes:       spec.Binds,
 		Ports:         ports,

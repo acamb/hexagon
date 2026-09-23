@@ -198,6 +198,9 @@ func TestSessionContainerSpec(t *testing.T) {
 	if spec.User != "1000:1000" {
 		t.Errorf("user = %q, want the host user", spec.User)
 	}
+	if !contains(spec.GroupAdd, dockerx.AgentGroup) {
+		t.Errorf("groups = %v, want %s so Claude Code can update itself", spec.GroupAdd, dockerx.AgentGroup)
+	}
 	if spec.WorkingDir != dockerx.WorkspaceMount {
 		t.Errorf("working directory = %q", spec.WorkingDir)
 	}

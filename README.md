@@ -81,6 +81,32 @@ A session runs in a container built from a base image you register. There are th
 The repository is never baked into an image: it arrives as a bind mount when the session
 starts, so one image serves every project that needs the same tools.
 
+#### Letting Claude Code update itself
+
+Containers run as your host user, whose uid the image cannot know when it is built, so a
+`claude` installed as root cannot update itself. Hexagon bridges that with a fixed group:
+every container it runs Claude Code in — a session, the Claude login, the image editor —
+gets **gid 2000** as a supplementary group, and the reference Dockerfile hands the
+Claude Code install to that group:
+
+```dockerfile
+RUN chgrp -R 2000 /usr/local/lib/node_modules/@anthropic-ai \
+    && chmod -R g+w /usr/local/lib/node_modules/@anthropic-ai \
+    && chgrp 2000 /usr/local /usr/local/lib/node_modules /usr/local/bin \
+    && chmod g+w /usr/local /usr/local/lib/node_modules /usr/local/bin
+```
+
+The install is writable by that group only, never by everyone, and `node`, `npm` and the
+rest of `/usr/local` stay root's. `/usr/local` itself is included because Claude Code turns
+auto-updates on only when npm's global prefix is writable. The group is numeric, so the
+image needs no `/etc/group` entry for it.
+
+Keep these lines if you write your own Dockerfile and want the same behaviour; an image
+without them still runs, it just keeps the version it was built with. An image built from
+the template before this was added has to be rebuilt to pick it up. The update lives in the
+container, not the image: a session that is recreated starts again from the version the
+image carries.
+
 ### Images with services beside them
 
 ![The compose editor, with the rules a service has to obey and its own Ask Claude

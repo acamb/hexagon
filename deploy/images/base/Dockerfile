@@ -18,6 +18,21 @@ ENV SHELL=/bin/bash
 
 RUN npm install -g @anthropic-ai/claude-code
 
+# Claude Code updates itself, and the user it runs as is not known here: it is
+# the host user. Hexagon adds gid 2000 to every container it runs Claude Code
+# in, so handing the install to that group lets the updater replace it without
+# making it writable by everyone. npm renames the old package away inside
+# @anthropic-ai and swaps the bin symlink, so that tree needs it recursively and
+# the two parent directories only for themselves: node and npm stay root's.
+# /usr/local is npm's global prefix, and Claude Code decides whether it may
+# auto-update by checking that the prefix itself is writable, although npm never
+# writes there; without it the update only happens by hand. The update lives in
+# the container, not the image: a recreated session starts from this.
+RUN chgrp -R 2000 /usr/local/lib/node_modules/@anthropic-ai \
+    && chmod -R g+w /usr/local/lib/node_modules/@anthropic-ai \
+    && chgrp 2000 /usr/local /usr/local/lib/node_modules /usr/local/bin \
+    && chmod g+w /usr/local /usr/local/lib/node_modules /usr/local/bin
+
 # Git authenticates with the token Hexagon puts in the environment, so no
 # credentials are ever written to disk inside the container.
 RUN printf '#!/bin/sh\ncase "$1" in *Username*) echo x-access-token ;; *) echo "$GITHUB_TOKEN" ;; esac\n' \

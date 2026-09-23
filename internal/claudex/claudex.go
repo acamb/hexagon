@@ -226,7 +226,9 @@ func schemaFor(kind string) string {
 const dockerfilePrompt = `You are editing a Dockerfile for a container that runs Claude Code on a
 repository. The image must keep working for that: git, tmux and claude on the
 PATH, SHELL set to an interactive shell such as /bin/bash, a long-running CMD,
-and no repository baked in — it arrives as a bind mount on /workspace.
+and no repository baked in — it arrives as a bind mount on /workspace. If the
+Dockerfile hands the Claude Code install to group 2000, keep that: it is how
+claude updates itself when the container runs as an unprivileged user.
 
 Apply the requested change and return the complete resulting Dockerfile, not a
 patch. Change nothing the request did not ask for. Summarise what you changed in

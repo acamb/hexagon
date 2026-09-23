@@ -70,6 +70,7 @@ func (m *Manager) startClaudeLoginContainer(ctx context.Context, id, credentials
 		Env:        []string{"HOME=" + dockerx.AgentHome, "TERM=xterm-256color", "LANG=C.UTF-8"},
 		WorkingDir: dockerx.AgentHome,
 		User:       m.cfg.ContainerUser,
+		GroupAdd:   []string{dockerx.AgentGroup},
 		// Not hexagon.managed: the reconciler matches managed containers against
 		// session rows, and this one has none.
 		Labels: map[string]string{dockerx.LabelRole: claudeLoginRole},

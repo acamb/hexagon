@@ -77,6 +77,9 @@ func TestStartClaudeLoginBindsTheCredentialsDirectoryReadWrite(t *testing.T) {
 			t.Errorf("login container env carried an anthropic credential: %v", spec.Env)
 		}
 	}
+	if !slices.Contains(spec.GroupAdd, dockerx.AgentGroup) {
+		t.Errorf("groups = %v, want %s so Claude Code can update itself", spec.GroupAdd, dockerx.AgentGroup)
+	}
 	if spec.Labels[dockerx.LabelManaged] != "" {
 		t.Errorf("login container carries hexagon.managed, so the reconciler would report it as an orphan")
 	}

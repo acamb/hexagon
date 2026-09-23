@@ -21,6 +21,15 @@ import (
 // the image's /etc/passwd and therefore no home of their own.
 const AgentHome = "/home/agent"
 
+// AgentGroup is the gid every container Hexagon runs Claude Code in gets as a
+// supplementary group. The uid is the host user's and unknown when an image is
+// built, so an image cannot hand its Claude Code install to that user; it can
+// hand it to this group instead, and the install becomes updatable by the one
+// user in the container without being writable by everyone. The reference
+// Dockerfile relies on the value, so changing it means changing both. It is
+// numeric so an image needs no /etc/group entry for it.
+const AgentGroup = "2000"
+
 // Labels Hexagon puts on the containers it owns, so they can be found again
 // after a restart and told apart from everything else on the machine.
 const (
@@ -45,8 +54,11 @@ type ContainerSpec struct {
 	WorkingDir string
 	// User is the uid:gid the container runs as. Sessions run as the host user
 	// so the files written into the bind mounted clone stay owned by them.
-	User   string
-	Labels map[string]string
+	User string
+	// GroupAdd are supplementary gids, on top of User. They also apply to every
+	// exec that names a user, so the terminal's processes carry them too.
+	GroupAdd []string
+	Labels   map[string]string
 	// Binds are host:container[:ro] mount specifications.
 	Binds []string
 	// AutoRestart brings the container back after a Docker or machine restart.
@@ -109,7 +121,7 @@ func (c *Client) CreateContainer(ctx context.Context, spec ContainerSpec) (strin
 		Labels:     spec.Labels,
 		Tty:        false,
 	}
-	hostConfig := &container.HostConfig{Binds: spec.Binds}
+	hostConfig := &container.HostConfig{Binds: spec.Binds, GroupAdd: spec.GroupAdd}
 	if spec.AutoRestart {
 		hostConfig.RestartPolicy = container.RestartPolicy{Name: container.RestartPolicyUnlessStopped}
 	}

@@ -301,6 +301,7 @@ func (c *Container) run(ctx context.Context, cred Credential, in invocation) ([]
 		Binds:      binds,
 		WorkingDir: "/tmp",
 		User:       c.user,
+		GroupAdd:   []string{dockerx.AgentGroup},
 		Labels:     map[string]string{dockerx.LabelRole: containerRole},
 	})
 	if errors.Is(err, dockerx.ErrImageNotFound) {

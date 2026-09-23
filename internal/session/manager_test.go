@@ -376,6 +376,9 @@ func TestComposeServiceMatchesTheContainerSpec(t *testing.T) {
 	if agent.User != spec.User {
 		t.Errorf("user = %q, want %q", agent.User, spec.User)
 	}
+	if !slices.Equal(agent.GroupAdd, spec.GroupAdd) {
+		t.Errorf("group_add = %v, want the spec's groups %v — the updater needs them to replace Claude Code", agent.GroupAdd, spec.GroupAdd)
+	}
 	if agent.WorkingDir != spec.WorkingDir {
 		t.Errorf("working_dir = %q, want %q", agent.WorkingDir, spec.WorkingDir)
 	}

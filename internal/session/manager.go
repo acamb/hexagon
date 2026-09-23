@@ -740,6 +740,7 @@ func (m *Manager) containerSpec(session *store.Session, homeDir, vscodeDir strin
 		Env:        env,
 		WorkingDir: dockerx.WorkspaceMount,
 		User:       m.cfg.ContainerUser,
+		GroupAdd:   []string{dockerx.AgentGroup},
 		Labels: map[string]string{
 			dockerx.LabelManaged:   "true",
 			dockerx.LabelSessionID: session.ID,

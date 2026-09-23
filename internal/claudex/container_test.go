@@ -207,6 +207,9 @@ func TestContainerPassesThePromptThroughTheEnvironment(t *testing.T) {
 	if specs[0].User != "1000:1000" {
 		t.Errorf("user = %q, want the same host user sessions run as", specs[0].User)
 	}
+	if !slices.Contains(specs[0].GroupAdd, dockerx.AgentGroup) {
+		t.Errorf("groups = %v, want %s so Claude Code can update itself", specs[0].GroupAdd, dockerx.AgentGroup)
+	}
 	if len(removed) != 1 || removed[0] != "container-1" {
 		t.Errorf("removed = %v, want the container gone once the call returned", removed)
 	}
