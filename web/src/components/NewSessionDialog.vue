@@ -368,36 +368,30 @@ onMounted(() => load())
             <input type="checkbox" v-model="autoClaude" />
             <span>
               Start Claude Code automatically
-              <em>Otherwise the session opens at a shell prompt inside tmux.</em>
             </span>
           </label>
 
-          <label v-if="!withoutRepo" class="toggle">
+          <label v-if="!withoutRepo" class="toggle" title="Clones only the most recent commits of the branch above, which is much faster on a
+                repository with a long history. The other branches are not fetched, and the history
+                inside the session stops at the depth chosen here." >
             <input type="checkbox" v-model="shallowClone" />
             <span>
               Shallow clone
-              <em>
-                Clones only the most recent commits of the branch above, which is much faster on a
-                repository with a long history. The other branches are not fetched, and the history
-                inside the session stops at the depth chosen here.
-              </em>
             </span>
           </label>
+          <span v-if="!withoutRepo && shallowClone">
+              <span>Clone depth:</span>
+              <input v-model.number="cloneDepth" type="number" min="1" class="depth"/>
+          </span>
 
-          <label v-if="!withoutRepo && shallowClone" class="field depth">
-            <span>Depth</span>
-            <input v-model.number="cloneDepth" type="number" min="1" />
-          </label>
+
 
           <label v-if="!withoutRepo" class="toggle">
             <input type="checkbox" v-model="propagateToken" />
-            <span>
+            <span title="The repository is cloned either way. Without the token nothing inside the session
+                can fetch or push, and this cannot be changed afterwards.">
               Pass the {{ selected ? providerNames[selected.provider] : 'account' }} token to the
               session
-              <em>
-                The repository is cloned either way. Without the token nothing inside the session
-                can fetch or push, and this cannot be changed afterwards.
-              </em>
             </span>
           </label>
 
@@ -420,18 +414,18 @@ onMounted(() => load())
             </select>
           </label>
 
-          <label class="toggle">
+          <label class="toggle" title="Adds a button on the session page that opens VS Code on the workspace. It has to
+                be chosen now: the container is built for it.">
             <input type="checkbox" v-model="vscode" />
             <span>
               VS Code in the browser
-              <em>
-                Adds a button on the session page that opens VS Code on the workspace. It has to
-                be chosen now: the container is built for it.
-              </em>
             </span>
           </label>
 
-          <div class="row">
+          <div class="row" title="Container ports to reach from outside the session — a dev server, a preview. Hexagon
+            picks the host port and the session page shows the pair. They cannot be changed
+            afterwards: the container is built with them. Use <code>127.0.0.1</code> to keep them
+            on the machine running Hexagon.">
             <label class="field">
               <span>Published ports <em>optional</em></span>
               <input v-model="ports" placeholder="3000, 5173" />
@@ -442,12 +436,6 @@ onMounted(() => load())
               <input v-model="portAddress" placeholder="0.0.0.0" :disabled="!parsedPorts.length" />
             </label>
           </div>
-          <em class="note">
-            Container ports to reach from outside the session — a dev server, a preview. Hexagon
-            picks the host port and the session page shows the pair. They cannot be changed
-            afterwards: the container is built with them. Use <code>127.0.0.1</code> to keep them
-            on the machine running Hexagon.
-          </em>
           <p v-if="portsAreExposed" class="warning">
             On <code>{{ portAddress.trim() }}</code> these ports are open to anyone who can reach
             that address, with nothing in front of them — no password, and not Hexagon's own
@@ -506,7 +494,8 @@ onMounted(() => load())
 /* A number that is at most a few digits. Left at the width .field gives every
    other control it would read as a far more important field than it is. */
 .depth {
-  width: 8rem;
+  margin-left: 10px;
+  width: 4rem;
 }
 
 .toggle {
