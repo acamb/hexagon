@@ -3,7 +3,9 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -50,6 +52,22 @@ func (m *Manager) composeProject(session *store.Session) composex.Project {
 		// services win.
 		Files: []string{filepath.Join(dir, "user.yaml"), filepath.Join(dir, "hexagon.yaml")},
 	}
+}
+
+// composeDown tears a session's project down, including one whose files were
+// never written or have since gone. A setup that failed at the clone never got
+// as far as writing them, and running the CLI in a directory that does not
+// exist fails before compose is even asked — which made such a session
+// impossible to delete. Compose finds a project's containers by the label
+// carrying its name, so without the files it is addressed by name alone: that
+// still removes anything an earlier `up` left standing, where skipping the call
+// would leak it.
+func (m *Manager) composeDown(ctx context.Context, session *store.Session, volumes bool) error {
+	project := m.composeProject(session)
+	if _, err := os.Stat(project.Dir); errors.Is(err, fs.ErrNotExist) {
+		project = composex.Project{Name: project.Name}
+	}
+	return m.compose.Down(ctx, project, volumes)
 }
 
 // writeComposeFiles puts the two halves of the project on disk: the user's file

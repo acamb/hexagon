@@ -51,6 +51,8 @@ type fakeCompose struct {
 	err      error
 	calls    []string
 	downV    bool
+	// downProject is the project the last Down was given.
+	downProject composex.Project
 }
 
 func (f *fakeCompose) Validate(context.Context, string) ([]string, error) {
@@ -78,8 +80,8 @@ func (f *fakeCompose) Stop(context.Context, composex.Project) error {
 	return f.err
 }
 
-func (f *fakeCompose) Down(_ context.Context, _ composex.Project, volumes bool) error {
-	f.calls, f.downV = append(f.calls, "down"), volumes
+func (f *fakeCompose) Down(_ context.Context, p composex.Project, volumes bool) error {
+	f.calls, f.downV, f.downProject = append(f.calls, "down"), volumes, p
 	return f.err
 }
 

@@ -56,6 +56,10 @@ func New(binary, host string) *Runner {
 
 // Project is one compose project: the name it runs under, the directory
 // relative paths in its files resolve against, and the files themselves.
+//
+// A project with no files and no directory is addressed by name alone, which
+// `down` and `stop` accept: compose finds its containers by their project label.
+// It is how a project whose files are gone still gets torn down.
 type Project struct {
 	Name  string
 	Dir   string

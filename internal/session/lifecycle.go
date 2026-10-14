@@ -310,7 +310,7 @@ func (m *Manager) stopContainers(ctx context.Context, session *store.Session) er
 func (m *Manager) Delete(ctx context.Context, session *store.Session, purge bool) error {
 	switch {
 	case session.Compose:
-		if err := m.compose.Down(ctx, m.composeProject(session), purge); err != nil {
+		if err := m.composeDown(ctx, session, purge); err != nil {
 			return err
 		}
 	case session.ContainerID != "":

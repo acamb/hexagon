@@ -2,6 +2,7 @@ package session
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"slices"
@@ -9,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/andrea/hexagon/internal/composex"
 	"github.com/andrea/hexagon/internal/dockerx"
 	"github.com/andrea/hexagon/internal/store"
 )
@@ -99,6 +101,52 @@ func TestComposeSessionLifecycleGoesThroughTheProject(t *testing.T) {
 	// purge means "the work too", and what a service wrote is work.
 	if !compose.downV {
 		t.Error("a purging delete did not take the project's volumes with it")
+	}
+}
+
+// A compose session whose clone failed never had its project files written.
+// Running compose in their missing directory failed before compose was asked
+// anything, and the session could not be deleted at all.
+func TestDeleteRemovesAComposeSessionWhoseFilesWereNeverWritten(t *testing.T) {
+	ctx := context.Background()
+	compose := &fakeCompose{}
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "hexagon.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	root := filepath.Join(t.TempDir(), "workspaces")
+	manager := NewManager(st, &recordingDocker{}, nil, nil, nil, compose, Config{WorkspaceRoot: root}, slog.New(slog.DiscardHandler))
+
+	user, err := st.UpsertUser(ctx, &store.User{GitHubLogin: "alice", GitHubID: 1})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	image, err := st.CreateImage(ctx, &store.Image{UserID: user.ID, Name: "advanced",
+		SourceType: store.ImageSourceCompose, ImageRef: "ref", Status: store.ImageStatusReady})
+	if err != nil {
+		t.Fatalf("create image: %v", err)
+	}
+	session, err := st.CreateSession(ctx, &store.Session{
+		UserID: user.ID, Title: "t", ImageID: image.ID, ImageRef: "ref",
+		WorkspaceDir: filepath.Join(root, "s-1"), RepoDir: filepath.Join(root, "s-1", "repo"),
+		Status: store.SessionStatusFailed, Compose: true,
+	})
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	if err := manager.Delete(ctx, session, false); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := st.SessionByID(ctx, user.ID, session.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("SessionByID after delete: err = %v, want ErrNotFound", err)
+	}
+	// Down still runs, by name: an earlier up may have left containers standing.
+	want := composex.Project{Name: containerNamePrefix + session.ID}
+	if got := compose.downProject; got.Name != want.Name || got.Dir != "" || len(got.Files) != 0 {
+		t.Errorf("down project = %+v, want %+v, addressed by name alone", got, want)
 	}
 }
 

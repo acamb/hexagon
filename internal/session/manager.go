@@ -865,7 +865,7 @@ func (m *Manager) cleanUpFailure(session *store.Session) {
 	defer cancel()
 
 	if session.Compose {
-		if err := m.compose.Down(ctx, m.composeProject(session), false); err != nil {
+		if err := m.composeDown(ctx, session, false); err != nil {
 			m.log.Warn("remove the project of a failed session", "session", session.ID, "err", err)
 		}
 		return
